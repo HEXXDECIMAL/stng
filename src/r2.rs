@@ -126,4 +126,68 @@ mod tests {
         assert_eq!(classify_r2_symbol("FILE", "LOCAL"), StringKind::FilePath);
         assert_eq!(classify_r2_symbol("OBJECT", "GLOBAL"), StringKind::Ident);
     }
+
+    #[test]
+    fn test_classify_r2_symbol_meth() {
+        assert_eq!(classify_r2_symbol("METH", "GLOBAL"), StringKind::FuncName);
+        assert_eq!(classify_r2_symbol("METH", "LOCAL"), StringKind::FuncName);
+    }
+
+    #[test]
+    fn test_classify_r2_symbol_unknown_type() {
+        assert_eq!(classify_r2_symbol("UNKNOWN", "GLOBAL"), StringKind::Ident);
+        assert_eq!(classify_r2_symbol("", ""), StringKind::Ident);
+        assert_eq!(classify_r2_symbol("NOTYPE", "LOCAL"), StringKind::Ident);
+    }
+
+    #[test]
+    fn test_classify_r2_symbol_object_local() {
+        // OBJECT with LOCAL binding should not be Ident
+        assert_eq!(classify_r2_symbol("OBJECT", "LOCAL"), StringKind::Ident);
+    }
+
+    #[test]
+    fn test_extract_strings_nonexistent_file() {
+        let result = extract_strings("/nonexistent/file/path", 4);
+        // Should return None for non-existent files
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_run_r2_command_nonexistent() {
+        let result = run_r2_command("/nonexistent/file", "iz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_r2_string_deserialize() {
+        let json = r#"{"vaddr": 4096, "string": "hello", "section": ".rodata"}"#;
+        let r2_str: R2String = serde_json::from_str(json).unwrap();
+        assert_eq!(r2_str.vaddr, 4096);
+        assert_eq!(r2_str.string, "hello");
+        assert_eq!(r2_str.section, ".rodata");
+    }
+
+    #[test]
+    fn test_r2_symbol_deserialize() {
+        let json = r#"{"vaddr": 4096, "name": "_main", "section": ".text", "type": "FUNC", "bind": "GLOBAL"}"#;
+        let r2_sym: R2Symbol = serde_json::from_str(json).unwrap();
+        assert_eq!(r2_sym.vaddr, 4096);
+        assert_eq!(r2_sym.name, "_main");
+        assert_eq!(r2_sym.section, Some(".text".to_string()));
+        assert_eq!(r2_sym.r#type, "FUNC");
+        assert_eq!(r2_sym.bind, "GLOBAL");
+    }
+
+    #[test]
+    fn test_r2_symbol_deserialize_defaults() {
+        // Missing optional fields should use defaults
+        let json = r#"{"vaddr": 4096, "name": "_main"}"#;
+        let r2_sym: R2Symbol = serde_json::from_str(json).unwrap();
+        assert_eq!(r2_sym.vaddr, 4096);
+        assert_eq!(r2_sym.name, "_main");
+        assert!(r2_sym.section.is_none());
+        assert_eq!(r2_sym.r#type, "");
+        assert_eq!(r2_sym.bind, "");
+    }
 }

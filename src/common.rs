@@ -686,4 +686,309 @@ mod tests {
         assert!(is_garbage("ab\x00cd"));
         assert!(is_garbage("\x01\x02\x03"));
     }
+
+    #[test]
+    fn test_binary_info_64bit_be() {
+        let info = BinaryInfo::new_64bit_be();
+        assert!(info.is_64bit);
+        assert!(!info.is_little_endian);
+        assert_eq!(info.ptr_size, 8);
+    }
+
+    #[test]
+    fn test_binary_info_32bit_be() {
+        let info = BinaryInfo::new_32bit_be();
+        assert!(!info.is_64bit);
+        assert!(!info.is_little_endian);
+        assert_eq!(info.ptr_size, 4);
+    }
+
+    #[test]
+    fn test_binary_info_from_elf() {
+        let info64 = BinaryInfo::from_elf(true, true);
+        assert!(info64.is_64bit);
+        assert!(info64.is_little_endian);
+        assert_eq!(info64.ptr_size, 8);
+
+        let info32 = BinaryInfo::from_elf(false, false);
+        assert!(!info32.is_64bit);
+        assert!(!info32.is_little_endian);
+        assert_eq!(info32.ptr_size, 4);
+    }
+
+    #[test]
+    fn test_binary_info_from_macho() {
+        let info64 = BinaryInfo::from_macho(true);
+        assert!(info64.is_64bit);
+        assert!(info64.is_little_endian); // Mach-O always LE
+        assert_eq!(info64.ptr_size, 8);
+
+        let info32 = BinaryInfo::from_macho(false);
+        assert!(!info32.is_64bit);
+        assert!(info32.is_little_endian);
+        assert_eq!(info32.ptr_size, 4);
+    }
+
+    #[test]
+    fn test_binary_info_from_pe() {
+        let info64 = BinaryInfo::from_pe(true);
+        assert!(info64.is_64bit);
+        assert!(info64.is_little_endian); // PE always LE
+        assert_eq!(info64.ptr_size, 8);
+
+        let info32 = BinaryInfo::from_pe(false);
+        assert!(!info32.is_64bit);
+        assert!(info32.is_little_endian);
+        assert_eq!(info32.ptr_size, 4);
+    }
+
+    #[test]
+    fn test_find_string_structures_empty() {
+        let info = BinaryInfo::new_64bit_le();
+        let structs = find_string_structures(&[], 0x2000, 0x1000, 0x100, &info);
+        assert!(structs.is_empty());
+    }
+
+    #[test]
+    fn test_find_string_structures_too_short() {
+        let info = BinaryInfo::new_64bit_le();
+        let section_data = vec![0u8; 8]; // Only 8 bytes, need 16 for struct
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
+        assert!(structs.is_empty());
+    }
+
+    #[test]
+    fn test_find_string_structures_32bit() {
+        let info = BinaryInfo::new_32bit_le();
+
+        let mut section_data = vec![0u8; 16];
+        section_data[0..4].copy_from_slice(&0x1000u32.to_le_bytes());
+        section_data[4..8].copy_from_slice(&5u32.to_le_bytes());
+
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
+
+        assert_eq!(structs.len(), 1);
+        assert_eq!(structs[0].ptr, 0x1000);
+        assert_eq!(structs[0].len, 5);
+    }
+
+    #[test]
+    fn test_find_string_structures_big_endian() {
+        let info = BinaryInfo::new_64bit_be();
+
+        let mut section_data = vec![0u8; 32];
+        section_data[0..8].copy_from_slice(&0x1000u64.to_be_bytes());
+        section_data[8..16].copy_from_slice(&5u64.to_be_bytes());
+
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
+
+        assert_eq!(structs.len(), 1);
+        assert_eq!(structs[0].ptr, 0x1000);
+        assert_eq!(structs[0].len, 5);
+    }
+
+    #[test]
+    fn test_find_string_structures_32bit_be() {
+        let info = BinaryInfo::new_32bit_be();
+
+        let mut section_data = vec![0u8; 16];
+        section_data[0..4].copy_from_slice(&0x1000u32.to_be_bytes());
+        section_data[4..8].copy_from_slice(&5u32.to_be_bytes());
+
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
+
+        assert_eq!(structs.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_from_structures_invalid_utf8() {
+        let blob = &[0xFF, 0xFE, 0xFD, 0xFC, 0xFB];
+        let structs = vec![StringStruct {
+            struct_offset: 0,
+            ptr: 0x1000,
+            len: 5,
+        }];
+
+        let strings = extract_from_structures(blob, 0x1000, &structs, None, |_| StringKind::Const);
+
+        // Invalid UTF-8 should be skipped
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_from_structures_mostly_non_printable() {
+        let blob = b"\x01\x02\x03\x04\x05";
+        let structs = vec![StringStruct {
+            struct_offset: 0,
+            ptr: 0x1000,
+            len: 5,
+        }];
+
+        let strings = extract_from_structures(blob, 0x1000, &structs, None, |_| StringKind::Const);
+
+        // Mostly non-printable should be skipped
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_from_structures_ptr_out_of_range() {
+        let blob = b"Hello";
+        let structs = vec![StringStruct {
+            struct_offset: 0,
+            ptr: 0x5000, // Out of range
+            len: 5,
+        }];
+
+        let strings = extract_from_structures(blob, 0x1000, &structs, None, |_| StringKind::Const);
+
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_from_structures_len_overflow() {
+        let blob = b"Hello";
+        let structs = vec![StringStruct {
+            struct_offset: 0,
+            ptr: 0x1000,
+            len: 100, // Longer than blob
+        }];
+
+        let strings = extract_from_structures(blob, 0x1000, &structs, None, |_| StringKind::Const);
+
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_from_structures_with_section_name() {
+        let blob = b"Hello";
+        let structs = vec![StringStruct {
+            struct_offset: 0,
+            ptr: 0x1000,
+            len: 5,
+        }];
+
+        let strings = extract_from_structures(
+            blob,
+            0x1000,
+            &structs,
+            Some(".rodata".to_string()),
+            |_| StringKind::Const,
+        );
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].section, Some(".rodata".to_string()));
+    }
+
+    #[test]
+    fn test_extract_from_structures_classification() {
+        let blob = b"/usr/bin";
+        let structs = vec![StringStruct {
+            struct_offset: 0,
+            ptr: 0x1000,
+            len: 8,
+        }];
+
+        let strings = extract_from_structures(
+            blob,
+            0x1000,
+            &structs,
+            None,
+            |s| if s.starts_with('/') { StringKind::Path } else { StringKind::Const },
+        );
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].kind, StringKind::Path);
+    }
+
+    #[test]
+    fn test_is_valid_string_non_printable() {
+        assert!(!is_valid_string(b"\x01\x02\x03\x04", 4));
+    }
+
+    #[test]
+    fn test_is_valid_string_mixed() {
+        // More than 50% printable should pass
+        assert!(is_valid_string(b"abcd\x01", 4));
+    }
+
+    #[test]
+    fn test_is_garbage_single_char() {
+        assert!(is_garbage("a"));
+        assert!(is_garbage("X"));
+        assert!(is_garbage("1"));
+    }
+
+    #[test]
+    fn test_is_garbage_alternating_pattern() {
+        // Alternating digit-letter patterns
+        assert!(is_garbage("1a2b3c4d5e"));
+    }
+
+    #[test]
+    fn test_is_garbage_low_alphanum_ratio() {
+        // Less than 30% alphanumeric for strings > 6 chars
+        assert!(is_garbage("....!!!!"));
+    }
+
+    #[test]
+    fn test_is_garbage_unbalanced_parens() {
+        assert!(is_garbage("ab(cd"));
+        assert!(is_garbage("ab[cd"));
+    }
+
+    #[test]
+    fn test_is_garbage_single_quote() {
+        assert!(is_garbage("ab'cd"));
+    }
+
+    #[test]
+    fn test_is_garbage_trailing_newline_ok() {
+        // Trailing newline should not trigger control char detection
+        assert!(!is_garbage("hello world\n"));
+    }
+
+    #[test]
+    fn test_string_kind_equality() {
+        assert_eq!(StringKind::Const, StringKind::Const);
+        assert_ne!(StringKind::Const, StringKind::Import);
+        assert_ne!(StringKind::Import, StringKind::Export);
+    }
+
+    #[test]
+    fn test_string_method_equality() {
+        assert_eq!(StringMethod::Structure, StringMethod::Structure);
+        assert_ne!(StringMethod::Structure, StringMethod::RawScan);
+    }
+
+    #[test]
+    fn test_extracted_string_clone() {
+        let s = ExtractedString {
+            value: "test".to_string(),
+            data_offset: 100,
+            section: Some("section".to_string()),
+            method: StringMethod::Structure,
+            kind: StringKind::Const,
+            library: Some("lib".to_string()),
+        };
+
+        let cloned = s.clone();
+        assert_eq!(s.value, cloned.value);
+        assert_eq!(s.data_offset, cloned.data_offset);
+        assert_eq!(s.section, cloned.section);
+        assert_eq!(s.library, cloned.library);
+    }
+
+    #[test]
+    fn test_string_struct_clone() {
+        let s = StringStruct {
+            struct_offset: 100,
+            ptr: 200,
+            len: 10,
+        };
+
+        let cloned = s.clone();
+        assert_eq!(s.struct_offset, cloned.struct_offset);
+        assert_eq!(s.ptr, cloned.ptr);
+        assert_eq!(s.len, cloned.len);
+    }
 }

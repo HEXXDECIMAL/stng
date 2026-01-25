@@ -579,4 +579,268 @@ mod tests {
 
     // Note: Section detection is now done via goblin address matching,
     // not pattern matching in classify_string. See lib.rs extract_raw_strings.
+
+    #[test]
+    fn test_go_string_extractor_new() {
+        let extractor = GoStringExtractor::new(4);
+        assert_eq!(extractor.min_length, 4);
+    }
+
+    #[test]
+    fn test_go_string_extractor_new_different_lengths() {
+        let extractor1 = GoStringExtractor::new(0);
+        assert_eq!(extractor1.min_length, 0);
+        let extractor2 = GoStringExtractor::new(100);
+        assert_eq!(extractor2.min_length, 100);
+    }
+
+    #[test]
+    fn test_classify_gopclntab_string_source_files() {
+        assert_eq!(classify_gopclntab_string("main.go"), StringKind::FilePath);
+        assert_eq!(classify_gopclntab_string("runtime/proc.go"), StringKind::FilePath);
+        assert_eq!(classify_gopclntab_string("asm_amd64.s"), StringKind::FilePath);
+        assert_eq!(classify_gopclntab_string("syscall.c"), StringKind::FilePath);
+        assert_eq!(classify_gopclntab_string("types.h"), StringKind::FilePath);
+    }
+
+    #[test]
+    fn test_classify_gopclntab_string_functions() {
+        // Package.Function format
+        assert_eq!(classify_gopclntab_string("runtime.main"), StringKind::FuncName);
+        assert_eq!(classify_gopclntab_string("main.init"), StringKind::FuncName);
+
+        // With method receiver
+        assert_eq!(classify_gopclntab_string("(*Server).ServeHTTP"), StringKind::FuncName);
+        assert_eq!(classify_gopclntab_string("bufio.(*Reader).Read"), StringKind::FuncName);
+
+        // Type assertion
+        assert_eq!(classify_gopclntab_string("error.(Error)"), StringKind::FuncName);
+
+        // Package path with function
+        assert_eq!(classify_gopclntab_string("github.com/user/repo/pkg.Function"), StringKind::FuncName);
+
+        // Type equality functions
+        assert_eq!(classify_gopclntab_string("type:.eq.runtime.mspan"), StringKind::FuncName);
+    }
+
+    #[test]
+    fn test_classify_gopclntab_string_identifiers() {
+        // Bare identifiers without dots or slashes
+        assert_eq!(classify_gopclntab_string("hello"), StringKind::Ident);
+        assert_eq!(classify_gopclntab_string("myVar"), StringKind::Ident);
+        assert_eq!(classify_gopclntab_string("CONSTANT"), StringKind::Ident);
+    }
+
+    #[test]
+    fn test_classify_string_database_urls() {
+        assert_eq!(classify_string("mysql://user:pass@localhost/db"), StringKind::Url);
+        assert_eq!(classify_string("redis://localhost:6379"), StringKind::Url);
+        assert_eq!(classify_string("mongodb://user:pass@cluster.mongodb.net/db"), StringKind::Url);
+        assert_eq!(classify_string("ftp://ftp.example.com/file.txt"), StringKind::Url);
+    }
+
+    #[test]
+    fn test_classify_string_windows_paths() {
+        assert_eq!(classify_string("C:\\Windows\\System32"), StringKind::Path);
+    }
+
+    #[test]
+    fn test_classify_string_relative_paths() {
+        assert_eq!(classify_string("./config.json"), StringKind::Path);
+        assert_eq!(classify_string("../parent/dir"), StringKind::Path);
+    }
+
+    #[test]
+    fn test_classify_string_error_keywords() {
+        assert_eq!(classify_string("error: something went wrong"), StringKind::Error);
+        assert_eq!(classify_string("operation failed unexpectedly"), StringKind::Error);
+        assert_eq!(classify_string("invalid input provided"), StringKind::Error);
+        assert_eq!(classify_string("cannot connect to server"), StringKind::Error);
+        assert_eq!(classify_string("unable to parse response"), StringKind::Error);
+    }
+
+    #[test]
+    fn test_classify_string_const_fallback() {
+        // Regular strings that don't match other patterns
+        assert_eq!(classify_string("hello world"), StringKind::Const);
+        assert_eq!(classify_string("version 1.0.0"), StringKind::Const);
+        assert_eq!(classify_string("some random text"), StringKind::Const);
+    }
+
+    #[test]
+    fn test_extract_raw_strings_basic() {
+        let extractor = GoStringExtractor::new(4);
+        let data = b"Hello\0World\0foo\0";
+        let strings = extractor.extract_raw_strings(data, Some(".rodata".to_string()));
+
+        assert_eq!(strings.len(), 2); // Hello and World, foo is < 4
+        assert!(strings.iter().any(|s| s.value == "Hello"));
+        assert!(strings.iter().any(|s| s.value == "World"));
+    }
+
+    #[test]
+    fn test_extract_raw_strings_deduplication() {
+        let extractor = GoStringExtractor::new(4);
+        let data = b"Hello\0Hello\0World\0";
+        let strings = extractor.extract_raw_strings(data, None);
+
+        assert_eq!(strings.iter().filter(|s| s.value == "Hello").count(), 1);
+    }
+
+    #[test]
+    fn test_extract_raw_strings_non_printable() {
+        let extractor = GoStringExtractor::new(4);
+        // Non-printable bytes should break the string
+        let data = b"Hello\x01World\0";
+        let strings = extractor.extract_raw_strings(data, None);
+
+        // "Hello" is broken by \x01, then "World" follows
+        assert!(strings.iter().any(|s| s.value == "World"));
+    }
+
+    #[test]
+    fn test_extract_raw_strings_gopclntab_classification() {
+        let extractor = GoStringExtractor::new(4);
+        let data = b"main.go\0runtime.main\0hello\0";
+        let strings = extractor.extract_raw_strings(data, Some("__gopclntab".to_string()));
+
+        // Should use gopclntab classification
+        let main_go = strings.iter().find(|s| s.value == "main.go").unwrap();
+        assert_eq!(main_go.kind, StringKind::FilePath);
+
+        let runtime_main = strings.iter().find(|s| s.value == "runtime.main").unwrap();
+        assert_eq!(runtime_main.kind, StringKind::FuncName);
+
+        let hello = strings.iter().find(|s| s.value == "hello").unwrap();
+        assert_eq!(hello.kind, StringKind::Ident);
+    }
+
+    #[test]
+    fn test_extract_raw_strings_min_length() {
+        let extractor = GoStringExtractor::new(10);
+        let data = b"Hello\0World\0LongerString\0";
+        let strings = extractor.extract_raw_strings(data, None);
+
+        // Only "LongerString" (12 chars) should pass
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "LongerString");
+    }
+
+    #[test]
+    fn test_extract_raw_strings_whitespace_trimming() {
+        let extractor = GoStringExtractor::new(4);
+        let data = b"  Hello  \0  World  \0";
+        let strings = extractor.extract_raw_strings(data, None);
+
+        // Should trim whitespace
+        assert!(strings.iter().any(|s| s.value == "Hello"));
+        assert!(strings.iter().any(|s| s.value == "World"));
+    }
+
+    #[test]
+    fn test_find_string_structures_32bit() {
+        let info = BinaryInfo::new_32bit_le();
+
+        // Create 32-bit structure: ptr = 0x1000, len = 5
+        let mut section_data = vec![0u8; 16];
+        section_data[0..4].copy_from_slice(&0x1000u32.to_le_bytes());
+        section_data[4..8].copy_from_slice(&5u32.to_le_bytes());
+
+        let structs = find_string_structures(
+            &section_data,
+            0x2000,
+            0x1000,
+            0x100,
+            &info,
+        );
+
+        assert_eq!(structs.len(), 1);
+        assert_eq!(structs[0].ptr, 0x1000);
+        assert_eq!(structs[0].len, 5);
+    }
+
+    #[test]
+    fn test_find_string_structures_big_endian() {
+        let info = BinaryInfo::new_64bit_be();
+
+        // Create big-endian structure
+        let mut section_data = vec![0u8; 32];
+        section_data[0..8].copy_from_slice(&0x1000u64.to_be_bytes());
+        section_data[8..16].copy_from_slice(&5u64.to_be_bytes());
+
+        let structs = find_string_structures(
+            &section_data,
+            0x2000,
+            0x1000,
+            0x100,
+            &info,
+        );
+
+        assert_eq!(structs.len(), 1);
+        assert_eq!(structs[0].ptr, 0x1000);
+        assert_eq!(structs[0].len, 5);
+    }
+
+    #[test]
+    fn test_find_string_structures_out_of_range() {
+        let info = BinaryInfo::new_64bit_le();
+
+        // Create structure pointing outside blob range
+        let mut section_data = vec![0u8; 32];
+        section_data[0..8].copy_from_slice(&0x5000u64.to_le_bytes()); // Outside blob
+        section_data[8..16].copy_from_slice(&5u64.to_le_bytes());
+
+        let structs = find_string_structures(
+            &section_data,
+            0x2000,
+            0x1000, // blob starts at 0x1000
+            0x100,  // blob is 0x100 bytes
+            &info,
+        );
+
+        // Should find nothing since pointer is out of range
+        assert!(structs.is_empty());
+    }
+
+    #[test]
+    fn test_find_string_structures_too_long() {
+        let info = BinaryInfo::new_64bit_le();
+
+        // Create structure with very long length
+        let mut section_data = vec![0u8; 32];
+        section_data[0..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        section_data[8..16].copy_from_slice(&0x200000u64.to_le_bytes()); // > 1MB
+
+        let structs = find_string_structures(
+            &section_data,
+            0x2000,
+            0x1000,
+            0x100,
+            &info,
+        );
+
+        // Should reject strings > 1MB
+        assert!(structs.is_empty());
+    }
+
+    #[test]
+    fn test_find_string_structures_zero_length() {
+        let info = BinaryInfo::new_64bit_le();
+
+        // Create structure with zero length
+        let mut section_data = vec![0u8; 32];
+        section_data[0..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        section_data[8..16].copy_from_slice(&0u64.to_le_bytes());
+
+        let structs = find_string_structures(
+            &section_data,
+            0x2000,
+            0x1000,
+            0x100,
+            &info,
+        );
+
+        // Should reject zero-length strings
+        assert!(structs.is_empty());
+    }
 }

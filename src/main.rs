@@ -89,12 +89,14 @@ fn main() -> Result<()> {
         strangs::r2::is_available()
     };
 
-    // Extract strings
-    let opts = if use_r2 {
-        strangs::ExtractOptions::new(cli.min_length).with_r2(&cli.target)
-    } else {
-        strangs::ExtractOptions::new(cli.min_length)
-    };
+    // Extract strings with options
+    let mut opts = strangs::ExtractOptions::new(cli.min_length)
+        .with_garbage_filter(!cli.unfiltered); // Filter garbage by default unless --unfiltered
+
+    if use_r2 {
+        opts = opts.with_r2(&cli.target);
+    }
+
     let mut strings = strangs::extract_strings_with_options(&data, &opts);
 
     // Deduplicate strings at the same offset (e.g., "foo" and "foo\0" from structure variations)
@@ -119,11 +121,6 @@ fn main() -> Result<()> {
         }
         true
     });
-
-    // Filter garbage strings by default (unless --unfiltered is specified)
-    if !cli.unfiltered {
-        strings.retain(|s| !strangs::is_garbage(&s.value));
-    }
 
     // Output results
     if cli.json {

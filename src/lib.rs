@@ -44,6 +44,8 @@ use std::collections::HashSet;
 pub use go::GoStringExtractor;
 pub use rust::RustStringExtractor;
 
+// Re-export goblin so library clients can parse binaries themselves
+pub use goblin;
 use goblin::mach::MachO;
 use goblin::Object;
 
@@ -226,6 +228,10 @@ pub struct ExtractOptions {
     pub use_r2: bool,
     /// Path to the binary file (required if use_r2 is true)
     pub path: Option<String>,
+    /// Pre-extracted strings from radare2 (allows clients to run r2 themselves)
+    pub r2_strings: Option<Vec<ExtractedString>>,
+    /// Filter out garbage strings (default: false for library, true for CLI)
+    pub filter_garbage: bool,
 }
 
 impl ExtractOptions {
@@ -234,12 +240,28 @@ impl ExtractOptions {
             min_length,
             use_r2: false,
             path: None,
+            r2_strings: None,
+            filter_garbage: false,
         }
     }
 
     pub fn with_r2(mut self, path: &str) -> Self {
         self.use_r2 = true;
         self.path = Some(path.to_string());
+        self
+    }
+
+    /// Provide pre-extracted r2 strings instead of running r2 internally.
+    /// This allows library clients to run r2 themselves and pass the results.
+    pub fn with_r2_strings(mut self, strings: Vec<ExtractedString>) -> Self {
+        self.r2_strings = Some(strings);
+        self
+    }
+
+    /// Enable garbage filtering to remove noise strings.
+    /// Default is false for library use to give clients full control.
+    pub fn with_garbage_filter(mut self, enable: bool) -> Self {
+        self.filter_garbage = enable;
         self
     }
 }
@@ -265,30 +287,79 @@ pub fn extract_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
 ///
 /// This allows specifying whether to use radare2 for extraction.
 pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+    match Object::parse(data) {
+        Ok(object) => extract_from_object(&object, data, opts),
+        Err(_) => {
+            // Unknown format - use r2 if available, otherwise raw scan
+            let mut strings = Vec::new();
+            if let Some(r2_strings) = get_r2_strings(opts) {
+                strings.extend(r2_strings);
+            }
+            if strings.is_empty() && !data.is_empty() {
+                strings.extend(extract_raw_strings(data, opts.min_length, None, &[]));
+            }
+            strings
+        }
+    }
+}
+
+/// Helper to get r2 strings from options (pre-extracted or by running r2)
+fn get_r2_strings(opts: &ExtractOptions) -> Option<Vec<ExtractedString>> {
+    // Use pre-extracted r2 strings if provided
+    if let Some(ref r2_strings) = opts.r2_strings {
+        return Some(r2_strings.clone());
+    }
+    // Otherwise run r2 if enabled
+    if opts.use_r2 {
+        if let Some(ref path) = opts.path {
+            return r2::extract_strings(path, opts.min_length);
+        }
+    }
+    None
+}
+
+/// Extract strings from a pre-parsed goblin Object.
+///
+/// This allows library clients who have already parsed the binary with goblin
+/// to avoid re-parsing. Useful when integrating with tools that use goblin directly.
+///
+/// # Arguments
+///
+/// * `object` - A pre-parsed goblin Object
+/// * `data` - The raw binary data (needed for string extraction)
+/// * `opts` - Extraction options
+///
+/// # Example
+///
+/// ```no_run
+/// use strangs::{extract_from_object, ExtractOptions, goblin};
+///
+/// let data = std::fs::read("my_binary").unwrap();
+/// let object = goblin::Object::parse(&data).unwrap();
+/// let opts = ExtractOptions::new(4);
+/// let strings = extract_from_object(&object, &data, &opts);
+/// ```
+pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
     let min_length = opts.min_length;
     let mut strings = Vec::new();
 
-    match Object::parse(data) {
-        Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) => {
-            let segments = collect_macho_segments(&macho);
-            if macho_has_go_sections(&macho) {
+    match object {
+        Object::Mach(goblin::mach::Mach::Binary(macho)) => {
+            let segments = collect_macho_segments(macho);
+            if macho_has_go_sections(macho) {
                 let extractor = GoStringExtractor::new(min_length);
-                strings.extend(extractor.extract_macho(&macho, data));
-            } else if macho_is_rust(&macho) {
+                strings.extend(extractor.extract_macho(macho, data));
+            } else if macho_is_rust(macho) {
                 let extractor = RustStringExtractor::new(min_length);
-                strings.extend(extractor.extract_macho(&macho, data));
+                strings.extend(extractor.extract_macho(macho, data));
             } else {
-                // Unknown Mach-O - use r2 if enabled, then merge with raw scan
-                if opts.use_r2 {
-                    if let Some(path) = &opts.path {
-                        if let Some(r2_strings) = r2::extract_strings(path, min_length) {
-                            strings.extend(r2_strings);
-                        }
-                    }
+                // Unknown Mach-O - use r2 if available
+                if let Some(r2_strings) = get_r2_strings(opts) {
+                    strings.extend(r2_strings);
                 }
                 // Also do raw scan to catch anything r2 missed
                 let extractor = RustStringExtractor::new(min_length);
-                let rust_strings = extractor.extract_macho(&macho, data);
+                let rust_strings = extractor.extract_macho(macho, data);
                 if rust_strings.is_empty() {
                     strings.extend(extract_raw_strings(data, min_length, None, &segments));
                 } else {
@@ -296,7 +367,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 }
             }
             // Add imports/exports, upgrading existing strings
-            let imports = extract_macho_imports(&macho, min_length);
+            let imports = extract_macho_imports(macho, min_length);
             let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
                 .iter()
                 .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
@@ -314,7 +385,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 }
             }
         }
-        Ok(Object::Mach(goblin::mach::Mach::Fat(fat))) => {
+        Object::Mach(goblin::mach::Mach::Fat(fat)) => {
             // Fat binary - check for Go/Rust first
             let mut is_go = false;
             let mut is_rust = false;
@@ -336,21 +407,17 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                     break;
                 }
             }
-            // For non-Go/non-Rust fat binaries, use r2 if enabled + raw scan
+            // For non-Go/non-Rust fat binaries, use r2 if available + raw scan
             if !is_go && !is_rust {
-                if opts.use_r2 {
-                    if let Some(path) = &opts.path {
-                        if let Some(r2_strings) = r2::extract_strings(path, min_length) {
-                            strings.extend(r2_strings);
-                        }
-                    }
+                if let Some(r2_strings) = get_r2_strings(opts) {
+                    strings.extend(r2_strings);
                 }
                 // Also do raw scan to catch anything r2 missed
                 strings.extend(extract_raw_strings(data, min_length, None, &segments));
             }
             // Add imports/exports from first architecture, upgrading existing strings
-            if let Some(macho) = first_macho {
-                let imports = extract_macho_imports(&macho, min_length);
+            if let Some(ref macho) = first_macho {
+                let imports = extract_macho_imports(macho, min_length);
                 // Build a map of import values to their library info
                 let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
                     .iter()
@@ -372,8 +439,8 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 }
             }
         }
-        Ok(Object::Elf(elf)) => {
-            let segments = collect_elf_segments(&elf);
+        Object::Elf(elf) => {
+            let segments = collect_elf_segments(elf);
 
             // Check for Go sections
             let has_go = elf.section_headers.iter().any(|sh| {
@@ -389,22 +456,18 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 
             if has_go {
                 let extractor = GoStringExtractor::new(min_length);
-                strings.extend(extractor.extract_elf(&elf, data));
+                strings.extend(extractor.extract_elf(elf, data));
             } else if has_rust {
                 let extractor = RustStringExtractor::new(min_length);
-                strings.extend(extractor.extract_elf(&elf, data));
+                strings.extend(extractor.extract_elf(elf, data));
             } else {
-                // Unknown ELF - use r2 if enabled + raw scan
-                if opts.use_r2 {
-                    if let Some(path) = &opts.path {
-                        if let Some(r2_strings) = r2::extract_strings(path, min_length) {
-                            strings.extend(r2_strings);
-                        }
-                    }
+                // Unknown ELF - use r2 if available + raw scan
+                if let Some(r2_strings) = get_r2_strings(opts) {
+                    strings.extend(r2_strings);
                 }
                 // Also do raw scan to catch anything r2 missed
                 let extractor = RustStringExtractor::new(min_length);
-                let rust_strings = extractor.extract_elf(&elf, data);
+                let rust_strings = extractor.extract_elf(elf, data);
                 if rust_strings.is_empty() {
                     strings.extend(extract_raw_strings(data, min_length, None, &segments));
                 } else {
@@ -412,7 +475,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 }
             }
             // Add imports/exports from dynamic symbols, upgrading existing strings
-            let imports = extract_elf_imports(&elf, min_length);
+            let imports = extract_elf_imports(elf, min_length);
             let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
                 .iter()
                 .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
@@ -430,7 +493,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 }
             }
         }
-        Ok(Object::PE(pe)) => {
+        Object::PE(pe) => {
             // Collect PE section names
             let segments: Vec<String> = pe.sections.iter().map(|sec| {
                 String::from_utf8_lossy(&sec.name).trim_end_matches('\0').to_string()
@@ -444,15 +507,11 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 
             if has_go {
                 let extractor = GoStringExtractor::new(min_length);
-                strings.extend(extractor.extract_pe(&pe, data));
+                strings.extend(extractor.extract_pe(pe, data));
             } else {
-                // Unknown PE - use r2 if enabled
-                if opts.use_r2 {
-                    if let Some(path) = &opts.path {
-                        if let Some(r2_strings) = r2::extract_strings(path, min_length) {
-                            strings.extend(r2_strings);
-                        }
-                    }
+                // Unknown PE - use r2 if available
+                if let Some(r2_strings) = get_r2_strings(opts) {
+                    strings.extend(r2_strings);
                 }
                 if strings.is_empty() {
                     strings.extend(extract_raw_strings(data, min_length, None, &segments));
@@ -460,18 +519,19 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
             }
         }
         _ => {
-            // Unknown format - use r2 if enabled, otherwise raw scan
-            if opts.use_r2 {
-                if let Some(path) = &opts.path {
-                    if let Some(r2_strings) = r2::extract_strings(path, min_length) {
-                        strings.extend(r2_strings);
-                    }
-                }
+            // Unknown format - use r2 if available, otherwise raw scan
+            if let Some(r2_strings) = get_r2_strings(opts) {
+                strings.extend(r2_strings);
             }
             if strings.is_empty() && !data.is_empty() {
                 strings.extend(extract_raw_strings(data, min_length, None, &[]));
             }
         }
+    }
+
+    // Apply garbage filter if enabled
+    if opts.filter_garbage {
+        strings.retain(|s| !common::is_garbage(&s.value));
     }
 
     strings
@@ -570,5 +630,348 @@ mod tests {
     #[test]
     fn test_detect_language_invalid() {
         assert_eq!(detect_language(b"not a binary"), "unknown");
+    }
+
+    #[test]
+    fn test_extract_options_new() {
+        let opts = ExtractOptions::new(4);
+        assert_eq!(opts.min_length, 4);
+        assert!(!opts.use_r2);
+        assert!(opts.path.is_none());
+    }
+
+    #[test]
+    fn test_extract_options_with_r2() {
+        let opts = ExtractOptions::new(8).with_r2("/path/to/binary");
+        assert_eq!(opts.min_length, 8);
+        assert!(opts.use_r2);
+        assert_eq!(opts.path, Some("/path/to/binary".to_string()));
+    }
+
+    #[test]
+    fn test_extract_options_default() {
+        let opts = ExtractOptions::default();
+        assert_eq!(opts.min_length, 0);
+        assert!(!opts.use_r2);
+        assert!(opts.path.is_none());
+    }
+
+    #[test]
+    fn test_extract_strings_with_options_empty() {
+        let opts = ExtractOptions::new(4);
+        let strings = extract_strings_with_options(&[], &opts);
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_strings_with_min_length() {
+        let strings1 = extract_strings(&[], 1);
+        let strings2 = extract_strings(&[], 100);
+        assert!(strings1.is_empty());
+        assert!(strings2.is_empty());
+    }
+
+    #[test]
+    fn test_is_go_binary_empty() {
+        assert!(!is_go_binary(&[]));
+    }
+
+    #[test]
+    fn test_is_go_binary_invalid() {
+        assert!(!is_go_binary(b"not a binary"));
+    }
+
+    #[test]
+    fn test_is_rust_binary_empty() {
+        assert!(!is_rust_binary(&[]));
+    }
+
+    #[test]
+    fn test_is_rust_binary_invalid() {
+        assert!(!is_rust_binary(b"not a binary"));
+    }
+
+    // Helper to create minimal ELF header
+    fn minimal_elf() -> Vec<u8> {
+        let mut data = vec![0u8; 64];
+        data[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        data[4] = 2; // 64-bit
+        data[5] = 1; // little endian
+        data[6] = 1; // version
+        data
+    }
+
+    // Helper to create minimal Mach-O header
+    fn minimal_macho() -> Vec<u8> {
+        let mut data = vec![0u8; 32];
+        data[0..4].copy_from_slice(&[0xCF, 0xFA, 0xED, 0xFE]); // 64-bit magic
+        data[4..8].copy_from_slice(&[0x07, 0x00, 0x00, 0x01]); // x86_64
+        data
+    }
+
+    #[test]
+    fn test_is_go_binary_minimal_elf() {
+        let data = minimal_elf();
+        assert!(!is_go_binary(&data)); // No Go sections
+    }
+
+    #[test]
+    fn test_is_rust_binary_minimal_elf() {
+        let data = minimal_elf();
+        assert!(!is_rust_binary(&data)); // No Rust sections
+    }
+
+    #[test]
+    fn test_is_go_binary_minimal_macho() {
+        let data = minimal_macho();
+        assert!(!is_go_binary(&data)); // No Go sections
+    }
+
+    #[test]
+    fn test_is_rust_binary_minimal_macho() {
+        let data = minimal_macho();
+        assert!(!is_rust_binary(&data)); // No Rust sections
+    }
+
+    #[test]
+    fn test_detect_language_minimal_elf() {
+        let data = minimal_elf();
+        assert_eq!(detect_language(&data), "unknown");
+    }
+
+    #[test]
+    fn test_detect_language_minimal_macho() {
+        let data = minimal_macho();
+        assert_eq!(detect_language(&data), "unknown");
+    }
+
+    #[test]
+    fn test_extract_strings_minimal_elf() {
+        let data = minimal_elf();
+        let strings = extract_strings(&data, 4);
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_strings_minimal_macho() {
+        let data = minimal_macho();
+        let strings = extract_strings(&data, 4);
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_raw_strings_basic() {
+        let data = b"Hello\0World\0foo\0";
+        let strings = extract_raw_strings(data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 2);
+        assert!(strings.iter().any(|s| s.value == "Hello"));
+        assert!(strings.iter().any(|s| s.value == "World"));
+    }
+
+    #[test]
+    fn test_extract_raw_strings_with_section() {
+        let data = b"Hello\0World\0";
+        let strings = extract_raw_strings(data, 4, Some(".rodata".to_string()), &[]);
+
+        assert!(strings.iter().all(|s| s.section == Some(".rodata".to_string())));
+    }
+
+    #[test]
+    fn test_extract_raw_strings_segment_detection() {
+        let segment_names = vec!["__TEXT".to_string(), "__DATA".to_string()];
+        let data = b"__TEXT\0Hello\0__DATA\0";
+        let strings = extract_raw_strings(data, 4, None, &segment_names);
+
+        // __TEXT and __DATA should be classified as Section
+        let text = strings.iter().find(|s| s.value == "__TEXT").unwrap();
+        assert_eq!(text.kind, StringKind::Section);
+
+        let data_section = strings.iter().find(|s| s.value == "__DATA").unwrap();
+        assert_eq!(data_section.kind, StringKind::Section);
+
+        // Hello should not be Section
+        let hello = strings.iter().find(|s| s.value == "Hello").unwrap();
+        assert_ne!(hello.kind, StringKind::Section);
+    }
+
+    #[test]
+    fn test_extract_raw_strings_deduplication() {
+        let data = b"Hello\0Hello\0World\0";
+        let strings = extract_raw_strings(data, 4, None, &[]);
+
+        assert_eq!(strings.iter().filter(|s| s.value == "Hello").count(), 1);
+    }
+
+    #[test]
+    fn test_extract_raw_strings_min_length() {
+        let data = b"Hi\0Hey\0Hello\0";
+        let strings = extract_raw_strings(data, 4, None, &[]);
+
+        // Only "Hello" (5 chars) should pass
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "Hello");
+    }
+
+    #[test]
+    fn test_extract_raw_strings_whitespace_trimming() {
+        let data = b"  Hello  \0  World  \0";
+        let strings = extract_raw_strings(data, 4, None, &[]);
+
+        assert!(strings.iter().any(|s| s.value == "Hello"));
+        assert!(strings.iter().any(|s| s.value == "World"));
+    }
+
+    #[test]
+    fn test_extract_raw_strings_non_printable() {
+        let data = b"Hello\x01World\0";
+        let strings = extract_raw_strings(data, 4, None, &[]);
+
+        // Non-printable byte breaks the string
+        assert!(strings.iter().any(|s| s.value == "World"));
+    }
+
+    #[test]
+    fn test_extract_raw_strings_classification() {
+        let data = b"https://example.com\0/usr/bin\0PATH\0hello world\0";
+        let strings = extract_raw_strings(data, 4, None, &[]);
+
+        let url = strings.iter().find(|s| s.value.contains("example")).unwrap();
+        assert_eq!(url.kind, StringKind::Url);
+
+        let path = strings.iter().find(|s| s.value == "/usr/bin").unwrap();
+        assert_eq!(path.kind, StringKind::Path);
+
+        let env = strings.iter().find(|s| s.value == "PATH").unwrap();
+        assert_eq!(env.kind, StringKind::EnvVar);
+    }
+
+    #[test]
+    fn test_collect_macho_segments_minimal() {
+        let data = minimal_macho();
+        if let Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(macho))) =
+            goblin::Object::parse(&data)
+        {
+            let segments = collect_macho_segments(&macho);
+            // Minimal Mach-O has no segments
+            assert!(segments.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_collect_elf_segments_minimal() {
+        let data = minimal_elf();
+        if let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) {
+            let segments = collect_elf_segments(&elf);
+            // Minimal ELF has no sections
+            assert!(segments.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_extract_macho_imports_minimal() {
+        let data = minimal_macho();
+        if let Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(macho))) =
+            goblin::Object::parse(&data)
+        {
+            let imports = extract_macho_imports(&macho, 4);
+            // Minimal Mach-O has no imports
+            assert!(imports.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_extract_elf_imports_minimal() {
+        let data = minimal_elf();
+        if let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) {
+            let imports = extract_elf_imports(&elf, 4);
+            // Minimal ELF has no dynamic symbols
+            assert!(imports.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_extract_options_with_r2_strings() {
+        let fake_r2_strings = vec![
+            ExtractedString {
+                value: "test_string".to_string(),
+                data_offset: 0x1000,
+                section: None,
+                method: StringMethod::R2String,
+                kind: StringKind::Const,
+                library: None,
+            },
+        ];
+        let opts = ExtractOptions::new(4).with_r2_strings(fake_r2_strings.clone());
+        assert!(opts.r2_strings.is_some());
+        assert_eq!(opts.r2_strings.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_get_r2_strings_preextracted() {
+        let fake_r2_strings = vec![
+            ExtractedString {
+                value: "preextracted".to_string(),
+                data_offset: 0x2000,
+                section: Some(".text".to_string()),
+                method: StringMethod::R2String,
+                kind: StringKind::FuncName,
+                library: None,
+            },
+        ];
+        let opts = ExtractOptions::new(4).with_r2_strings(fake_r2_strings);
+        let result = get_r2_strings(&opts);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap()[0].value, "preextracted");
+    }
+
+    #[test]
+    fn test_get_r2_strings_none() {
+        let opts = ExtractOptions::new(4);
+        let result = get_r2_strings(&opts);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_from_object_macho() {
+        let data = minimal_macho();
+        if let Ok(object) = goblin::Object::parse(&data) {
+            let opts = ExtractOptions::new(4);
+            let strings = extract_from_object(&object, &data, &opts);
+            // Minimal Mach-O should return empty
+            assert!(strings.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_extract_from_object_elf() {
+        let data = minimal_elf();
+        if let Ok(object) = goblin::Object::parse(&data) {
+            let opts = ExtractOptions::new(4);
+            let strings = extract_from_object(&object, &data, &opts);
+            // Minimal ELF should return empty
+            assert!(strings.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_extract_from_object_with_r2_strings() {
+        let data = minimal_macho();
+        if let Ok(object) = goblin::Object::parse(&data) {
+            let fake_r2_strings = vec![
+                ExtractedString {
+                    value: "from_r2".to_string(),
+                    data_offset: 0x3000,
+                    section: None,
+                    method: StringMethod::R2String,
+                    kind: StringKind::Const,
+                    library: None,
+                },
+            ];
+            let opts = ExtractOptions::new(4).with_r2_strings(fake_r2_strings);
+            let strings = extract_from_object(&object, &data, &opts);
+            // Should include the pre-extracted r2 string
+            assert!(strings.iter().any(|s| s.value == "from_r2"));
+        }
     }
 }
