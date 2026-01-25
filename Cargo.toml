@@ -1,0 +1,40 @@
+[package]
+name = "strangs"
+version = "0.1.0"
+edition = "2021"
+authors = ["DISSECT Team"]
+description = "Language-aware string extraction for Go and Rust binaries"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/hex/strangs"
+keywords = ["binary", "strings", "go", "rust", "reverse-engineering"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+# Binary parsing
+goblin = "0.8"
+
+# Pattern matching
+regex = "1.11"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Serialization (for JSON output)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+
+[lib]
+name = "strangs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strangs"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
