@@ -50,6 +50,8 @@ pub enum StringMethod {
     R2Symbol,
     /// Found via UTF-16LE wide string scan (Windows)
     WideString,
+    /// Found via XOR decoding (single-byte key)
+    XorDecode,
 }
 
 /// Semantic kind of the extracted string.
@@ -89,6 +91,8 @@ pub enum StringKind {
     IP,
     /// IP:port or host:port combination
     IPPort,
+    /// Hostname (domain name like evil.com)
+    Hostname,
     /// Shell command (pipes, redirects, common commands)
     ShellCmd,
     /// Suspicious path (hidden dirs, rootkit locations, persistence)
@@ -122,6 +126,7 @@ impl StringKind {
         match self {
             StringKind::IP
             | StringKind::IPPort
+            | StringKind::Hostname
             | StringKind::Url
             | StringKind::ShellCmd
             | StringKind::SuspiciousPath
@@ -161,6 +166,7 @@ impl StringKind {
             StringKind::Export => "export",
             StringKind::IP => "ip",
             StringKind::IPPort => "ip:port",
+            StringKind::Hostname => "host",
             StringKind::ShellCmd => "shell",
             StringKind::SuspiciousPath => "sus",
             StringKind::Registry => "registry",

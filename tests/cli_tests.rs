@@ -387,7 +387,10 @@ fn test_cli_trailing_newlines_trimmed() {
 
     // Verify the strings appear without their trailing control characters
     for line in stdout.lines() {
-        if line.contains("hello_world") || line.contains("test_string") || line.contains("another_test") {
+        if line.contains("hello_world")
+            || line.contains("test_string")
+            || line.contains("another_test")
+        {
             // The line should not end with control characters
             assert!(
                 !line.ends_with('\n') && !line.ends_with('\r'),

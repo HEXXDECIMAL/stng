@@ -23,6 +23,9 @@ rayon = "1.10"
 # Fast byte scanning
 memchr = "2.7"
 
+# Multi-pattern matching
+aho-corasick = "1.1"
+
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 

@@ -22,13 +22,14 @@ use strangs::Severity;
 #[command(long_about = "
 strangs extracts and classifies strings from binaries with a focus on
 security research. It highlights IOCs like IPs, URLs, shell commands,
-and suspicious paths while filtering noise.
+and suspicious paths while filtering noise. XOR-encoded strings are
+detected by default.
 
 EXAMPLES:
-    strangs malware.elf              # Full analysis with colors
+    strangs malware.elf              # Full analysis with XOR detection
     strangs -i malware.elf           # Filter out raw scan noise
+    strangs --no-xor malware.elf     # Disable XOR detection
     strangs --json malware.elf       # JSON output for tooling
-    strangs --no-color malware.elf   # Plain text output
 ")]
 struct Cli {
     /// Target binary file to analyze
@@ -74,6 +75,14 @@ struct Cli {
     /// Filter out raw scan noise (keep structured, r2, and symbol data)
     #[arg(short = 'i', long)]
     interesting: bool,
+
+    /// Disable XOR-encoded string detection
+    #[arg(long)]
+    no_xor: bool,
+
+    /// Minimum length for XOR-decoded strings
+    #[arg(long, default_value = "10")]
+    xor_min_length: usize,
 }
 
 // ANSI color codes
@@ -123,6 +132,10 @@ fn main() -> Result<()> {
 
     if use_r2 {
         opts = opts.with_r2(&cli.target);
+    }
+
+    if !cli.no_xor {
+        opts = opts.with_xor(Some(cli.xor_min_length));
     }
 
     let mut strings = strangs::extract_strings_with_options(&data, &opts);
@@ -185,12 +198,17 @@ fn main() -> Result<()> {
         println!();
 
         // Sort by section, then by offset (preserves file order)
-        strings.sort_by(|a, b| match (&a.section, &b.section) {
-            (Some(sa), Some(sb)) => sa.cmp(sb).then(a.data_offset.cmp(&b.data_offset)),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.data_offset.cmp(&b.data_offset),
-        });
+        // When XOR scan is enabled, sort purely by offset to show XOR strings inline
+        if !cli.no_xor {
+            strings.sort_by_key(|s| s.data_offset);
+        } else {
+            strings.sort_by(|a, b| match (&a.section, &b.section) {
+                (Some(sa), Some(sb)) => sa.cmp(sb).then(a.data_offset.cmp(&b.data_offset)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.data_offset.cmp(&b.data_offset),
+            });
+        }
 
         let mut current_section: Option<&str> = None;
 
@@ -201,7 +219,8 @@ fn main() -> Result<()> {
             let section = s.section.as_deref();
 
             // Print section header when section changes
-            if !cli.flat && section != current_section {
+            // Skip section headers when XOR scan is enabled (sorted by offset, not section)
+            if !cli.flat && cli.no_xor && section != current_section {
                 if current_section.is_some() {
                     println!();
                 }
@@ -278,8 +297,9 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
 
     // Format the value, trimming control characters and truncating if very long
     let clean_value = s.value.trim_end_matches(|c: char| c.is_control());
-    let mut value = if clean_value.len() > 120 {
-        format!("{}...", &clean_value[..117])
+    let mut value = if clean_value.chars().count() > 120 {
+        let truncated: String = clean_value.chars().take(117).collect();
+        format!("{}...", truncated)
     } else {
         clean_value.to_string()
     };

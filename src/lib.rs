@@ -37,6 +37,7 @@ mod go;
 mod instr;
 pub mod r2;
 mod rust;
+pub mod xor;
 
 pub use common::{
     is_garbage, BinaryInfo, ExtractedString, OverlayInfo, Severity, StringKind, StringMethod,
@@ -262,6 +263,10 @@ pub struct ExtractOptions {
     pub r2_strings: Option<Vec<ExtractedString>>,
     /// Filter out garbage strings (default: false for library, true for CLI)
     pub filter_garbage: bool,
+    /// Enable XOR string detection (single-byte keys). Default: false.
+    pub xor_scan: bool,
+    /// Minimum length for XOR-decoded strings (default: 10).
+    pub xor_min_length: usize,
 }
 
 impl ExtractOptions {
@@ -272,6 +277,8 @@ impl ExtractOptions {
             path: None,
             r2_strings: None,
             filter_garbage: false,
+            xor_scan: false,
+            xor_min_length: xor::DEFAULT_XOR_MIN_LENGTH,
         }
     }
 
@@ -292,6 +299,17 @@ impl ExtractOptions {
     /// Default is false for library use to give clients full control.
     pub fn with_garbage_filter(mut self, enable: bool) -> Self {
         self.filter_garbage = enable;
+        self
+    }
+
+    /// Enable XOR string detection with optional custom minimum length.
+    /// This scans for strings obfuscated with single-byte XOR keys (0x01-0xFF).
+    /// Default minimum length is 10 characters.
+    pub fn with_xor(mut self, min_length: Option<usize>) -> Self {
+        self.xor_scan = true;
+        if let Some(len) = min_length {
+            self.xor_min_length = len;
+        }
         self
     }
 }
@@ -337,6 +355,11 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
             // Raw scan for all unknown formats
             if !data.is_empty() {
                 strings.extend(extract_raw_strings(data, opts.min_length, None, &[]));
+            }
+
+            // XOR string detection (if enabled)
+            if opts.xor_scan && !data.is_empty() {
+                strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
             }
 
             // Apply garbage filter if enabled
@@ -593,6 +616,12 @@ pub fn extract_from_object(
                 strings.extend(extract_raw_strings(data, min_length, None, &[]));
             }
         }
+    }
+
+    // XOR string detection (if enabled)
+    if opts.xor_scan && !data.is_empty() {
+        let is_pe = matches!(object, Object::PE(_));
+        strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
     }
 
     // Apply garbage filter if enabled

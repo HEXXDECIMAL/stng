@@ -529,13 +529,35 @@ pub fn classify_string(s: &str) -> StringKind {
         let is_go_env = env_name.starts_with("GO") && env_name.len() >= 4;
         let is_known = matches!(
             env_name,
-            "PATH" | "HOME" | "USER" | "TERM" | "SHELL" | "LANG" | "PWD" | "TMP" | "TEMP"
-                | "EDITOR" | "PAGER" | "MAIL" | "LOGNAME" | "HOSTNAME" | "COLUMNS" | "LINES"
-                | "DISPLAY" | "TZ" | "CLICOLOR" | "LSCOLORS" | "COLORTERM"
+            "PATH"
+                | "HOME"
+                | "USER"
+                | "TERM"
+                | "SHELL"
+                | "LANG"
+                | "PWD"
+                | "TMP"
+                | "TEMP"
+                | "EDITOR"
+                | "PAGER"
+                | "MAIL"
+                | "LOGNAME"
+                | "HOSTNAME"
+                | "COLUMNS"
+                | "LINES"
+                | "DISPLAY"
+                | "TZ"
+                | "CLICOLOR"
+                | "LSCOLORS"
+                | "COLORTERM"
         );
 
         // Accept if: has underscore, has digits, Go env var, known pattern, or short (4-8 chars)
-        if has_underscore || has_digit || is_go_env || is_known || (env_name.len() <= 8 && env_name.len() >= 4)
+        if has_underscore
+            || has_digit
+            || is_go_env
+            || is_known
+            || (env_name.len() <= 8 && env_name.len() >= 4)
         {
             return StringKind::EnvVar;
         }
@@ -600,11 +622,49 @@ fn is_shell_command(s: &str) -> bool {
     // Common command prefixes with arguments
     // Note: "exec " removed - too many false positives with "exec format error" etc.
     let cmd_prefixes = [
-        "sed ", "rm ", "kill ", "chmod ", "chown ", "wget ", "curl ", "bash ", "sh ", "/bin/sh",
-        "/bin/bash", "nc ", "ncat ", "python ", "perl ", "ruby ", "php ", "echo ", "cat ",
-        "mkdir ", "cp ", "mv ", "touch ", "tar ", "gzip ", "gunzip ", "base64 ", "openssl ",
-        "dd ", "mount ", "umount ", "iptables ", "systemctl ", "service ", "crontab ",
-        "useradd ", "userdel ", "passwd ", "sudo ", "su ", "chroot ", "nohup ", "setsid ",
+        "sed ",
+        "rm ",
+        "kill ",
+        "chmod ",
+        "chown ",
+        "wget ",
+        "curl ",
+        "bash ",
+        "sh ",
+        "/bin/sh",
+        "/bin/bash",
+        "nc ",
+        "ncat ",
+        "python ",
+        "perl ",
+        "ruby ",
+        "php ",
+        "echo ",
+        "cat ",
+        "mkdir ",
+        "cp ",
+        "mv ",
+        "touch ",
+        "tar ",
+        "gzip ",
+        "gunzip ",
+        "base64 ",
+        "openssl ",
+        "dd ",
+        "mount ",
+        "umount ",
+        "iptables ",
+        "systemctl ",
+        "service ",
+        "crontab ",
+        "useradd ",
+        "userdel ",
+        "passwd ",
+        "sudo ",
+        "su ",
+        "chroot ",
+        "nohup ",
+        "setsid ",
         "eval ",
     ];
 
@@ -866,7 +926,10 @@ mod tests {
 
         // Go runtime metrics should NOT be classified as paths
         assert_eq!(classify_string("/gc/heap/allocs:bytes"), StringKind::Const);
-        assert_eq!(classify_string("/sched/latencies:seconds"), StringKind::Const);
+        assert_eq!(
+            classify_string("/sched/latencies:seconds"),
+            StringKind::Const
+        );
         assert_eq!(
             classify_string("/memory/classes/total:bytes"),
             StringKind::Const
@@ -1241,8 +1304,14 @@ mod tests {
     #[test]
     fn test_classify_string_shell_command_detection() {
         // Shell commands should be classified
-        assert_eq!(classify_string("curl http://evil.com"), StringKind::ShellCmd);
-        assert_eq!(classify_string("cat /etc/passwd | grep root"), StringKind::ShellCmd);
+        assert_eq!(
+            classify_string("curl http://evil.com"),
+            StringKind::ShellCmd
+        );
+        assert_eq!(
+            classify_string("cat /etc/passwd | grep root"),
+            StringKind::ShellCmd
+        );
 
         // .NET generics should NOT be classified as shell commands
         assert_ne!(classify_string("IEnumerable`1"), StringKind::ShellCmd);
