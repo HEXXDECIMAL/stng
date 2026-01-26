@@ -27,7 +27,12 @@ pub fn extract_inline_strings_arm64(
     // Scan through __text looking for BL instructions (ARM64 instructions are 4 bytes)
     let mut i = 0;
     while i + 4 <= text_data.len() {
-        let inst = u32::from_le_bytes(text_data[i..i + 4].try_into().unwrap());
+        // SAFETY: Loop condition ensures we have 4 bytes
+        let inst = u32::from_le_bytes(
+            text_data[i..i + 4]
+                .try_into()
+                .expect("loop ensures 4 bytes available"),
+        );
 
         // Check for BL (branch with link) instruction: 0x94xxxxxx
         if (inst & 0xFC000000) != 0x94000000 {
@@ -99,8 +104,17 @@ fn extract_arm64_string_pattern(
             break;
         }
 
-        let inst1 = u32::from_le_bytes(text_data[pos..pos + 4].try_into().unwrap());
-        let inst2 = u32::from_le_bytes(text_data[pos + 4..pos + 8].try_into().unwrap());
+        // SAFETY: bounds checked above (pos + 12 <= text_data.len())
+        let inst1 = u32::from_le_bytes(
+            text_data[pos..pos + 4]
+                .try_into()
+                .expect("bounds checked above"),
+        );
+        let inst2 = u32::from_le_bytes(
+            text_data[pos + 4..pos + 8]
+                .try_into()
+                .expect("bounds checked above"),
+        );
 
         // Check for ADRP Rx
         let target_reg = inst1 & 0x1F;
@@ -127,10 +141,11 @@ fn extract_arm64_string_pattern(
 
         let mut offset = 8;
         while offset <= 20 && pos + offset + 4 <= text_data.len() {
+            // SAFETY: Loop condition checks bounds
             let inst3_candidate = u32::from_le_bytes(
                 text_data[pos + offset..pos + offset + 4]
                     .try_into()
-                    .unwrap(),
+                    .expect("loop ensures 4 bytes available"),
             );
             let reg_num = inst3_candidate & 0x1F;
 
@@ -432,7 +447,12 @@ fn extract_amd64_first_arg_string(
 
         // Check for LEAQ xxx(RIP), RDI (48 8D 3D xx xx xx xx)
         if text_data[pos] == 0x48 && text_data[pos + 1] == 0x8D && text_data[pos + 2] == 0x3D {
-            let offset = i32::from_le_bytes(text_data[pos + 3..pos + 7].try_into().unwrap());
+            // SAFETY: bounds checked above (pos + 7 <= text_data.len())
+            let offset = i32::from_le_bytes(
+                text_data[pos + 3..pos + 7]
+                    .try_into()
+                    .expect("bounds checked above"),
+            );
             let rip_addr = text_addr + (pos + 7) as u64;
             let str_addr = (rip_addr as i64 + offset as i64) as u64;
 
@@ -447,8 +467,11 @@ fn extract_amd64_first_arg_string(
 
                 // MOVL $imm32, ESI (BE xx xx xx xx)
                 if text_data[pos + off] == 0xBE {
+                    // SAFETY: bounds checked in loop (pos + off + 5 <= text_data.len())
                     str_len = u32::from_le_bytes(
-                        text_data[pos + off + 1..pos + off + 5].try_into().unwrap(),
+                        text_data[pos + off + 1..pos + off + 5]
+                            .try_into()
+                            .expect("bounds checked in loop"),
                     ) as u64;
                     found_len = true;
                     break;
@@ -460,8 +483,11 @@ fn extract_amd64_first_arg_string(
                     && text_data[pos + off + 1] == 0xC7
                     && text_data[pos + off + 2] == 0xC6
                 {
+                    // SAFETY: bounds checked in if condition above
                     str_len = u32::from_le_bytes(
-                        text_data[pos + off + 3..pos + off + 7].try_into().unwrap(),
+                        text_data[pos + off + 3..pos + off + 7]
+                            .try_into()
+                            .expect("bounds checked above"),
                     ) as u64;
                     found_len = true;
                     break;
@@ -527,7 +553,12 @@ fn extract_amd64_key_string(
 
         // LEAQ xxx(RIP), RSI (48 8D 35 xx xx xx xx)
         if text_data[pos] == 0x48 && text_data[pos + 1] == 0x8D && text_data[pos + 2] == 0x35 {
-            let offset = i32::from_le_bytes(text_data[pos + 3..pos + 7].try_into().unwrap());
+            // SAFETY: bounds checked above (pos + 7 <= text_data.len())
+            let offset = i32::from_le_bytes(
+                text_data[pos + 3..pos + 7]
+                    .try_into()
+                    .expect("bounds checked above"),
+            );
             let rip_addr = text_addr + (pos + 7) as u64;
             let str_addr = (rip_addr as i64 + offset as i64) as u64;
 
@@ -541,8 +572,11 @@ fn extract_amd64_key_string(
                 }
 
                 if text_data[pos + off] == 0xBA {
+                    // SAFETY: bounds checked in loop (pos + off + 5 <= text_data.len())
                     str_len = u32::from_le_bytes(
-                        text_data[pos + off + 1..pos + off + 5].try_into().unwrap(),
+                        text_data[pos + off + 1..pos + off + 5]
+                            .try_into()
+                            .expect("bounds checked in loop"),
                     ) as u64;
                     found_len = true;
                     break;

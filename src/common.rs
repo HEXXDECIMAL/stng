@@ -34,7 +34,9 @@ pub struct ExtractedString {
 }
 
 /// Method used to extract the string.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// Indicates the extraction technique, which affects confidence and context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum StringMethod {
     /// Found via pointer+length structure analysis
     Structure,
@@ -55,7 +57,9 @@ pub enum StringMethod {
 }
 
 /// Semantic kind of the extracted string.
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+///
+/// Classifies strings by their purpose and security relevance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
 pub enum StringKind {
     /// Generic string constant
     #[default]
@@ -107,8 +111,10 @@ pub enum StringKind {
     OverlayWide,
 }
 
-/// Severity level for security-focused output
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Severity level for security-focused output.
+///
+/// Used to prioritize and highlight critical findings in security analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
     /// Critical IOCs: IPs, URLs, shell commands, suspicious paths
     High = 0,
@@ -178,7 +184,7 @@ impl StringKind {
 }
 
 /// Binary information needed for string extraction.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BinaryInfo {
     pub is_64bit: bool,
     pub is_little_endian: bool,
@@ -251,7 +257,10 @@ impl BinaryInfo {
 }
 
 /// Information about trailing/overlay data appended after the binary structure.
-#[derive(Debug, Clone)]
+///
+/// Overlay data is commonly used by malware to hide payloads or configuration.
+/// This struct identifies data appended beyond the normal ELF/PE structure boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayInfo {
     /// Offset where the overlay data begins
     pub start_offset: u64,
@@ -263,6 +272,18 @@ pub struct OverlayInfo {
 ///
 /// This scans section data looking for consecutive pointer+length pairs
 /// where the pointer falls within the target blob's address range.
+///
+/// # Arguments
+///
+/// * `section_data` - Raw bytes of the section to scan
+/// * `section_addr` - Virtual address of the section
+/// * `blob_addr` - Virtual address of the target data blob
+/// * `blob_size` - Size of the target data blob in bytes
+/// * `info` - Binary architecture information
+///
+/// # Returns
+///
+/// A vector of string structures found, each representing a potential string reference.
 pub fn find_string_structures(
     section_data: &[u8],
     section_addr: u64,
@@ -299,8 +320,17 @@ fn find_string_structures_64le(
 
     while i < end {
         // Direct LE reads without runtime endianness checks
-        let ptr = u64::from_le_bytes(section_data[i..i + 8].try_into().unwrap());
-        let len = u64::from_le_bytes(section_data[i + 8..i + 16].try_into().unwrap());
+        // SAFETY: We checked i < end where end = section_data.len() - 15, so we have 16 bytes
+        let ptr = u64::from_le_bytes(
+            section_data[i..i + 8]
+                .try_into()
+                .expect("slice bounds checked above"),
+        );
+        let len = u64::from_le_bytes(
+            section_data[i + 8..i + 16]
+                .try_into()
+                .expect("slice bounds checked above"),
+        );
 
         if ptr >= blob_addr
             && ptr < blob_end
@@ -336,28 +366,53 @@ fn find_string_structures_generic(
     }
 
     for i in (0..=section_data.len() - struct_size).step_by(info.ptr_size) {
+        // SAFETY: Loop ensures we have struct_size bytes available at position i
         let (ptr, len) = if info.is_64bit && info.is_little_endian {
-            let ptr = u64::from_le_bytes(section_data[i..i + 8].try_into().unwrap());
-            let len = u64::from_le_bytes(section_data[i + 8..i + 16].try_into().unwrap());
+            let ptr = u64::from_le_bytes(
+                section_data[i..i + 8]
+                    .try_into()
+                    .expect("bounds checked in loop"),
+            );
+            let len = u64::from_le_bytes(
+                section_data[i + 8..i + 16]
+                    .try_into()
+                    .expect("bounds checked in loop"),
+            );
             (ptr, len)
         } else if info.is_64bit {
-            let ptr = u64::from_be_bytes(section_data[i..i + 8].try_into().unwrap());
-            let len = u64::from_be_bytes(section_data[i + 8..i + 16].try_into().unwrap());
+            let ptr = u64::from_be_bytes(
+                section_data[i..i + 8]
+                    .try_into()
+                    .expect("bounds checked in loop"),
+            );
+            let len = u64::from_be_bytes(
+                section_data[i + 8..i + 16]
+                    .try_into()
+                    .expect("bounds checked in loop"),
+            );
             (ptr, len)
         } else if info.is_little_endian {
             let ptr = u64::from(u32::from_le_bytes(
-                section_data[i..i + 4].try_into().unwrap(),
+                section_data[i..i + 4]
+                    .try_into()
+                    .expect("bounds checked in loop"),
             ));
             let len = u64::from(u32::from_le_bytes(
-                section_data[i + 4..i + 8].try_into().unwrap(),
+                section_data[i + 4..i + 8]
+                    .try_into()
+                    .expect("bounds checked in loop"),
             ));
             (ptr, len)
         } else {
             let ptr = u64::from(u32::from_be_bytes(
-                section_data[i..i + 4].try_into().unwrap(),
+                section_data[i..i + 4]
+                    .try_into()
+                    .expect("bounds checked in loop"),
             ));
             let len = u64::from(u32::from_be_bytes(
-                section_data[i + 4..i + 8].try_into().unwrap(),
+                section_data[i + 4..i + 8]
+                    .try_into()
+                    .expect("bounds checked in loop"),
             ));
             (ptr, len)
         };
@@ -381,7 +436,25 @@ fn find_string_structures_generic(
 }
 
 /// Extract strings from a data blob using string structures as boundaries.
-/// The `classify_fn` parameter allows custom classification of strings.
+///
+/// Uses the pointer and length information from string structures to precisely
+/// extract string data, avoiding concatenation issues common in packed string sections.
+///
+/// # Arguments
+///
+/// * `blob` - Raw bytes of the data blob containing string data
+/// * `blob_addr` - Virtual address of the blob
+/// * `structs` - String structures pointing into the blob
+/// * `section_name` - Optional section name for metadata
+/// * `classify_fn` - Function to classify each extracted string
+///
+/// # Type Parameters
+///
+/// * `F` - Closure that takes a string slice and returns its `StringKind`
+///
+/// # Returns
+///
+/// A vector of extracted strings with metadata.
 pub fn extract_from_structures<F>(
     blob: &[u8],
     blob_addr: u64,
