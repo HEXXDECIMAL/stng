@@ -97,6 +97,10 @@ pub enum StringKind {
     Registry,
     /// Base64-encoded data
     Base64,
+    /// Overlay/appended data after ELF/PE boundary (ASCII/UTF-8)
+    Overlay,
+    /// Overlay data in UTF-16LE encoding (common in malware configs)
+    OverlayWide,
 }
 
 /// Severity level for security-focused output
@@ -121,7 +125,9 @@ impl StringKind {
             | StringKind::Url
             | StringKind::ShellCmd
             | StringKind::SuspiciousPath
-            | StringKind::Base64 => Severity::High,
+            | StringKind::Base64
+            | StringKind::Overlay
+            | StringKind::OverlayWide => Severity::High,
 
             StringKind::Path
             | StringKind::FilePath
@@ -159,6 +165,8 @@ impl StringKind {
             StringKind::SuspiciousPath => "sus",
             StringKind::Registry => "registry",
             StringKind::Base64 => "base64",
+            StringKind::Overlay => "overlay",
+            StringKind::OverlayWide => "overlay:16LE",
         }
     }
 }
@@ -234,6 +242,15 @@ impl BinaryInfo {
             ptr_size: if is_64bit { 8 } else { 4 },
         }
     }
+}
+
+/// Information about trailing/overlay data appended after the binary structure.
+#[derive(Debug, Clone)]
+pub struct OverlayInfo {
+    /// Offset where the overlay data begins
+    pub start_offset: u64,
+    /// Size of the overlay data in bytes
+    pub size: u64,
 }
 
 /// Find pointer+length structures that point into a data blob.
@@ -397,12 +414,16 @@ where
 
         // Validate UTF-8
         if let Ok(string) = std::str::from_utf8(bytes) {
+            let trimmed = string.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
             result.push(ExtractedString {
-                value: string.to_string(),
+                value: trimmed.to_string(),
                 data_offset: s.ptr,
                 section: section_name.map(|s| s.to_string()),
                 method: StringMethod::Structure,
-                kind: classify_fn(string),
+                kind: classify_fn(trimmed),
                 library: None,
             });
         }

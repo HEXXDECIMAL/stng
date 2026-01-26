@@ -492,7 +492,12 @@ pub fn classify_string(s: &str) -> StringKind {
     }
 
     // File paths - check for suspicious patterns
+    // Skip Go runtime metrics (e.g., /gc/heap/allocs:bytes, /sched/latencies:seconds)
     if s.starts_with('/') || s.starts_with("C:\\") || s.starts_with("./") || s.starts_with("../") {
+        // Go runtime metrics start with / and have colon (not URLs like file://)
+        if s.starts_with('/') && s.contains(':') && !s.contains("://") {
+            return StringKind::Const;
+        }
         if is_suspicious_path(s) {
             return StringKind::SuspiciousPath;
         }
@@ -505,39 +510,35 @@ pub fn classify_string(s: &str) -> StringKind {
     }
 
     // Environment variable names (UPPERCASE, optionally with _ and digits)
-    // Must contain underscore OR digits OR be a known common pattern OR be short enough
+    // May have trailing = for assignment context (e.g., "GOMEMLIMIT=")
     // This avoids matching x86 instruction patterns like "AWAVAUATSH"
-    if s.len() >= 3
-        && s.chars()
+    let env_name = s.strip_suffix('=').unwrap_or(s);
+    if env_name.len() >= 3
+        && env_name
+            .chars()
             .next()
             .map(|c| c.is_ascii_uppercase())
             .unwrap_or(false)
-        && s.chars()
+        && env_name
+            .chars()
             .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
     {
-        let has_underscore = s.contains('_');
-        let has_digit = s.chars().any(|c| c.is_ascii_digit());
-        let is_known_short = matches!(
-            s,
+        let has_underscore = env_name.contains('_');
+        let has_digit = env_name.chars().any(|c| c.is_ascii_digit());
+        // Go runtime env vars (GODEBUG, GOTRACEBACK, GOMAXPROCS, GOMEMLIMIT, etc.)
+        let is_go_env = env_name.starts_with("GO") && env_name.len() >= 4;
+        let is_known = matches!(
+            env_name,
             "PATH" | "HOME" | "USER" | "TERM" | "SHELL" | "LANG" | "PWD" | "TMP" | "TEMP"
                 | "EDITOR" | "PAGER" | "MAIL" | "LOGNAME" | "HOSTNAME" | "COLUMNS" | "LINES"
                 | "DISPLAY" | "TZ" | "CLICOLOR" | "LSCOLORS" | "COLORTERM"
         );
 
-        // Accept if: has underscore, has digits (GO111MODULE), known pattern, or short
-        if has_underscore || has_digit || is_known_short || (s.len() <= 8 && s.len() >= 4) {
+        // Accept if: has underscore, has digits, Go env var, known pattern, or short (4-8 chars)
+        if has_underscore || has_digit || is_go_env || is_known || (env_name.len() <= 8 && env_name.len() >= 4)
+        {
             return StringKind::EnvVar;
         }
-    }
-
-    // Error messages
-    if s.contains("error")
-        || s.contains("failed")
-        || s.contains("invalid")
-        || s.contains("cannot")
-        || s.contains("unable")
-    {
-        return StringKind::Error;
     }
 
     StringKind::Const
@@ -550,6 +551,25 @@ fn is_shell_command(s: &str) -> bool {
         return false;
     }
 
+    // Skip if it looks like a .NET generic type (contains backtick followed by digit)
+    // e.g., IEnumerable`1, Dictionary`2, etc.
+    if s.contains('`') {
+        // Check if it's a .NET generic pattern: Name`N where N is a digit
+        let has_generic_pattern = s
+            .chars()
+            .zip(s.chars().skip(1))
+            .any(|(a, b)| a == '`' && b.is_ascii_digit());
+        if has_generic_pattern {
+            return false;
+        }
+    }
+
+    // Skip strings that look like code/programming expressions
+    // These contain comparison operators that wouldn't appear in shell commands
+    if s.contains("!=") || s.contains("==") || s.contains("<=") || s.contains(">=") {
+        return false;
+    }
+
     // Shell operators and redirects
     if s.contains(" | ")
         || s.contains(">/dev/null")
@@ -557,19 +577,35 @@ fn is_shell_command(s: &str) -> bool {
         || s.contains("2>&1")
         || s.contains(" && ")
         || s.contains("$(")
-        || s.contains("`")
     {
         return true;
     }
 
+    // Backtick command substitution - must start with backtick and look like actual command
+    // Skip documentation references like "see `go doc ...`" or inline code in error messages
+    if let Some(rest) = s.strip_prefix('`') {
+        if let Some(end) = rest.find('`') {
+            let content = &rest[..end];
+            // Must have command-like content and not look like a doc reference
+            if !content.is_empty()
+                && content.contains(' ')
+                && !content.starts_with("go ")
+                && !content.contains(" doc ")
+            {
+                return true;
+            }
+        }
+    }
+
     // Common command prefixes with arguments
+    // Note: "exec " removed - too many false positives with "exec format error" etc.
     let cmd_prefixes = [
         "sed ", "rm ", "kill ", "chmod ", "chown ", "wget ", "curl ", "bash ", "sh ", "/bin/sh",
         "/bin/bash", "nc ", "ncat ", "python ", "perl ", "ruby ", "php ", "echo ", "cat ",
         "mkdir ", "cp ", "mv ", "touch ", "tar ", "gzip ", "gunzip ", "base64 ", "openssl ",
         "dd ", "mount ", "umount ", "iptables ", "systemctl ", "service ", "crontab ",
         "useradd ", "userdel ", "passwd ", "sudo ", "su ", "chroot ", "nohup ", "setsid ",
-        "exec ", "eval ",
+        "eval ",
     ];
 
     for prefix in cmd_prefixes {
@@ -658,18 +694,40 @@ fn classify_ip(s: &str) -> Option<StringKind> {
     None
 }
 
-/// Check if a string is a valid IPv4 address
+/// Check if a string is a valid IPv4 address (not a version number)
 fn is_ipv4(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
     if parts.len() != 4 {
         return false;
     }
 
-    for part in parts {
+    let mut octets = [0u8; 4];
+    for (i, part) in parts.iter().enumerate() {
         match part.parse::<u8>() {
-            Ok(_) => continue,
+            Ok(n) => octets[i] = n,
             Err(_) => return false,
         }
+    }
+
+    // Filter out common version number patterns (false positives)
+    // Pattern: X.0.0.0 (e.g., 1.0.0.0, 4.0.0.0, 11.0.0.0) - assembly versions
+    if octets[1] == 0 && octets[2] == 0 && octets[3] == 0 {
+        return false;
+    }
+
+    // Pattern: X.Y.0.0 (e.g., 2.1.0.0, 4.5.0.0) - also common versions
+    if octets[2] == 0 && octets[3] == 0 {
+        return false;
+    }
+
+    // 0.0.0.0 is not a useful IOC
+    if octets == [0, 0, 0, 0] {
+        return false;
+    }
+
+    // 127.x.x.x localhost is rarely an IOC
+    if octets[0] == 127 {
+        return false;
     }
 
     true
@@ -774,6 +832,13 @@ mod tests {
         assert_eq!(classify_string("XDG_CONFIG_HOME"), StringKind::EnvVar);
         assert_eq!(classify_string("GO111MODULE"), StringKind::EnvVar);
 
+        // Go runtime env vars (no underscore, but start with GO)
+        assert_eq!(classify_string("GODEBUG"), StringKind::EnvVar);
+        assert_eq!(classify_string("GOTRACEBACK"), StringKind::EnvVar);
+        assert_eq!(classify_string("GOMAXPROCS"), StringKind::EnvVar);
+        assert_eq!(classify_string("GOMEMLIMIT"), StringKind::EnvVar);
+        assert_eq!(classify_string("GOMEMLIMIT="), StringKind::EnvVar);
+
         // Should NOT be classified as EnvVar (too short without underscore)
         assert_ne!(classify_string("THE"), StringKind::EnvVar);
         assert_ne!(classify_string("FOR"), StringKind::EnvVar);
@@ -798,13 +863,18 @@ mod tests {
         assert_eq!(classify_string("/usr/bin/ls"), StringKind::Path);
         assert_eq!(classify_string("./config.yaml"), StringKind::Path);
         assert_eq!(classify_string("../parent/file"), StringKind::Path);
-    }
 
-    #[test]
-    fn test_classify_string_errors() {
-        assert_eq!(classify_string("connection failed"), StringKind::Error);
-        assert_eq!(classify_string("invalid argument"), StringKind::Error);
-        assert_eq!(classify_string("cannot open file"), StringKind::Error);
+        // Go runtime metrics should NOT be classified as paths
+        assert_eq!(classify_string("/gc/heap/allocs:bytes"), StringKind::Const);
+        assert_eq!(classify_string("/sched/latencies:seconds"), StringKind::Const);
+        assert_eq!(
+            classify_string("/memory/classes/total:bytes"),
+            StringKind::Const
+        );
+        assert_eq!(
+            classify_string("/cpu/classes/gc/mark/assist:cpu-seconds"),
+            StringKind::Const
+        );
     }
 
     // Note: Section detection is now done via goblin address matching,
@@ -911,27 +981,6 @@ mod tests {
     fn test_classify_string_relative_paths() {
         assert_eq!(classify_string("./config.json"), StringKind::Path);
         assert_eq!(classify_string("../parent/dir"), StringKind::Path);
-    }
-
-    #[test]
-    fn test_classify_string_error_keywords() {
-        assert_eq!(
-            classify_string("error: something went wrong"),
-            StringKind::Error
-        );
-        assert_eq!(
-            classify_string("operation failed unexpectedly"),
-            StringKind::Error
-        );
-        assert_eq!(classify_string("invalid input provided"), StringKind::Error);
-        assert_eq!(
-            classify_string("cannot connect to server"),
-            StringKind::Error
-        );
-        assert_eq!(
-            classify_string("unable to parse response"),
-            StringKind::Error
-        );
     }
 
     #[test]
@@ -1093,5 +1142,121 @@ mod tests {
 
         // Should reject zero-length strings
         assert!(structs.is_empty());
+    }
+
+    #[test]
+    fn test_is_ipv4_valid_ips() {
+        // Real IP addresses should be detected
+        assert!(is_ipv4("168.235.103.57"));
+        assert!(is_ipv4("192.168.1.1"));
+        assert!(is_ipv4("10.0.0.1"));
+        assert!(is_ipv4("8.8.8.8"));
+        assert!(is_ipv4("1.2.3.4"));
+        assert!(is_ipv4("255.255.255.255"));
+    }
+
+    #[test]
+    fn test_is_ipv4_rejects_version_numbers() {
+        // Assembly/software version patterns should NOT be detected as IPs
+        // Pattern: X.0.0.0
+        assert!(!is_ipv4("1.0.0.0"));
+        assert!(!is_ipv4("4.0.0.0"));
+        assert!(!is_ipv4("11.0.0.0"));
+        assert!(!is_ipv4("255.0.0.0"));
+
+        // Pattern: X.Y.0.0
+        assert!(!is_ipv4("2.1.0.0"));
+        assert!(!is_ipv4("4.5.0.0"));
+        assert!(!is_ipv4("10.2.0.0"));
+    }
+
+    #[test]
+    fn test_is_ipv4_rejects_special_addresses() {
+        // 0.0.0.0 is not a useful IOC
+        assert!(!is_ipv4("0.0.0.0"));
+
+        // Localhost is rarely an IOC
+        assert!(!is_ipv4("127.0.0.1"));
+        assert!(!is_ipv4("127.0.0.2"));
+        assert!(!is_ipv4("127.255.255.255"));
+    }
+
+    #[test]
+    fn test_is_ipv4_rejects_invalid() {
+        // Not valid IP formats
+        assert!(!is_ipv4(""));
+        assert!(!is_ipv4("1.2.3"));
+        assert!(!is_ipv4("1.2.3.4.5"));
+        assert!(!is_ipv4("256.1.1.1"));
+        assert!(!is_ipv4("1.2.3.abc"));
+        assert!(!is_ipv4("hello"));
+    }
+
+    #[test]
+    fn test_is_shell_command_detects_commands() {
+        // Should detect shell commands
+        assert!(is_shell_command("ls -la | grep foo"));
+        assert!(is_shell_command("cat file 2>/dev/null"));
+        assert!(is_shell_command("echo test && rm -rf /tmp"));
+        assert!(is_shell_command("curl http://example.com"));
+        assert!(is_shell_command("wget http://example.com"));
+        assert!(is_shell_command("/bin/bash -c 'echo test'"));
+        assert!(is_shell_command("$(whoami)"));
+    }
+
+    #[test]
+    fn test_is_shell_command_rejects_dotnet_generics() {
+        // .NET generic types should NOT be detected as shell commands
+        assert!(!is_shell_command("IEnumerable`1"));
+        assert!(!is_shell_command("Dictionary`2"));
+        assert!(!is_shell_command("List`1"));
+        assert!(!is_shell_command("Func`3"));
+        assert!(!is_shell_command("Action`1"));
+        assert!(!is_shell_command("System.Collections.Generic.List`1"));
+    }
+
+    #[test]
+    fn test_is_shell_command_backtick_requires_content() {
+        // Backtick must have command-like content with spaces
+        assert!(is_shell_command("`ls -la`"));
+        assert!(is_shell_command("echo `whoami foo`"));
+
+        // Single backtick or empty content should not match
+        assert!(!is_shell_command("foo`bar"));
+        assert!(!is_shell_command("test`"));
+    }
+
+    #[test]
+    fn test_classify_string_ip_detection() {
+        // Real IPs should be classified as IP
+        assert_eq!(classify_string("168.235.103.57"), StringKind::IP);
+        assert_eq!(classify_string("192.168.1.100"), StringKind::IP);
+
+        // Version numbers should NOT be classified as IP
+        assert_ne!(classify_string("1.0.0.0"), StringKind::IP);
+        assert_ne!(classify_string("4.0.0.0"), StringKind::IP);
+        assert_ne!(classify_string("2.1.0.0"), StringKind::IP);
+    }
+
+    #[test]
+    fn test_classify_string_shell_command_detection() {
+        // Shell commands should be classified
+        assert_eq!(classify_string("curl http://evil.com"), StringKind::ShellCmd);
+        assert_eq!(classify_string("cat /etc/passwd | grep root"), StringKind::ShellCmd);
+
+        // .NET generics should NOT be classified as shell commands
+        assert_ne!(classify_string("IEnumerable`1"), StringKind::ShellCmd);
+        assert_ne!(classify_string("Dictionary`2"), StringKind::ShellCmd);
+
+        // Go runtime strings should NOT be classified as shell commands
+        assert_ne!(
+            classify_string("s.allocCount != s.nelems && freeIndex == s.nelems"),
+            StringKind::ShellCmd
+        );
+        assert_ne!(
+            classify_string("malformed GOMEMLIMIT; see `go doc runtime/debug.SetMemoryLimit`"),
+            StringKind::ShellCmd
+        );
+        assert_ne!(classify_string("exec format error"), StringKind::ShellCmd);
     }
 }

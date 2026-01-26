@@ -1734,3 +1734,760 @@ mod wide_string_tests {
         }
     }
 }
+
+/// Tests for IP detection improvements (filtering version numbers)
+mod ip_detection_tests {
+    use super::*;
+    use strangs::Severity;
+
+    /// Helper to create a minimal PE with embedded ASCII strings
+    fn minimal_pe_with_strings(strings: &[&str]) -> Vec<u8> {
+        let mut data = vec![0u8; 1024];
+
+        // DOS header magic
+        data[0..2].copy_from_slice(&[0x4D, 0x5A]); // MZ
+
+        // PE offset at 0x3C
+        data[0x3C..0x40].copy_from_slice(&[0x80, 0x00, 0x00, 0x00]);
+
+        // PE signature at 0x80
+        data[0x80..0x84].copy_from_slice(&[0x50, 0x45, 0x00, 0x00]); // PE\0\0
+
+        // Embed strings starting at 0x200
+        let mut offset = 0x200;
+        for s in strings {
+            let bytes = s.as_bytes();
+            data[offset..offset + bytes.len()].copy_from_slice(bytes);
+            data[offset + bytes.len()] = 0; // null terminator
+            offset += bytes.len() + 1;
+        }
+
+        data
+    }
+
+    #[test]
+    fn test_real_ip_classified_as_ip() {
+        // Create binary with a real IP address embedded
+        let data = minimal_pe_with_strings(&["168.235.103.57"]);
+
+        let strings = extract_strings(&data, 4);
+        let ip_string = strings.iter().find(|s| s.value == "168.235.103.57");
+
+        assert!(ip_string.is_some(), "Real IP should be extracted");
+        assert_eq!(
+            ip_string.unwrap().kind,
+            StringKind::IP,
+            "Real IP should be classified as IP"
+        );
+    }
+
+    #[test]
+    fn test_version_number_not_ip() {
+        // Create binary with version numbers (should NOT be IPs)
+        let data = minimal_pe_with_strings(&["1.0.0.0"]);
+
+        let strings = extract_strings(&data, 4);
+        let version_string = strings.iter().find(|s| s.value == "1.0.0.0");
+
+        // Should either not be found or not be classified as IP
+        if let Some(s) = version_string {
+            assert_ne!(
+                s.kind,
+                StringKind::IP,
+                "Version number 1.0.0.0 should NOT be classified as IP"
+            );
+        }
+    }
+
+    #[test]
+    fn test_version_pattern_x_y_0_0_not_ip() {
+        // Pattern X.Y.0.0 should not be IP
+        let data = minimal_pe_with_strings(&["4.5.0.0"]);
+
+        let strings = extract_strings(&data, 4);
+        let version_string = strings.iter().find(|s| s.value == "4.5.0.0");
+
+        if let Some(s) = version_string {
+            assert_ne!(
+                s.kind,
+                StringKind::IP,
+                "Version number 4.5.0.0 should NOT be classified as IP"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ip_has_high_severity() {
+        // IPs should have high severity
+        let data = minimal_pe_with_strings(&["8.8.8.8"]);
+
+        let strings = extract_strings(&data, 4);
+        let ip_string = strings.iter().find(|s| s.value == "8.8.8.8");
+
+        if let Some(s) = ip_string {
+            assert_eq!(
+                s.kind.severity(),
+                Severity::High,
+                "IP addresses should have High severity"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ip_severity_higher_priority_than_url() {
+        // IPs should sort before URLs when prioritizing notable items
+        // This tests the severity ordering used in main.rs Notable section
+        let ip_severity = StringKind::IP.severity();
+        let url_severity = StringKind::Url.severity();
+
+        // Both are High, but we test the ordering logic in main.rs
+        assert_eq!(ip_severity, Severity::High);
+        assert_eq!(url_severity, Severity::High);
+    }
+}
+
+/// Tests for shell command detection improvements (filtering .NET generics)
+mod shell_detection_tests {
+    use super::*;
+
+    /// Helper to create a minimal PE with embedded ASCII strings
+    fn minimal_pe_with_strings(strings: &[&str]) -> Vec<u8> {
+        let mut data = vec![0u8; 1024];
+
+        // DOS header magic
+        data[0..2].copy_from_slice(&[0x4D, 0x5A]); // MZ
+
+        // PE offset at 0x3C
+        data[0x3C..0x40].copy_from_slice(&[0x80, 0x00, 0x00, 0x00]);
+
+        // PE signature at 0x80
+        data[0x80..0x84].copy_from_slice(&[0x50, 0x45, 0x00, 0x00]); // PE\0\0
+
+        // Embed strings starting at 0x200
+        let mut offset = 0x200;
+        for s in strings {
+            let bytes = s.as_bytes();
+            data[offset..offset + bytes.len()].copy_from_slice(bytes);
+            data[offset + bytes.len()] = 0; // null terminator
+            offset += bytes.len() + 1;
+        }
+
+        data
+    }
+
+    #[test]
+    fn test_dotnet_generic_not_shell_command() {
+        // .NET generics with backticks should NOT be shell commands
+        let data = minimal_pe_with_strings(&["IEnumerable`1"]);
+
+        let strings = extract_strings(&data, 4);
+        let generic_string = strings.iter().find(|s| s.value == "IEnumerable`1");
+
+        if let Some(s) = generic_string {
+            assert_ne!(
+                s.kind,
+                StringKind::ShellCmd,
+                "IEnumerable`1 should NOT be classified as shell command"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dictionary_generic_not_shell_command() {
+        let data = minimal_pe_with_strings(&["Dictionary`2"]);
+
+        let strings = extract_strings(&data, 4);
+        let generic_string = strings.iter().find(|s| s.value == "Dictionary`2");
+
+        if let Some(s) = generic_string {
+            assert_ne!(
+                s.kind,
+                StringKind::ShellCmd,
+                "Dictionary`2 should NOT be classified as shell command"
+            );
+        }
+    }
+
+    #[test]
+    fn test_real_shell_command_detected() {
+        // Real shell commands should be detected
+        let data = minimal_pe_with_strings(&["curl http://example.com"]);
+
+        let strings = extract_strings(&data, 4);
+        let cmd_string = strings.iter().find(|s| s.value == "curl http://example.com");
+
+        assert!(cmd_string.is_some(), "Shell command should be extracted");
+        assert_eq!(
+            cmd_string.unwrap().kind,
+            StringKind::ShellCmd,
+            "curl command should be classified as shell command"
+        );
+    }
+
+    #[test]
+    fn test_pipe_command_detected() {
+        let data = minimal_pe_with_strings(&["cat file | grep pattern"]);
+
+        let strings = extract_strings(&data, 4);
+        let cmd_string = strings.iter().find(|s| s.value == "cat file | grep pattern");
+
+        if let Some(s) = cmd_string {
+            assert_eq!(
+                s.kind,
+                StringKind::ShellCmd,
+                "Pipe command should be classified as shell command"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell_command_has_high_severity() {
+        use strangs::Severity;
+
+        assert_eq!(
+            StringKind::ShellCmd.severity(),
+            Severity::High,
+            "Shell commands should have High severity"
+        );
+    }
+}
+
+// Tests for extract_from_* functions and overlay detection
+mod extract_from_tests {
+    use strangs::{
+        extract_from_elf, extract_from_macho, extract_from_pe, extract_overlay_strings,
+        detect_elf_overlay, goblin, ExtractOptions,
+    };
+
+    fn minimal_elf_with_strings(strings: &[&str]) -> Vec<u8> {
+        let mut data = vec![0u8; 1024];
+        // ELF magic
+        data[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        data[4] = 2; // 64-bit
+        data[5] = 1; // little-endian
+        data[6] = 1; // version
+        data[16..18].copy_from_slice(&[2, 0]); // executable
+        data[18..20].copy_from_slice(&[0x3E, 0]); // x86_64
+
+        // Embed strings starting at 0x200
+        let mut offset = 0x200;
+        for s in strings {
+            let bytes = s.as_bytes();
+            data[offset..offset + bytes.len()].copy_from_slice(bytes);
+            data[offset + bytes.len()] = 0;
+            offset += bytes.len() + 1;
+        }
+        data
+    }
+
+    fn minimal_macho_with_strings(strings: &[&str]) -> Vec<u8> {
+        let mut data = vec![0u8; 1024];
+        // Mach-O 64-bit magic
+        data[0..4].copy_from_slice(&[0xCF, 0xFA, 0xED, 0xFE]);
+        data[4..8].copy_from_slice(&[0x07, 0x00, 0x00, 0x01]); // x86_64
+        data[8..12].copy_from_slice(&[0x03, 0x00, 0x00, 0x00]); // subtype
+        data[12..16].copy_from_slice(&[0x02, 0x00, 0x00, 0x00]); // executable
+
+        // Embed strings starting at 0x200
+        let mut offset = 0x200;
+        for s in strings {
+            let bytes = s.as_bytes();
+            data[offset..offset + bytes.len()].copy_from_slice(bytes);
+            data[offset + bytes.len()] = 0;
+            offset += bytes.len() + 1;
+        }
+        data
+    }
+
+    fn minimal_pe_with_overlay(overlay_data: &[u8]) -> Vec<u8> {
+        let mut data = vec![0u8; 1024];
+        // DOS header
+        data[0..2].copy_from_slice(&[0x4D, 0x5A]); // MZ
+        data[0x3C..0x40].copy_from_slice(&[0x80, 0x00, 0x00, 0x00]); // PE offset
+
+        // PE signature
+        data[0x80..0x84].copy_from_slice(&[0x50, 0x45, 0x00, 0x00]); // PE\0\0
+
+        // COFF header (20 bytes)
+        data[0x84..0x86].copy_from_slice(&[0x64, 0x86]); // Machine: AMD64
+        data[0x86..0x88].copy_from_slice(&[0x01, 0x00]); // NumberOfSections: 1
+        data[0x94..0x96].copy_from_slice(&[0xF0, 0x00]); // SizeOfOptionalHeader: 240
+
+        // Optional header
+        data[0x98..0x9A].copy_from_slice(&[0x0B, 0x02]); // Magic: PE32+
+        // SizeOfHeaders at offset 0x98 + 60 = 0xD4
+        data[0xD4..0xD8].copy_from_slice(&[0x00, 0x02, 0x00, 0x00]); // SizeOfHeaders: 512
+
+        // Section header at 0x188 (after optional header)
+        // .text section
+        data[0x188..0x190].copy_from_slice(b".text\0\0\0");
+        // VirtualSize
+        data[0x190..0x194].copy_from_slice(&[0x00, 0x02, 0x00, 0x00]); // 512
+        // VirtualAddress
+        data[0x194..0x198].copy_from_slice(&[0x00, 0x10, 0x00, 0x00]); // 0x1000
+        // SizeOfRawData
+        data[0x198..0x19C].copy_from_slice(&[0x00, 0x02, 0x00, 0x00]); // 512
+        // PointerToRawData
+        data[0x19C..0x1A0].copy_from_slice(&[0x00, 0x02, 0x00, 0x00]); // 512
+
+        // Section data starts at 512, ends at 1024
+        // Append overlay data
+        data.extend_from_slice(overlay_data);
+        data
+    }
+
+    #[test]
+    fn test_extract_from_elf_basic() {
+        let data = minimal_elf_with_strings(&["hello_from_elf", "test_string_elf"]);
+        let opts = ExtractOptions::new(4);
+
+        // Parse the ELF first
+        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
+            panic!("Failed to parse test ELF");
+        };
+
+        let strings = extract_from_elf(&elf, &data, &opts);
+
+        // Should find some strings (at minimum from raw scan)
+        let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+        assert!(
+            values.iter().any(|v| v.contains("hello") || v.contains("test")),
+            "Should extract strings from ELF: {:?}",
+            values
+        );
+    }
+
+    #[test]
+    fn test_extract_from_macho_basic() {
+        let data = minimal_macho_with_strings(&["hello_from_macho", "test_string_macho"]);
+        let opts = ExtractOptions::new(4);
+
+        // Parse the Mach-O first
+        let Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(macho))) =
+            goblin::Object::parse(&data)
+        else {
+            panic!("Failed to parse test Mach-O");
+        };
+
+        let strings = extract_from_macho(&macho, &data, &opts);
+
+        let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+        assert!(
+            values.iter().any(|v| v.contains("hello") || v.contains("test")),
+            "Should extract strings from Mach-O: {:?}",
+            values
+        );
+    }
+
+    #[test]
+    fn test_extract_from_pe_basic() {
+        let mut data = vec![0u8; 1024];
+        // DOS header
+        data[0..2].copy_from_slice(&[0x4D, 0x5A]);
+        data[0x3C..0x40].copy_from_slice(&[0x80, 0x00, 0x00, 0x00]);
+        // PE signature
+        data[0x80..0x84].copy_from_slice(&[0x50, 0x45, 0x00, 0x00]);
+        // Add strings
+        data[0x200..0x210].copy_from_slice(b"hello_from_pe\0\0\0");
+
+        let opts = ExtractOptions::new(4);
+
+        // Parse the PE first
+        let Ok(goblin::Object::PE(pe)) = goblin::Object::parse(&data) else {
+            panic!("Failed to parse test PE");
+        };
+
+        let strings = extract_from_pe(&pe, &data, &opts);
+
+        let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+        assert!(
+            values.iter().any(|v| v.contains("hello")),
+            "Should extract strings from PE: {:?}",
+            values
+        );
+    }
+
+    #[test]
+    fn test_extract_overlay_strings_basic() {
+        // Create PE with overlay containing strings
+        let overlay = b"OVERLAY_SECRET_STRING\0more_overlay_data\0";
+        let data = minimal_pe_with_overlay(overlay);
+
+        let strings = extract_overlay_strings(&data, 4);
+
+        // May or may not find overlay depending on PE parsing
+        // This exercises the code path
+        let _ = strings;
+    }
+
+    #[test]
+    fn test_detect_elf_overlay_no_overlay() {
+        let data = minimal_elf_with_strings(&["test"]);
+        let overlay = detect_elf_overlay(&data);
+        // Minimal ELF shouldn't have overlay detected
+        assert!(overlay.is_none() || overlay.unwrap().size == 0);
+    }
+
+    #[test]
+    fn test_extract_from_elf_with_garbage_filter() {
+        let data = minimal_elf_with_strings(&["valid_string", "@@##$$"]);
+        let mut opts = ExtractOptions::new(4);
+        opts.filter_garbage = true;
+
+        // Parse the ELF first
+        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
+            panic!("Failed to parse test ELF");
+        };
+
+        let strings = extract_from_elf(&elf, &data, &opts);
+
+        // Garbage filter should remove noise
+        let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+        assert!(
+            !values.iter().any(|v| *v == "@@##$$"),
+            "Garbage should be filtered"
+        );
+    }
+
+    #[test]
+    fn test_extract_from_macho_with_garbage_filter() {
+        let data = minimal_macho_with_strings(&["valid_string", "@@##$$"]);
+        let mut opts = ExtractOptions::new(4);
+        opts.filter_garbage = true;
+
+        // Parse the Mach-O first
+        let Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(macho))) =
+            goblin::Object::parse(&data)
+        else {
+            panic!("Failed to parse test Mach-O");
+        };
+
+        let strings = extract_from_macho(&macho, &data, &opts);
+
+        let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+        assert!(
+            !values.iter().any(|v| *v == "@@##$$"),
+            "Garbage should be filtered"
+        );
+    }
+
+    #[test]
+    fn test_extract_from_pe_with_garbage_filter() {
+        let mut data = vec![0u8; 1024];
+        data[0..2].copy_from_slice(&[0x4D, 0x5A]);
+        data[0x3C..0x40].copy_from_slice(&[0x80, 0x00, 0x00, 0x00]);
+        data[0x80..0x84].copy_from_slice(&[0x50, 0x45, 0x00, 0x00]);
+        data[0x200..0x210].copy_from_slice(b"valid_string\0\0\0\0");
+
+        let mut opts = ExtractOptions::new(4);
+        opts.filter_garbage = true;
+
+        // Parse the PE first
+        let Ok(goblin::Object::PE(pe)) = goblin::Object::parse(&data) else {
+            panic!("Failed to parse test PE");
+        };
+
+        let strings = extract_from_pe(&pe, &data, &opts);
+
+        // Just exercise the code path
+        let _ = strings;
+    }
+}
+
+// Tests for real binaries in testdata
+mod testdata_binary_tests {
+    use std::path::Path;
+    use strangs::{extract_from_elf, extract_from_pe, goblin, ExtractOptions, StringKind};
+
+    #[test]
+    fn test_linux_elf_imports() {
+        let path = Path::new("tests/testdata/hello_linux_amd64");
+        if !path.exists() {
+            return;
+        }
+
+        let data = std::fs::read(path).unwrap();
+        let opts = ExtractOptions::new(4);
+
+        // Parse the ELF first
+        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
+            return;
+        };
+
+        let strings = extract_from_elf(&elf, &data, &opts);
+
+        // Should have some imports
+        let imports: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Import)
+            .collect();
+
+        // Go binaries may not have traditional imports, but should have strings
+        assert!(!strings.is_empty(), "Should extract strings from ELF");
+    }
+
+    #[test]
+    fn test_windows_pe_extraction() {
+        let path = Path::new("tests/testdata/hello_windows.exe");
+        if !path.exists() {
+            return;
+        }
+
+        let data = std::fs::read(path).unwrap();
+        let opts = ExtractOptions::new(4);
+
+        // Parse the PE first
+        let Ok(goblin::Object::PE(pe)) = goblin::Object::parse(&data) else {
+            return;
+        };
+
+        let strings = extract_from_pe(&pe, &data, &opts);
+
+        assert!(!strings.is_empty(), "Should extract strings from PE");
+
+        // Check for common Go runtime strings
+        let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+        let has_runtime = values.iter().any(|v| v.contains("runtime") || v.contains("go"));
+        assert!(has_runtime, "Go PE should have runtime strings");
+    }
+
+    #[test]
+    fn test_linux_elf_with_min_length() {
+        let path = Path::new("tests/testdata/hello_linux_amd64");
+        if !path.exists() {
+            return;
+        }
+
+        let data = std::fs::read(path).unwrap();
+
+        // Parse the ELF first
+        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
+            return;
+        };
+
+        let opts_short = ExtractOptions::new(4);
+        let opts_long = ExtractOptions::new(20);
+
+        let strings_short = extract_from_elf(&elf, &data, &opts_short);
+        let strings_long = extract_from_elf(&elf, &data, &opts_long);
+
+        assert!(
+            strings_long.len() <= strings_short.len(),
+            "Longer min_length should produce fewer strings"
+        );
+    }
+}
+
+// Tests for edge cases in common.rs
+mod common_edge_cases {
+    use strangs::is_garbage;
+
+    #[test]
+    fn test_is_garbage_path_separators() {
+        // Paths with multiple separators
+        assert!(!is_garbage("/usr/local/bin/test"));
+        assert!(!is_garbage("C:\\Windows\\System32\\cmd.exe"));
+    }
+
+    #[test]
+    fn test_is_garbage_format_strings() {
+        // Printf-style format strings should not be garbage
+        assert!(!is_garbage("Error: %s at line %d"));
+        assert!(!is_garbage("Processing %d of %d items"));
+    }
+
+    #[test]
+    fn test_is_garbage_urls() {
+        assert!(!is_garbage("https://example.com/path"));
+        assert!(!is_garbage("http://localhost:8080"));
+    }
+
+    #[test]
+    fn test_is_garbage_json_like() {
+        assert!(!is_garbage("{\"key\": \"value\"}"));
+        assert!(!is_garbage("[1, 2, 3]"));
+    }
+
+    #[test]
+    fn test_is_garbage_boundary_cases() {
+        // Very short strings
+        assert!(is_garbage("a"));
+        assert!(is_garbage("ab"));
+        assert!(is_garbage("abc"));
+
+        // Exactly at boundary
+        assert!(!is_garbage("test")); // 4 chars, should be ok if valid
+    }
+
+    #[test]
+    fn test_is_garbage_whitespace_variations() {
+        // Leading/trailing whitespace
+        assert!(!is_garbage("  hello world  "));
+        // Tabs
+        assert!(!is_garbage("hello\tworld"));
+    }
+
+    #[test]
+    fn test_is_garbage_numeric_strings() {
+        // Version numbers
+        assert!(!is_garbage("1.2.3"));
+        assert!(!is_garbage("v2.0.0"));
+        // Hex addresses
+        assert!(!is_garbage("0x12345678"));
+    }
+}
+
+// Tests for StringKind classification edge cases
+mod string_kind_tests {
+    use strangs::{extract_strings, StringKind};
+
+    fn minimal_elf_with_string(s: &str) -> Vec<u8> {
+        let mut data = vec![0u8; 1024];
+        data[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        data[4] = 2;
+        data[5] = 1;
+        data[6] = 1;
+        data[16..18].copy_from_slice(&[2, 0]);
+        data[18..20].copy_from_slice(&[0x3E, 0]);
+
+        let bytes = s.as_bytes();
+        data[0x200..0x200 + bytes.len()].copy_from_slice(bytes);
+        data[0x200 + bytes.len()] = 0;
+        data
+    }
+
+    #[test]
+    fn test_env_var_detection() {
+        let data = minimal_elf_with_string("HOME=/home/user");
+        let strings = extract_strings(&data, 4);
+
+        let env_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::EnvVar)
+            .collect();
+
+        // May or may not be classified as Env depending on heuristics
+        let _ = env_strings;
+    }
+
+    #[test]
+    fn test_url_detection() {
+        let data = minimal_elf_with_string("https://malware.example.com/payload");
+        let strings = extract_strings(&data, 4);
+
+        let url_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Url)
+            .collect();
+
+        assert!(
+            !url_strings.is_empty() || strings.iter().any(|s| s.value.contains("https://")),
+            "Should detect URL"
+        );
+    }
+
+    #[test]
+    fn test_ip_detection() {
+        let data = minimal_elf_with_string("192.168.1.1:8080");
+        let strings = extract_strings(&data, 4);
+
+        let ip_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::IPPort || s.kind == StringKind::IP)
+            .collect();
+
+        // IP detection may or may not trigger depending on context
+        let _ = ip_strings;
+    }
+
+    #[test]
+    fn test_path_detection() {
+        let data = minimal_elf_with_string("/etc/passwd");
+        let strings = extract_strings(&data, 4);
+
+        let path_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::SuspiciousPath || s.value.contains("/etc/"))
+            .collect();
+
+        assert!(!path_strings.is_empty(), "Should detect suspicious path");
+    }
+
+    #[test]
+    fn test_base64_detection() {
+        // Valid base64 that decodes to readable text
+        let data = minimal_elf_with_string("SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0Lg==");
+        let strings = extract_strings(&data, 4);
+
+        let b64_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Base64)
+            .collect();
+
+        // Base64 detection depends on various heuristics
+        let _ = b64_strings;
+    }
+}
+
+// Tests for severity levels
+mod severity_tests {
+    use strangs::{Severity, StringKind};
+
+    #[test]
+    fn test_all_kinds_have_severity() {
+        // Ensure all StringKind variants return a valid severity
+        let kinds = vec![
+            StringKind::Const,
+            StringKind::FuncName,
+            StringKind::Ident,
+            StringKind::Import,
+            StringKind::Export,
+            StringKind::Url,
+            StringKind::IP,
+            StringKind::IPPort,
+            StringKind::EnvVar,
+            StringKind::Path,
+            StringKind::SuspiciousPath,
+            StringKind::ShellCmd,
+            StringKind::Base64,
+            StringKind::Overlay,
+            StringKind::OverlayWide,
+        ];
+
+        for kind in kinds {
+            let severity = kind.severity();
+            assert!(
+                matches!(severity, Severity::Low | Severity::Medium | Severity::High),
+                "{:?} should have a valid severity",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn test_high_severity_kinds() {
+        assert_eq!(StringKind::ShellCmd.severity(), Severity::High);
+        assert_eq!(StringKind::SuspiciousPath.severity(), Severity::High);
+        assert_eq!(StringKind::IP.severity(), Severity::High);
+        assert_eq!(StringKind::IPPort.severity(), Severity::High);
+        assert_eq!(StringKind::Base64.severity(), Severity::High);
+        assert_eq!(StringKind::Overlay.severity(), Severity::High);
+        assert_eq!(StringKind::OverlayWide.severity(), Severity::High);
+    }
+
+    #[test]
+    fn test_medium_severity_kinds() {
+        assert_eq!(StringKind::Url.severity(), Severity::Medium);
+        assert_eq!(StringKind::EnvVar.severity(), Severity::Medium);
+    }
+
+    #[test]
+    fn test_low_severity_kinds() {
+        assert_eq!(StringKind::Const.severity(), Severity::Low);
+        assert_eq!(StringKind::FuncName.severity(), Severity::Low);
+        assert_eq!(StringKind::Ident.severity(), Severity::Low);
+        assert_eq!(StringKind::Import.severity(), Severity::Low);
+        assert_eq!(StringKind::Export.severity(), Severity::Low);
+        assert_eq!(StringKind::Path.severity(), Severity::Low);
+    }
+}

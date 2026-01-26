@@ -39,7 +39,8 @@ pub mod r2;
 mod rust;
 
 pub use common::{
-    is_garbage, BinaryInfo, ExtractedString, Severity, StringKind, StringMethod, StringStruct,
+    is_garbage, BinaryInfo, ExtractedString, OverlayInfo, Severity, StringKind, StringMethod,
+    StringStruct,
 };
 
 pub use go::GoStringExtractor;
@@ -128,6 +129,20 @@ fn macho_is_rust(macho: &MachO) -> bool {
     })
 }
 
+/// Find the section name containing an address in a Mach-O binary.
+fn find_macho_section(macho: &MachO, addr: u64) -> Option<String> {
+    for seg in &macho.segments {
+        for (sec, _) in seg.sections().ok()?.iter() {
+            let start = sec.addr;
+            let end = start + sec.size;
+            if addr >= start && addr < end {
+                return Some(sec.name().ok()?.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Extract imports from a Mach-O binary.
 fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedString> {
     let mut strings = Vec::new();
@@ -139,10 +154,11 @@ fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedStrin
             if import.name.len() >= min_length && seen.insert(import.name.to_string()) {
                 // Strip the leading path from dylib, e.g., "/usr/lib/libSystem.B.dylib" -> "libSystem.B.dylib"
                 let lib = import.dylib.rsplit('/').next().unwrap_or(import.dylib);
+                let section = find_macho_section(macho, import.address);
                 strings.push(ExtractedString {
                     value: import.name.to_string(),
                     data_offset: import.address,
-                    section: None,
+                    section,
                     method: StringMethod::Structure,
                     kind: StringKind::Import,
                     library: Some(lib.to_string()),
@@ -155,10 +171,11 @@ fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedStrin
     if let Ok(exports) = macho.exports() {
         for export in exports {
             if export.name.len() >= min_length && seen.insert(export.name.to_string()) {
+                let section = find_macho_section(macho, export.offset);
                 strings.push(ExtractedString {
                     value: export.name.to_string(),
                     data_offset: export.offset,
-                    section: None,
+                    section,
                     method: StringMethod::Structure,
                     kind: StringKind::Export,
                     library: None,
@@ -211,10 +228,18 @@ fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> Vec<Extract
             continue;
         };
 
+        // Look up the actual section name from the section index
+        let section = if sym.st_shndx > 0 && sym.st_shndx < elf.section_headers.len() {
+            elf.shdr_strtab
+                .get_at(elf.section_headers[sym.st_shndx].sh_name)
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
         strings.push(ExtractedString {
             value: name.to_string(),
             data_offset: sym.st_value,
-            section: None,
+            section,
             method: StringMethod::Structure,
             kind,
             library,
@@ -518,6 +543,9 @@ pub fn extract_from_object(
                 .filter(|s| !seen.contains(s.value.as_str()))
                 .collect();
             strings.extend(new_imports);
+
+            // Extract overlay/appended data (common malware technique)
+            strings.extend(extract_overlay_strings(data, min_length));
         }
         Object::PE(pe) => {
             // Collect PE section names
@@ -531,24 +559,30 @@ pub fn extract_from_object(
                 })
                 .collect();
 
-            // Check for Go by looking for go.buildinfo or runtime.main
+            // Check for Go by looking for go.buildinfo section specifically
             let has_go = pe.sections.iter().any(|sec| {
                 let name = String::from_utf8_lossy(&sec.name);
-                name.contains("go") || name.contains(".rdata")
+                name.contains("go.buildinfo") || name.contains("gopclntab")
             });
 
             if has_go {
                 let extractor = GoStringExtractor::new(min_length);
                 strings.extend(extractor.extract_pe(pe, data));
-            } else {
-                // Unknown PE - use r2 if available
-                if let Some(r2_strings) = get_r2_strings(opts) {
-                    strings.extend(r2_strings);
-                }
-                if strings.is_empty() {
-                    strings.extend(extract_raw_strings(data, min_length, None, &segments));
-                }
             }
+
+            // Use r2 if available
+            if let Some(r2_strings) = get_r2_strings(opts) {
+                strings.extend(r2_strings);
+            }
+
+            // Extract UTF-16LE wide strings (common in Windows binaries)
+            strings.extend(extract_wide_strings(data, min_length, None, &segments));
+
+            // Raw scan for PE (catches strings missed by structure extraction)
+            strings.extend(extract_raw_strings(data, min_length, None, &segments));
+
+            // Extract overlay/appended data (common malware technique)
+            strings.extend(extract_overlay_strings(data, min_length));
         }
         _ => {
             // Unknown format - use r2 if available, otherwise raw scan
@@ -692,6 +726,9 @@ pub fn extract_from_elf(
         .collect();
     strings.extend(new_imports);
 
+    // Extract overlay/appended data (common malware technique)
+    strings.extend(extract_overlay_strings(data, min_length));
+
     // Apply garbage filter if enabled
     if opts.filter_garbage {
         strings.retain(|s| !common::is_garbage(&s.value));
@@ -741,8 +778,8 @@ pub fn extract_from_pe(
     // Extract UTF-16LE wide strings (common in Windows binaries)
     strings.extend(extract_wide_strings(data, min_length, None, &segments));
 
-    // Also do raw scan for PE
-    if strings.is_empty() && !data.is_empty() {
+    // Also do raw scan for PE (always, since structure extraction may miss many strings)
+    if !data.is_empty() {
         strings.extend(extract_raw_strings(data, min_length, None, &segments));
     }
 
@@ -1107,6 +1144,176 @@ pub fn is_text_file(data: &[u8]) -> bool {
 
     // At least 85% should be printable ASCII for it to be considered text
     printable * 100 / sample_size >= 85
+}
+
+/// Detect overlay/appended data after the ELF binary structure.
+///
+/// Returns `Some(OverlayInfo)` if there is data after the expected end of the ELF file,
+/// or `None` if the file ends at the expected boundary (or is not an ELF).
+pub fn detect_elf_overlay(data: &[u8]) -> Option<OverlayInfo> {
+    let elf = match Object::parse(data) {
+        Ok(Object::Elf(elf)) => elf,
+        _ => return None,
+    };
+
+    // Calculate the expected end of the ELF file by finding the maximum of:
+    // 1. End of section header table: e_shoff + (e_shnum * e_shentsize)
+    // 2. End of each section: sh_offset + sh_size
+    // 3. End of each program segment: p_offset + p_filesz
+    let mut expected_end: u64 = 0;
+
+    // Section header table end
+    if elf.header.e_shnum > 0 {
+        let sh_table_end =
+            elf.header.e_shoff + (elf.header.e_shnum as u64 * elf.header.e_shentsize as u64);
+        expected_end = expected_end.max(sh_table_end);
+    }
+
+    // End of each section
+    for sh in &elf.section_headers {
+        if sh.sh_type != goblin::elf::section_header::SHT_NOBITS {
+            let section_end = sh.sh_offset + sh.sh_size;
+            expected_end = expected_end.max(section_end);
+        }
+    }
+
+    // End of each program header/segment
+    for ph in &elf.program_headers {
+        let segment_end = ph.p_offset + ph.p_filesz;
+        expected_end = expected_end.max(segment_end);
+    }
+
+    let file_size = data.len() as u64;
+
+    // If there's data after the expected end, we have an overlay
+    if file_size > expected_end && expected_end > 0 {
+        Some(OverlayInfo {
+            start_offset: expected_end,
+            size: file_size - expected_end,
+        })
+    } else {
+        None
+    }
+}
+
+/// Extract strings from overlay data (appended after ELF structure).
+///
+/// This extracts both null-terminated and wide strings from the overlay region,
+/// classifying them as `StringKind::Overlay` for high-severity highlighting.
+pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
+    let overlay = match detect_elf_overlay(data) {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
+
+    let start = overlay.start_offset as usize;
+    if start >= data.len() {
+        return Vec::new();
+    }
+
+    let overlay_data = &data[start..];
+    let mut strings = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // Extract null-terminated strings
+    let mut prev_end = 0usize;
+    for null_pos in memchr_iter(0, overlay_data) {
+        let chunk = &overlay_data[prev_end..null_pos];
+        let chunk_start = prev_end;
+        prev_end = null_pos + 1;
+
+        if chunk.len() < min_length {
+            continue;
+        }
+
+        // Find the last contiguous printable run
+        let mut run_start = None;
+        for (i, &b) in chunk.iter().enumerate() {
+            if b.is_ascii_graphic() || b.is_ascii_whitespace() {
+                if run_start.is_none() {
+                    run_start = Some(i);
+                }
+            } else {
+                run_start = None;
+            }
+        }
+
+        let Some(rs) = run_start else { continue };
+        let candidate = &chunk[rs..];
+
+        if candidate.len() < min_length {
+            continue;
+        }
+
+        if let Ok(s) = std::str::from_utf8(candidate) {
+            let trimmed = s.trim();
+            if trimmed.len() >= min_length && !trimmed.is_empty() && !seen.contains(trimmed) {
+                seen.insert(trimmed.to_string());
+                strings.push(ExtractedString {
+                    value: trimmed.to_string(),
+                    data_offset: (start + chunk_start + rs) as u64,
+                    section: Some("(overlay)".to_string()),
+                    method: StringMethod::RawScan,
+                    kind: StringKind::Overlay,
+                    library: None,
+                });
+            }
+        }
+    }
+
+    // Extract UTF-16LE wide strings (common in malware config)
+    let mut i = 0;
+    while i + 1 < overlay_data.len() {
+        let lo = overlay_data[i];
+        let hi = overlay_data[i + 1];
+
+        if is_printable_ascii(lo) && hi == 0 {
+            let wide_start = i;
+            let mut code_units: Vec<u16> = Vec::new();
+
+            while i + 1 < overlay_data.len() {
+                let lo = overlay_data[i];
+                let hi = overlay_data[i + 1];
+                let code_unit = u16::from_le_bytes([lo, hi]);
+
+                if code_unit == 0 {
+                    break;
+                }
+
+                if is_valid_wide_char(code_unit) {
+                    code_units.push(code_unit);
+                    i += 2;
+                } else {
+                    break;
+                }
+            }
+
+            if code_units.len() >= min_length {
+                let decoded = String::from_utf16_lossy(&code_units);
+                let trimmed = decoded.trim();
+
+                if trimmed.len() >= min_length && !trimmed.is_empty() && !seen.contains(trimmed) {
+                    seen.insert(trimmed.to_string());
+                    strings.push(ExtractedString {
+                        value: trimmed.to_string(),
+                        data_offset: (start + wide_start) as u64,
+                        section: Some("(overlay)".to_string()),
+                        method: StringMethod::WideString,
+                        kind: StringKind::OverlayWide,
+                        library: None,
+                    });
+                }
+            }
+
+            if i + 1 < overlay_data.len() && overlay_data[i] == 0 && overlay_data[i + 1] == 0 {
+                i += 2;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    strings
 }
 
 #[cfg(test)]

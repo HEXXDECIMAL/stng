@@ -3,6 +3,8 @@
 //! Extract strings from Go and Rust binaries with proper boundary detection.
 
 use anyhow::Result;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use clap::Parser;
 use std::collections::HashSet;
 use std::fs;
@@ -157,7 +159,7 @@ fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&strings)?);
     } else if cli.simple {
         for s in &strings {
-            println!("{}", s.value);
+            println!("{}", s.value.trim_end_matches(|c: char| c.is_control()));
         }
         eprintln!("\n{} strings extracted", strings.len());
     } else {
@@ -214,11 +216,22 @@ fn main() -> Result<()> {
 
             print_string_line(s, use_color);
 
-            // Track high-severity items for summary
-            if s.kind.severity() == Severity::High && notable.len() < 5 {
+            // Collect all high-severity items (we'll sort and truncate later)
+            if s.kind.severity() == Severity::High {
                 notable.push(s);
             }
         }
+
+        // Sort notable items by priority: IPs first, then shell/suspicious, then base64, then URLs
+        notable.sort_by_key(|s| match s.kind {
+            strangs::StringKind::IP | strangs::StringKind::IPPort => 0,
+            strangs::StringKind::ShellCmd | strangs::StringKind::SuspiciousPath => 1,
+            strangs::StringKind::Base64 => 2,
+            strangs::StringKind::Overlay | strangs::StringKind::OverlayWide => 3,
+            strangs::StringKind::Url => 4,
+            _ => 5,
+        });
+        notable.truncate(5);
 
         // Print notable summary if there are high-severity items
         if !notable.is_empty() {
@@ -241,7 +254,15 @@ fn main() -> Result<()> {
 
 fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
     let offset = format!("{:>8x}", s.data_offset);
-    let kind = s.kind.short_name();
+
+    // Show encoding suffix for wide strings (except overlay:16LE which already has it)
+    let kind = if s.method == strangs::StringMethod::WideString
+        && s.kind != strangs::StringKind::OverlayWide
+    {
+        format!("{}:16LE", s.kind.short_name())
+    } else {
+        s.kind.short_name().to_string()
+    };
 
     // Get color based on severity
     let (color, kind_color) = if use_color {
@@ -255,12 +276,32 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
         ("", "")
     };
 
-    // Format the value, truncating if very long
-    let value = if s.value.len() > 120 {
-        format!("{}...", &s.value[..117])
+    // Format the value, trimming control characters and truncating if very long
+    let clean_value = s.value.trim_end_matches(|c: char| c.is_control());
+    let mut value = if clean_value.len() > 120 {
+        format!("{}...", &clean_value[..117])
     } else {
-        s.value.clone()
+        clean_value.to_string()
     };
+
+    // Decode base64 strings and show plaintext in brackets if printable
+    if s.kind == strangs::StringKind::Base64 {
+        if let Ok(decoded) = BASE64.decode(s.value.trim()) {
+            // Only show if mostly printable ASCII
+            let printable = decoded
+                .iter()
+                .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+                .count();
+            if printable > decoded.len() / 2 && !decoded.is_empty() {
+                if let Ok(text) = String::from_utf8(decoded) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        value = format!("{} [{}]", value, text);
+                    }
+                }
+            }
+        }
+    }
 
     // Add library info for imports
     let display_value = if let Some(ref lib) = s.library {
@@ -275,10 +316,10 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
 
     if use_color {
         println!(
-            "  {}{}{} {}{:<8}{} {}{}{}",
+            "  {}{}{} {}{:<12}{} {}{}{}",
             DIM, offset, RESET, kind_color, kind, RESET, color, display_value, RESET
         );
     } else {
-        println!("  {} {:<8} {}", offset, kind, display_value);
+        println!("  {} {:<12} {}", offset, kind, display_value);
     }
 }

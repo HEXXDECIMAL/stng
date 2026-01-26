@@ -316,3 +316,125 @@ fn test_cli_empty_file() {
 
     std::fs::remove_file(&temp_file).ok();
 }
+
+#[test]
+fn test_cli_base64_decoding() {
+    // Test that base64 strings are decoded and shown in brackets
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("strangs_test_base64.bin");
+
+    // Create a fake ELF with a base64-encoded string
+    // "VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl" decodes to "This is a secret message"
+    let mut content = vec![0x7f, b'E', b'L', b'F']; // ELF magic
+    content.extend_from_slice(&[0x00; 4]); // padding
+    content.extend_from_slice(b"VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl"); // base64 string (32 chars)
+    content.extend_from_slice(&[0x00; 4]); // null terminator
+    std::fs::write(&temp_file, &content).unwrap();
+
+    let output = strangs_cmd()
+        .arg("--no-color")
+        .arg("--no-r2")
+        .arg(&temp_file)
+        .output()
+        .expect("Failed to execute strangs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should show the decoded text in brackets
+    assert!(
+        stdout.contains("[This is a secret message]"),
+        "Expected base64 decoded text in brackets, got: {}",
+        stdout
+    );
+
+    std::fs::remove_file(&temp_file).ok();
+}
+
+#[test]
+fn test_cli_trailing_newlines_trimmed() {
+    // Test that trailing newlines/control chars are stripped from output
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("strangs_test_newlines.bin");
+
+    // Create a fake ELF with strings that have trailing newlines
+    let mut content = vec![0x7f, b'E', b'L', b'F']; // ELF magic
+    content.extend_from_slice(&[0x00; 4]); // padding
+    content.extend_from_slice(b"hello_world\n"); // string with trailing newline
+    content.extend_from_slice(&[0x00]); // null terminator
+    content.extend_from_slice(b"test_string\r\n"); // string with CRLF
+    content.extend_from_slice(&[0x00]); // null terminator
+    content.extend_from_slice(b"another_test\n\n"); // string with multiple newlines
+    content.extend_from_slice(&[0x00]); // null terminator
+    std::fs::write(&temp_file, &content).unwrap();
+
+    let output = strangs_cmd()
+        .arg("--no-color")
+        .arg("--no-r2")
+        .arg(&temp_file)
+        .output()
+        .expect("Failed to execute strangs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Output should not have consecutive blank lines caused by trailing newlines in strings
+    // Each string should be on its own line without extra blank lines
+    assert!(
+        !stdout.contains("\n\n\n"),
+        "Output should not have triple newlines from untrimmed strings: {}",
+        stdout
+    );
+
+    // Verify the strings appear without their trailing control characters
+    for line in stdout.lines() {
+        if line.contains("hello_world") || line.contains("test_string") || line.contains("another_test") {
+            // The line should not end with control characters
+            assert!(
+                !line.ends_with('\n') && !line.ends_with('\r'),
+                "Line should not end with control chars: {:?}",
+                line
+            );
+        }
+    }
+
+    std::fs::remove_file(&temp_file).ok();
+}
+
+#[test]
+fn test_cli_simple_mode_trims_newlines() {
+    // Test that --simple mode also trims trailing control characters
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("strangs_test_simple_newlines.bin");
+
+    let mut content = vec![0x7f, b'E', b'L', b'F']; // ELF magic
+    content.extend_from_slice(&[0x00; 4]); // padding
+    content.extend_from_slice(b"simple_test_string\n"); // string with trailing newline
+    content.extend_from_slice(&[0x00]); // null terminator
+    std::fs::write(&temp_file, &content).unwrap();
+
+    let output = strangs_cmd()
+        .arg("--simple")
+        .arg("--no-r2")
+        .arg(&temp_file)
+        .output()
+        .expect("Failed to execute strangs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // In simple mode, each string is on its own line
+    // Should not have extra blank lines from trailing newlines
+    let lines: Vec<&str> = stdout.lines().collect();
+    for line in &lines {
+        if line.contains("simple_test_string") {
+            // Should be exactly the string, not with trailing newline
+            assert!(
+                !line.ends_with('\n'),
+                "Simple mode line should not end with newline: {:?}",
+                line
+            );
+        }
+    }
+
+    std::fs::remove_file(&temp_file).ok();
+}
