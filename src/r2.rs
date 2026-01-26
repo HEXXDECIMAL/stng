@@ -1,32 +1,60 @@
-//! Optional radare2 integration for smarter string extraction.
+//! Optional rizin/radare2 integration for smarter string extraction.
 //!
-//! When radare2 is available, it can provide better differentiation between
-//! true strings and symbols, as well as additional metadata.
+//! Prefers rizin when available, falls back to radare2.
+//! Provides better differentiation between true strings and symbols.
 
 use crate::go::classify_string;
 use crate::{ExtractedString, StringKind, StringMethod};
 use std::collections::HashSet;
 use std::process::Command;
+use std::sync::OnceLock;
 
-/// Check if radare2 is installed and available.
+/// Which tool is available (cached after first check)
+static TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
+
+/// Check if rizin or radare2 is available, preferring rizin.
 pub fn is_available() -> bool {
-    Command::new("r2")
-        .arg("-v")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    get_tool().is_some()
 }
 
-/// Extract strings using radare2.
+/// Get the available tool name (rizin preferred, then radare2)
+fn get_tool() -> Option<&'static str> {
+    *TOOL.get_or_init(|| {
+        if Command::new("rizin")
+            .arg("-v")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            Some("rizin")
+        } else if Command::new("r2")
+            .arg("-v")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            Some("r2")
+        } else {
+            None
+        }
+    })
+}
+
+/// Extract strings using rizin or radare2.
 ///
 /// Uses `iz` for data section strings and `is` for symbols.
 /// Returns strings with R2String/R2Symbol methods for clear identification.
 pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedString>> {
-    // Run both r2 commands in parallel
+    let tool = get_tool()?;
+
+    // Get file size to filter out symbols with invalid offsets
+    let file_size = std::fs::metadata(path).ok()?.len();
+
+    // Run both commands in parallel
     let path_owned = path.to_string();
     let (data_result, symbols_result) = rayon::join(
-        || run_r2_command(&path_owned, "izj"),
-        || run_r2_command(&path_owned, "isj"),
+        || run_tool_command(tool, &path_owned, "izj"),
+        || run_tool_command(tool, &path_owned, "isj"),
     );
 
     let mut strings = Vec::new();
@@ -36,11 +64,15 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
     if let Some(data_strings) = data_result {
         if let Ok(json) = serde_json::from_str::<Vec<R2String>>(&data_strings) {
             for s in json {
+                // Skip strings with invalid file offsets
+                if s.paddr > file_size {
+                    continue;
+                }
                 if s.string.len() >= min_length && seen.insert(s.string.clone()) {
                     let kind = classify_string(&s.string);
                     strings.push(ExtractedString {
                         value: s.string,
-                        data_offset: s.vaddr,
+                        data_offset: s.paddr,
                         section: Some(s.section),
                         method: StringMethod::R2String,
                         library: None,
@@ -55,10 +87,14 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
     if let Some(symbols) = symbols_result {
         if let Ok(json) = serde_json::from_str::<Vec<R2Symbol>>(&symbols) {
             for s in json {
+                // Skip symbols with invalid file offsets
+                if s.paddr > file_size {
+                    continue;
+                }
                 if s.name.len() >= min_length && seen.insert(s.name.clone()) {
                     strings.push(ExtractedString {
                         value: s.name,
-                        data_offset: s.vaddr,
+                        data_offset: s.paddr,
                         section: s.section,
                         method: StringMethod::R2Symbol,
                         kind: classify_r2_symbol(&s.r#type, &s.bind),
@@ -76,8 +112,8 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
     }
 }
 
-fn run_r2_command(path: &str, cmd: &str) -> Option<String> {
-    let output = Command::new("r2")
+fn run_tool_command(tool: &str, path: &str, cmd: &str) -> Option<String> {
+    let output = Command::new(tool)
         .args(["-q", "-c", cmd, path])
         .output()
         .ok()?;
@@ -91,14 +127,14 @@ fn run_r2_command(path: &str, cmd: &str) -> Option<String> {
 
 #[derive(serde::Deserialize)]
 struct R2String {
-    vaddr: u64,
+    paddr: u64,
     string: String,
     section: String,
 }
 
 #[derive(serde::Deserialize)]
 struct R2Symbol {
-    vaddr: u64,
+    paddr: u64,
     name: String,
     #[serde(default)]
     section: Option<String>,
@@ -161,25 +197,27 @@ mod tests {
     }
 
     #[test]
-    fn test_run_r2_command_nonexistent() {
-        let result = run_r2_command("/nonexistent/file", "iz");
-        assert!(result.is_none());
+    fn test_run_tool_command_nonexistent() {
+        if let Some(tool) = get_tool() {
+            let result = run_tool_command(tool, "/nonexistent/file", "iz");
+            assert!(result.is_none());
+        }
     }
 
     #[test]
     fn test_r2_string_deserialize() {
-        let json = r#"{"vaddr": 4096, "string": "hello", "section": ".rodata"}"#;
+        let json = r#"{"paddr": 4096, "string": "hello", "section": ".rodata"}"#;
         let r2_str: R2String = serde_json::from_str(json).unwrap();
-        assert_eq!(r2_str.vaddr, 4096);
+        assert_eq!(r2_str.paddr, 4096);
         assert_eq!(r2_str.string, "hello");
         assert_eq!(r2_str.section, ".rodata");
     }
 
     #[test]
     fn test_r2_symbol_deserialize() {
-        let json = r#"{"vaddr": 4096, "name": "_main", "section": ".text", "type": "FUNC", "bind": "GLOBAL"}"#;
+        let json = r#"{"paddr": 4096, "name": "_main", "section": ".text", "type": "FUNC", "bind": "GLOBAL"}"#;
         let r2_sym: R2Symbol = serde_json::from_str(json).unwrap();
-        assert_eq!(r2_sym.vaddr, 4096);
+        assert_eq!(r2_sym.paddr, 4096);
         assert_eq!(r2_sym.name, "_main");
         assert_eq!(r2_sym.section, Some(".text".to_string()));
         assert_eq!(r2_sym.r#type, "FUNC");
@@ -189,12 +227,70 @@ mod tests {
     #[test]
     fn test_r2_symbol_deserialize_defaults() {
         // Missing optional fields should use defaults
-        let json = r#"{"vaddr": 4096, "name": "_main"}"#;
+        let json = r#"{"paddr": 4096, "name": "_main"}"#;
         let r2_sym: R2Symbol = serde_json::from_str(json).unwrap();
-        assert_eq!(r2_sym.vaddr, 4096);
+        assert_eq!(r2_sym.paddr, 4096);
         assert_eq!(r2_sym.name, "_main");
         assert!(r2_sym.section.is_none());
         assert_eq!(r2_sym.r#type, "");
         assert_eq!(r2_sym.bind, "");
+    }
+
+    #[test]
+    fn test_extract_strings_returns_file_offsets() {
+        if !is_available() {
+            return;
+        }
+        // Use /bin/ls which exists on all Unix systems
+        let result = extract_strings("/bin/ls", 4);
+        if let Some(strings) = result {
+            // /bin/ls is typically < 200KB, virtual addresses would be > 0x100000000
+            let max_reasonable_offset = 0x100000; // 1MB - generous upper bound
+            for s in &strings {
+                assert!(
+                    s.data_offset < max_reasonable_offset,
+                    "Offset 0x{:x} for '{}' looks like a virtual address, not a file offset",
+                    s.data_offset,
+                    s.value
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_paddr_present_in_tool_output() {
+        // Verify both rizin and r2 provide paddr field
+        let tool = match get_tool() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Check symbols JSON has paddr
+        if let Some(output) = run_tool_command(tool, "/bin/ls", "isj") {
+            let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+            if let Some(arr) = json.as_array() {
+                if let Some(first) = arr.first() {
+                    assert!(
+                        first.get("paddr").is_some(),
+                        "{} isj output missing paddr field",
+                        tool
+                    );
+                }
+            }
+        }
+
+        // Check strings JSON has paddr
+        if let Some(output) = run_tool_command(tool, "/bin/ls", "izj") {
+            let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+            if let Some(arr) = json.as_array() {
+                if let Some(first) = arr.first() {
+                    assert!(
+                        first.get("paddr").is_some(),
+                        "{} izj output missing paddr field",
+                        tool
+                    );
+                }
+            }
+        }
     }
 }

@@ -797,8 +797,8 @@ mod tests {
         assert!(is_garbage("0YI0")); // digits interspersed with letters
         assert!(is_garbage("8oz1")); // leading digit + lowercase (not valid pattern)
         assert!(is_garbage("gnzUrs")); // short mixed case
-        // Note: "3OEP" looks like "8BIM" (digit + uppercase), can't distinguish without whitelist
-        // Short strings with internal spaces
+                                       // Note: "3OEP" looks like "8BIM" (digit + uppercase), can't distinguish without whitelist
+                                       // Short strings with internal spaces
         assert!(is_garbage("5c 9"));
         assert!(is_garbage("VW N"));
         // But all-uppercase, all-lowercase, or all-numeric are OK
