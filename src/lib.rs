@@ -804,7 +804,14 @@ fn extract_raw_strings(
 
     // Strategy 2: Printable character runs (like traditional `strings`)
     // This catches strings that aren't null-terminated (common in JPEG, PDF, etc.)
-    extract_printable_runs(data, min_length, &section, &segment_names_set, &mut strings, &mut seen);
+    extract_printable_runs(
+        data,
+        min_length,
+        &section,
+        &segment_names_set,
+        &mut strings,
+        &mut seen,
+    );
 
     strings
 }

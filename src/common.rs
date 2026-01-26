@@ -461,23 +461,44 @@ pub fn is_garbage(s: &str) -> bool {
         let is_all_upper = upper == len;
         let is_all_lower = lower == len;
         let is_all_digit = digit == len;
-        // Allow identifier-like patterns: leading digit(s) + uppercase (e.g., "8BIM", "3DES", "2D")
-        let is_digit_upper_id =
-            first_char.is_ascii_digit() && upper > 0 && lower == 0 && special == 0;
+        // Allow identifier-like patterns: leading digit(s) + uppercase only (e.g., "8BIM", "3DES", "2D")
+        // Digits must be at the START only, not interspersed (reject "9N2A", "0YI0")
+        let is_digit_upper_id = first_char.is_ascii_digit()
+            && upper > 0
+            && lower == 0
+            && special == 0
+            && trimmed
+                .chars()
+                .skip_while(|c| c.is_ascii_digit())
+                .all(|c| c.is_ascii_uppercase());
         // Allow PascalCase words: leading uppercase + rest lowercase, no digits (e.g., "Bool", "Exif", "Time")
-        let is_pascal_case = first_char.is_ascii_uppercase() && upper == 1 && lower > 0 && digit == 0;
+        let is_pascal_case =
+            first_char.is_ascii_uppercase() && upper == 1 && lower > 0 && digit == 0;
         // Allow camelCase words: leading lowercase + one uppercase NOT at end, no digits (e.g., "someWord")
-        // Reject patterns like "phbS" where uppercase is at the end (garbage)
+        // Reject patterns like "phbS" (uppercase at end) or "gnzUrs" (too short to verify)
+        // camelCase needs at least 7 chars to be recognizable (e.g., "myValue")
         let last_char = trimmed.chars().last().unwrap_or(' ');
-        let is_camel_case = first_char.is_ascii_lowercase()
-            && upper <= 1
+        let is_camel_case = len >= 7
+            && first_char.is_ascii_lowercase()
+            && upper == 1
             && digit == 0
             && !last_char.is_ascii_uppercase();
         // Allow lowercase + trailing digits (e.g., "amd64", "utf8", "sha256")
-        let last_char = trimmed.chars().last().unwrap_or(' ');
-        let is_lower_with_suffix = lower > 0 && upper == 0 && digit > 0 && last_char.is_ascii_digit();
+        // Must start with lowercase, not digit (reject "8oz1")
+        let is_lower_with_suffix = first_char.is_ascii_lowercase()
+            && lower > 0
+            && upper == 0
+            && digit > 0
+            && last_char.is_ascii_digit();
 
-        if !(is_all_upper || is_all_lower || is_all_digit || is_digit_upper_id || is_pascal_case || is_camel_case || is_lower_with_suffix) {
+        if !(is_all_upper
+            || is_all_lower
+            || is_all_digit
+            || is_digit_upper_id
+            || is_pascal_case
+            || is_camel_case
+            || is_lower_with_suffix)
+        {
             // Mixed case with digits in short strings is usually garbage
             if digit > 0 && (upper > 0 || lower > 0) {
                 return true;
@@ -485,6 +506,10 @@ pub fn is_garbage(s: &str) -> bool {
             // Irregular mixed case patterns are usually garbage from compressed data
             // (e.g., "zVQO", "IKfB", "phbS", "OsVLJ", "HQIld")
             if upper > 0 && lower > 0 {
+                return true;
+            }
+            // Short strings with internal whitespace are garbage (e.g., "VW N", "5c 9")
+            if whitespace > 0 {
                 return true;
             }
         }
@@ -767,6 +792,15 @@ mod tests {
         assert!(is_garbage("Uim0"));
         assert!(is_garbage("Ilu4"));
         assert!(is_garbage("cwZd"));
+        // More compressed data patterns with interspersed digits
+        assert!(is_garbage("9N2A")); // digits interspersed with letters
+        assert!(is_garbage("0YI0")); // digits interspersed with letters
+        assert!(is_garbage("8oz1")); // leading digit + lowercase (not valid pattern)
+        assert!(is_garbage("gnzUrs")); // short mixed case
+        // Note: "3OEP" looks like "8BIM" (digit + uppercase), can't distinguish without whitelist
+        // Short strings with internal spaces
+        assert!(is_garbage("5c 9"));
+        assert!(is_garbage("VW N"));
         // But all-uppercase, all-lowercase, or all-numeric are OK
         assert!(!is_garbage("PFO"));
         assert!(!is_garbage("API"));
