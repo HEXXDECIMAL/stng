@@ -1,7 +1,6 @@
 //! Common types and utilities for language-aware string extraction.
 
 use serde::Serialize;
-use std::collections::HashSet;
 
 /// Represents a string structure found in binary (pointer + length pair).
 #[derive(Debug, Clone)]
@@ -169,6 +168,64 @@ pub fn find_string_structures(
     blob_size: u64,
     info: &BinaryInfo,
 ) -> Vec<StringStruct> {
+    // Fast path for 64-bit little-endian (most common case)
+    if info.is_64bit && info.is_little_endian {
+        return find_string_structures_64le(section_data, section_addr, blob_addr, blob_size);
+    }
+
+    // Generic path for other architectures
+    find_string_structures_generic(section_data, section_addr, blob_addr, blob_size, info)
+}
+
+/// Specialized fast path for 64-bit little-endian (no runtime checks in loop)
+#[inline(always)]
+fn find_string_structures_64le(
+    section_data: &[u8],
+    section_addr: u64,
+    blob_addr: u64,
+    blob_size: u64,
+) -> Vec<StringStruct> {
+    let mut structs = Vec::new();
+    let blob_end = blob_addr + blob_size;
+
+    if section_data.len() < 16 {
+        return structs;
+    }
+
+    let mut i = 0;
+    let end = section_data.len() - 15;
+
+    while i < end {
+        // Direct LE reads without runtime endianness checks
+        let ptr = u64::from_le_bytes(section_data[i..i + 8].try_into().unwrap());
+        let len = u64::from_le_bytes(section_data[i + 8..i + 16].try_into().unwrap());
+
+        if ptr >= blob_addr
+            && ptr < blob_end
+            && len > 0
+            && len < 1024 * 1024
+            && ptr + len <= blob_end
+        {
+            structs.push(StringStruct {
+                struct_offset: section_addr + i as u64,
+                ptr,
+                len,
+            });
+        }
+        i += 8;
+    }
+
+    structs
+}
+
+/// Generic path for non-64-bit-LE architectures
+fn find_string_structures_generic(
+    section_data: &[u8],
+    section_addr: u64,
+    blob_addr: u64,
+    blob_size: u64,
+    info: &BinaryInfo,
+) -> Vec<StringStruct> {
     let mut structs = Vec::new();
     let struct_size = info.ptr_size * 2;
 
@@ -177,16 +234,14 @@ pub fn find_string_structures(
     }
 
     for i in (0..=section_data.len() - struct_size).step_by(info.ptr_size) {
-        let (ptr, len) = if info.is_64bit {
-            if info.is_little_endian {
-                let ptr = u64::from_le_bytes(section_data[i..i + 8].try_into().unwrap());
-                let len = u64::from_le_bytes(section_data[i + 8..i + 16].try_into().unwrap());
-                (ptr, len)
-            } else {
-                let ptr = u64::from_be_bytes(section_data[i..i + 8].try_into().unwrap());
-                let len = u64::from_be_bytes(section_data[i + 8..i + 16].try_into().unwrap());
-                (ptr, len)
-            }
+        let (ptr, len) = if info.is_64bit && info.is_little_endian {
+            let ptr = u64::from_le_bytes(section_data[i..i + 8].try_into().unwrap());
+            let len = u64::from_le_bytes(section_data[i + 8..i + 16].try_into().unwrap());
+            (ptr, len)
+        } else if info.is_64bit {
+            let ptr = u64::from_be_bytes(section_data[i..i + 8].try_into().unwrap());
+            let len = u64::from_be_bytes(section_data[i + 8..i + 16].try_into().unwrap());
+            (ptr, len)
         } else if info.is_little_endian {
             let ptr = u64::from(u32::from_le_bytes(
                 section_data[i..i + 4].try_into().unwrap(),
@@ -236,7 +291,6 @@ where
     F: Fn(&str) -> StringKind,
 {
     let mut result = Vec::with_capacity(structs.len() / 2);
-    let mut seen: HashSet<&str> = HashSet::with_capacity(structs.len() / 2);
 
     for s in structs {
         if s.ptr < blob_addr {
@@ -252,24 +306,18 @@ where
 
         let bytes = &blob[offset..end];
 
+        // Fast ASCII printability check before UTF-8 validation
+        let printable_count = bytes
+            .iter()
+            .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+            .count();
+
+        if printable_count * 2 < bytes.len() {
+            continue;
+        }
+
         // Validate UTF-8
         if let Ok(string) = std::str::from_utf8(bytes) {
-            // Skip duplicates (no allocation for lookup)
-            if seen.contains(string) {
-                continue;
-            }
-
-            // Skip strings that are mostly non-printable
-            let printable_count = string
-                .chars()
-                .filter(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
-                .count();
-
-            if printable_count * 2 < string.len() {
-                continue;
-            }
-
-            seen.insert(string);
             result.push(ExtractedString {
                 value: string.to_string(),
                 data_offset: s.ptr,
@@ -392,7 +440,8 @@ pub fn is_garbage(s: &str) -> bool {
         } else {
             // Punctuation/special characters
             match c {
-                '#' | '@' | '?' | '>' | '<' | '|' | '\\' | '^' | '`' | '~' => noise_punct += 1,
+                '#' | '@' | '?' | '>' | '<' | '|' | '\\' | '^' | '`' | '~' | '$' | '+' | '&'
+                | '*' | '=' | ';' | ':' | '!' | ',' => noise_punct += 1,
                 '(' | '[' | '{' => open_parens += 1,
                 ')' | ']' | '}' => close_parens += 1,
                 '"' | '\'' => quotes += 1,
@@ -405,27 +454,44 @@ pub fn is_garbage(s: &str) -> bool {
     }
 
     let alphanumeric = alpha + digit;
+    let first_char = trimmed.chars().next().unwrap_or(' ');
 
-    // Very short strings (2-4 chars) that look like random binary data
-    if (2..=4).contains(&len) {
+    // Very short strings (2-6 chars) that look like random binary data
+    if (2..=6).contains(&len) {
         let is_all_upper = upper == len;
         let is_all_lower = lower == len;
         let is_all_digit = digit == len;
+        // Allow identifier-like patterns: leading digit(s) + uppercase (e.g., "8BIM", "3DES", "2D")
+        let is_digit_upper_id =
+            first_char.is_ascii_digit() && upper > 0 && lower == 0 && special == 0;
+        // Allow PascalCase words: leading uppercase + rest lowercase, no digits (e.g., "Bool", "Exif", "Time")
+        let is_pascal_case = first_char.is_ascii_uppercase() && upper == 1 && lower > 0 && digit == 0;
+        // Allow camelCase words: leading lowercase + one uppercase NOT at end, no digits (e.g., "someWord")
+        // Reject patterns like "phbS" where uppercase is at the end (garbage)
+        let last_char = trimmed.chars().last().unwrap_or(' ');
+        let is_camel_case = first_char.is_ascii_lowercase()
+            && upper <= 1
+            && digit == 0
+            && !last_char.is_ascii_uppercase();
+        // Allow lowercase + trailing digits (e.g., "amd64", "utf8", "sha256")
+        let last_char = trimmed.chars().last().unwrap_or(' ');
+        let is_lower_with_suffix = lower > 0 && upper == 0 && digit > 0 && last_char.is_ascii_digit();
 
-        if !(is_all_upper || is_all_lower || is_all_digit) {
+        if !(is_all_upper || is_all_lower || is_all_digit || is_digit_upper_id || is_pascal_case || is_camel_case || is_lower_with_suffix) {
             // Mixed case with digits in short strings is usually garbage
             if digit > 0 && (upper > 0 || lower > 0) {
                 return true;
             }
-            // Unusual mixed case patterns
-            if upper > 0 && lower > 0 && len <= 3 {
+            // Irregular mixed case patterns are usually garbage from compressed data
+            // (e.g., "zVQO", "IKfB", "phbS", "OsVLJ", "HQIld")
+            if upper > 0 && lower > 0 {
                 return true;
             }
         }
     }
 
-    // Short strings with noise punctuation are garbage
-    if len <= 6 && noise_punct > 0 {
+    // Short strings with noise punctuation are garbage (expanded range for compressed data)
+    if len <= 10 && noise_punct > 0 {
         return true;
     }
 
@@ -460,6 +526,31 @@ pub fn is_garbage(s: &str) -> bool {
             return true;
         }
         if special > 0 && len <= 5 {
+            return true;
+        }
+    }
+
+    // Medium-length strings (5-10 chars) with mixed case and digits are usually noise
+    // from compressed data (e.g., "fprzTR8", "J=22KJT", "V1rN:R")
+    // Exclude legitimate patterns like version strings, dates, paths
+    if (5..=10).contains(&len) && digit > 0 && upper > 0 && lower > 0 {
+        // Allow patterns that look like versions (go1.22, v1.0) or dates
+        let looks_like_version = trimmed.starts_with("go")
+            || trimmed.starts_with("v")
+            || trimmed.starts_with("V")
+            || trimmed.contains(".");
+        if !looks_like_version {
+            return true;
+        }
+    }
+
+    // Short strings (5-8 chars) with all uppercase + digits but irregular pattern
+    // are usually garbage (e.g., "55LYE", "0GZF")
+    if (5..=8).contains(&len) && digit > 0 && alpha == upper && lower == 0 && special == 0 {
+        // Allow patterns like "HTTP2", "UTF8" where digit is at the end
+        let last_char = trimmed.chars().last().unwrap_or(' ');
+        let first_char = trimmed.chars().next().unwrap_or(' ');
+        if first_char.is_ascii_digit() || (!last_char.is_ascii_digit() && digit > 0) {
             return true;
         }
     }
@@ -595,35 +686,13 @@ mod tests {
             },
         ];
 
-        let strings = extract_from_structures(blob, 0x1000, &structs, Some("test"), |_| StringKind::Const);
+        let strings =
+            extract_from_structures(blob, 0x1000, &structs, Some("test"), |_| StringKind::Const);
 
         assert_eq!(strings.len(), 2);
         assert_eq!(strings[0].value, "Hello");
         assert_eq!(strings[1].value, "World");
         assert_eq!(strings[0].method, StringMethod::Structure);
-    }
-
-    #[test]
-    fn test_extract_from_structures_deduplication() {
-        let blob = b"HelloHello";
-        let structs = vec![
-            StringStruct {
-                struct_offset: 0,
-                ptr: 0x1000,
-                len: 5,
-            },
-            StringStruct {
-                struct_offset: 16,
-                ptr: 0x1005,
-                len: 5,
-            },
-        ];
-
-        let strings = extract_from_structures(blob, 0x1000, &structs, None, |_| StringKind::Const);
-
-        // Should deduplicate "Hello"
-        assert_eq!(strings.len(), 1);
-        assert_eq!(strings[0].value, "Hello");
     }
 
     #[test]
@@ -653,6 +722,20 @@ mod tests {
     }
 
     #[test]
+    fn test_is_garbage_jpeg_metadata() {
+        // JPEG/image metadata strings should NOT be garbage
+        assert!(!is_garbage("JFIF"));
+        assert!(!is_garbage("Photoshop 3.0"));
+        assert!(!is_garbage("8BIM")); // Photoshop resource marker
+        assert!(!is_garbage("Exif"));
+        assert!(!is_garbage("cph/3c13276u.tif"));
+        assert!(!is_garbage("1998:12:15 13:03:34"));
+        assert!(!is_garbage("Library of Congress"));
+        // JPEG quantization table character sequence
+        assert!(!is_garbage("%&'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz"));
+    }
+
+    #[test]
     fn test_is_garbage_misaligned_go_reads() {
         // Misaligned Go data patterns should be garbage
         assert!(is_garbage("asL "));
@@ -679,6 +762,11 @@ mod tests {
         assert!(is_garbage("0Y/("));
         assert!(is_garbage("UoV#"));
         assert!(is_garbage("1j2`1r2l1128"));
+        // JPEG/binary compressed data patterns
+        assert!(is_garbage("Gi4r"));
+        assert!(is_garbage("Uim0"));
+        assert!(is_garbage("Ilu4"));
+        assert!(is_garbage("cwZd"));
         // But all-uppercase, all-lowercase, or all-numeric are OK
         assert!(!is_garbage("PFO"));
         assert!(!is_garbage("API"));
@@ -897,13 +985,9 @@ mod tests {
             len: 5,
         }];
 
-        let strings = extract_from_structures(
-            blob,
-            0x1000,
-            &structs,
-            Some(".rodata"),
-            |_| StringKind::Const,
-        );
+        let strings = extract_from_structures(blob, 0x1000, &structs, Some(".rodata"), |_| {
+            StringKind::Const
+        });
 
         assert_eq!(strings.len(), 1);
         assert_eq!(strings[0].section, Some(".rodata".to_string()));
@@ -918,13 +1002,13 @@ mod tests {
             len: 8,
         }];
 
-        let strings = extract_from_structures(
-            blob,
-            0x1000,
-            &structs,
-            None,
-            |s| if s.starts_with('/') { StringKind::Path } else { StringKind::Const },
-        );
+        let strings = extract_from_structures(blob, 0x1000, &structs, None, |s| {
+            if s.starts_with('/') {
+                StringKind::Path
+            } else {
+                StringKind::Const
+            }
+        });
 
         assert_eq!(strings.len(), 1);
         assert_eq!(strings[0].kind, StringKind::Path);

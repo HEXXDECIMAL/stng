@@ -177,8 +177,8 @@ fn extract_arm64_string_pattern(
                     section: Some("__rodata".to_string()),
                     method: StringMethod::InstructionPattern,
                     kind: final_kind,
-                library: None,
-            });
+                    library: None,
+                });
             }
         }
 
@@ -192,7 +192,8 @@ fn looks_like_key(s: &str) -> bool {
         && !s.contains(' ')
         && !s.starts_with('/')
         && !s.contains("://")
-        && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 /// Decode ARM64 ADRP+ADD instructions to extract string address and length.
@@ -492,8 +493,8 @@ fn extract_amd64_first_arg_string(
                         section: Some(".rodata".to_string()),
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
-                library: None,
-            });
+                        library: None,
+                    });
                 }
             }
 
@@ -578,8 +579,8 @@ fn extract_amd64_key_string(
                         section: Some(".rodata".to_string()),
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
-                library: None,
-            });
+                        library: None,
+                    });
                 }
             }
 
@@ -671,8 +672,8 @@ fn extract_amd64_value_string(
                         section: Some(".rodata".to_string()),
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
-                library: None,
-            });
+                        library: None,
+                    });
                 }
             }
 
@@ -719,7 +720,7 @@ mod tests {
     fn test_is_valid_utf8_string_mostly_printable() {
         // More than 50% printable should pass
         assert!(is_valid_utf8_string("ab\x01")); // 2/3 printable
-        // Less than 50% should fail
+                                                 // Less than 50% should fail
         assert!(!is_valid_utf8_string("\x01\x02\x03a")); // 1/4 printable
     }
 
@@ -822,13 +823,7 @@ mod tests {
         let text_data = &[];
         let rodata_data = b"Hello World";
 
-        let strings = extract_inline_strings_arm64(
-            text_data,
-            0x1000,
-            rodata_data,
-            0x2000,
-            4,
-        );
+        let strings = extract_inline_strings_arm64(text_data, 0x1000, rodata_data, 0x2000, 4);
 
         assert!(strings.is_empty());
     }
@@ -839,13 +834,7 @@ mod tests {
         let text_data = vec![0x00u8; 100];
         let rodata_data = b"Hello World";
 
-        let strings = extract_inline_strings_arm64(
-            &text_data,
-            0x1000,
-            rodata_data,
-            0x2000,
-            4,
-        );
+        let strings = extract_inline_strings_arm64(&text_data, 0x1000, rodata_data, 0x2000, 4);
 
         assert!(strings.is_empty());
     }
@@ -855,13 +844,7 @@ mod tests {
         let text_data = &[];
         let rodata_data = b"Hello World";
 
-        let strings = extract_inline_strings_amd64(
-            text_data,
-            0x1000,
-            rodata_data,
-            0x2000,
-            4,
-        );
+        let strings = extract_inline_strings_amd64(text_data, 0x1000, rodata_data, 0x2000, 4);
 
         assert!(strings.is_empty());
     }
@@ -872,13 +855,7 @@ mod tests {
         let text_data = vec![0x90u8; 100]; // NOP instructions
         let rodata_data = b"Hello World";
 
-        let strings = extract_inline_strings_amd64(
-            &text_data,
-            0x1000,
-            rodata_data,
-            0x2000,
-            4,
-        );
+        let strings = extract_inline_strings_amd64(&text_data, 0x1000, rodata_data, 0x2000, 4);
 
         assert!(strings.is_empty());
     }
@@ -888,17 +865,11 @@ mod tests {
         // Create code with a CALL instruction but no valid string pattern
         let mut text_data = vec![0x90u8; 100];
         text_data[50] = 0xE8; // CALL opcode
-        // Rest is garbage offset
+                              // Rest is garbage offset
 
         let rodata_data = b"Hello World";
 
-        let strings = extract_inline_strings_amd64(
-            &text_data,
-            0x1000,
-            rodata_data,
-            0x2000,
-            4,
-        );
+        let strings = extract_inline_strings_amd64(&text_data, 0x1000, rodata_data, 0x2000, 4);
 
         // No valid pattern found
         assert!(strings.is_empty());
@@ -910,13 +881,7 @@ mod tests {
         let text_data = vec![0x00u8; 8];
         let rodata_data = b"Test";
 
-        let strings = extract_inline_strings_arm64(
-            &text_data,
-            0x1000,
-            rodata_data,
-            0x2000,
-            4,
-        );
+        let strings = extract_inline_strings_arm64(&text_data, 0x1000, rodata_data, 0x2000, 4);
 
         assert!(strings.is_empty());
     }

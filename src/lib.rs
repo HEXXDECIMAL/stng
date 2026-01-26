@@ -40,10 +40,10 @@ mod rust;
 
 pub use common::{is_garbage, BinaryInfo, ExtractedString, StringKind, StringMethod, StringStruct};
 
-use memchr::memchr_iter;
-use std::collections::HashSet;
 pub use go::GoStringExtractor;
+use memchr::memchr_iter;
 pub use rust::RustStringExtractor;
+use std::collections::HashSet;
 
 // Re-export goblin so library clients can parse binaries themselves
 pub use goblin;
@@ -189,18 +189,20 @@ fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> Vec<Extract
         let (kind, library) = if sym.st_shndx == 0 {
             // Undefined - this is an import
             // Try to find the library from verneed
-            let lib = elf.verneed.iter()
+            let lib = elf
+                .verneed
+                .iter()
                 .flat_map(|v| v.iter())
                 .find(|vn| {
-                    vn.iter().any(|aux| {
-                        elf.dynstrtab.get_at(aux.vna_name) == Some(name)
-                    })
+                    vn.iter()
+                        .any(|aux| elf.dynstrtab.get_at(aux.vna_name) == Some(name))
                 })
                 .and_then(|vn| elf.dynstrtab.get_at(vn.vn_file))
                 .map(|s| s.to_string());
             (StringKind::Import, lib)
         } else if sym.st_bind() == goblin::elf::sym::STB_GLOBAL
-            || sym.st_bind() == goblin::elf::sym::STB_WEAK {
+            || sym.st_bind() == goblin::elf::sym::STB_WEAK
+        {
             // Defined global/weak symbol - this is an export
             (StringKind::Export, None)
         } else {
@@ -340,7 +342,11 @@ fn get_r2_strings(opts: &ExtractOptions) -> Option<Vec<ExtractedString>> {
 /// let opts = ExtractOptions::new(4);
 /// let strings = extract_from_object(&object, &data, &opts);
 /// ```
-pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+pub fn extract_from_object(
+    object: &Object,
+    data: &[u8],
+    opts: &ExtractOptions,
+) -> Vec<ExtractedString> {
     let min_length = opts.min_length;
     let mut strings = Vec::new();
 
@@ -420,10 +426,11 @@ pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) 
             if let Some(ref macho) = first_macho {
                 let imports = extract_macho_imports(macho, min_length);
                 // Build a map of import values to their library info
-                let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
-                    .iter()
-                    .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
-                    .collect();
+                let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> =
+                    imports
+                        .iter()
+                        .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
+                        .collect();
                 // Update existing strings that are actually imports
                 for s in strings.iter_mut() {
                     if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
@@ -496,9 +503,15 @@ pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) 
         }
         Object::PE(pe) => {
             // Collect PE section names
-            let segments: Vec<String> = pe.sections.iter().map(|sec| {
-                String::from_utf8_lossy(&sec.name).trim_end_matches('\0').to_string()
-            }).collect();
+            let segments: Vec<String> = pe
+                .sections
+                .iter()
+                .map(|sec| {
+                    String::from_utf8_lossy(&sec.name)
+                        .trim_end_matches('\0')
+                        .to_string()
+                })
+                .collect();
 
             // Check for Go by looking for go.buildinfo or runtime.main
             let has_go = pe.sections.iter().any(|sec| {
@@ -541,7 +554,11 @@ pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) 
 /// Extract strings from a pre-parsed Mach-O binary.
 ///
 /// This allows library clients who have already parsed the binary to avoid re-parsing.
-pub fn extract_from_macho(macho: &MachO, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+pub fn extract_from_macho(
+    macho: &MachO,
+    data: &[u8],
+    opts: &ExtractOptions,
+) -> Vec<ExtractedString> {
     let min_length = opts.min_length;
     let mut strings = Vec::new();
     let segments = collect_macho_segments(macho);
@@ -597,7 +614,11 @@ pub fn extract_from_macho(macho: &MachO, data: &[u8], opts: &ExtractOptions) -> 
 /// Extract strings from a pre-parsed ELF binary.
 ///
 /// This allows library clients who have already parsed the binary to avoid re-parsing.
-pub fn extract_from_elf(elf: &goblin::elf::Elf, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+pub fn extract_from_elf(
+    elf: &goblin::elf::Elf,
+    data: &[u8],
+    opts: &ExtractOptions,
+) -> Vec<ExtractedString> {
     let min_length = opts.min_length;
     let mut strings = Vec::new();
     let segments = collect_elf_segments(elf);
@@ -664,14 +685,24 @@ pub fn extract_from_elf(elf: &goblin::elf::Elf, data: &[u8], opts: &ExtractOptio
 /// Extract strings from a pre-parsed PE binary.
 ///
 /// This allows library clients who have already parsed the binary to avoid re-parsing.
-pub fn extract_from_pe(pe: &goblin::pe::PE, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+pub fn extract_from_pe(
+    pe: &goblin::pe::PE,
+    data: &[u8],
+    opts: &ExtractOptions,
+) -> Vec<ExtractedString> {
     let min_length = opts.min_length;
     let mut strings = Vec::new();
 
     // Collect PE section names
-    let segments: Vec<String> = pe.sections.iter().map(|sec| {
-        String::from_utf8_lossy(&sec.name).trim_end_matches('\0').to_string()
-    }).collect();
+    let segments: Vec<String> = pe
+        .sections
+        .iter()
+        .map(|sec| {
+            String::from_utf8_lossy(&sec.name)
+                .trim_end_matches('\0')
+                .to_string()
+        })
+        .collect();
 
     // Check for Go
     let has_go = pe.sections.iter().any(|sec| {
@@ -702,7 +733,11 @@ pub fn extract_from_pe(pe: &goblin::pe::PE, data: &[u8], opts: &ExtractOptions) 
     strings
 }
 
-/// Extract raw null-terminated strings from binary data (fallback for unknown binaries).
+/// Extract raw strings from binary data (fallback for unknown binaries).
+///
+/// Uses two strategies:
+/// 1. Null-terminated strings (traditional approach)
+/// 2. Printable character runs (like traditional `strings` command)
 fn extract_raw_strings(
     data: &[u8],
     min_length: usize,
@@ -714,9 +749,9 @@ fn extract_raw_strings(
 
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut prev_end = 0usize;
 
-    // Use memchr to quickly find null bytes
+    // Strategy 1: Null-terminated strings
+    let mut prev_end = 0usize;
     for null_pos in memchr_iter(0, data) {
         let chunk = &data[prev_end..null_pos];
         let chunk_start = prev_end;
@@ -727,7 +762,6 @@ fn extract_raw_strings(
         }
 
         // Find the last contiguous printable run that ends at the chunk boundary
-        // (this matches original behavior: non-printable bytes reset the buffer)
         let mut run_start = None;
         for (i, &b) in chunk.iter().enumerate() {
             if b.is_ascii_graphic() || b.is_ascii_whitespace() {
@@ -749,7 +783,6 @@ fn extract_raw_strings(
         if let Ok(s) = std::str::from_utf8(candidate) {
             let trimmed = s.trim();
             if trimmed.len() >= min_length && !trimmed.is_empty() && !seen.contains(trimmed) {
-                // Check if this string matches a known segment/section name
                 let kind = if segment_names_set.contains(trimmed) {
                     StringKind::Section
                 } else {
@@ -769,20 +802,165 @@ fn extract_raw_strings(
         }
     }
 
+    // Strategy 2: Printable character runs (like traditional `strings`)
+    // This catches strings that aren't null-terminated (common in JPEG, PDF, etc.)
+    extract_printable_runs(data, min_length, &section, &segment_names_set, &mut strings, &mut seen);
+
     strings
+}
+
+/// Extract strings by scanning for runs of printable ASCII characters.
+/// This mimics the behavior of the traditional `strings` command.
+fn extract_printable_runs(
+    data: &[u8],
+    min_length: usize,
+    section: &Option<String>,
+    segment_names_set: &HashSet<&str>,
+    strings: &mut Vec<ExtractedString>,
+    seen: &mut HashSet<String>,
+) {
+    let mut run_start: Option<usize> = None;
+
+    for (i, &b) in data.iter().enumerate() {
+        let is_printable = b.is_ascii_graphic() || matches!(b, b' ' | b'\t');
+
+        if is_printable {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+        } else if let Some(start) = run_start {
+            // End of a printable run
+            let run = &data[start..i];
+            if run.len() >= min_length {
+                if let Ok(s) = std::str::from_utf8(run) {
+                    let trimmed = s.trim();
+                    if trimmed.len() >= min_length && !seen.contains(trimmed) {
+                        let kind = if segment_names_set.contains(trimmed) {
+                            StringKind::Section
+                        } else {
+                            go::classify_string(trimmed)
+                        };
+
+                        seen.insert(trimmed.to_string());
+                        strings.push(ExtractedString {
+                            value: trimmed.to_string(),
+                            data_offset: start as u64,
+                            section: section.clone(),
+                            method: StringMethod::RawScan,
+                            kind,
+                            library: None,
+                        });
+                    }
+                }
+            }
+            run_start = None;
+        }
+    }
+
+    // Handle run at end of data
+    if let Some(start) = run_start {
+        let run = &data[start..];
+        if run.len() >= min_length {
+            if let Ok(s) = std::str::from_utf8(run) {
+                let trimmed = s.trim();
+                if trimmed.len() >= min_length && !seen.contains(trimmed) {
+                    let kind = if segment_names_set.contains(trimmed) {
+                        StringKind::Section
+                    } else {
+                        go::classify_string(trimmed)
+                    };
+
+                    seen.insert(trimmed.to_string());
+                    strings.push(ExtractedString {
+                        value: trimmed.to_string(),
+                        data_offset: start as u64,
+                        section: section.clone(),
+                        method: StringMethod::RawScan,
+                        kind,
+                        library: None,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Detect the language of a binary.
 ///
-/// Returns "go", "rust", or "unknown".
+/// Returns "go", "rust", "text", or "unknown".
 pub fn detect_language(data: &[u8]) -> &'static str {
     if is_go_binary(data) {
         "go"
     } else if is_rust_binary(data) {
         "rust"
+    } else if is_text_file(data) {
+        "text"
     } else {
         "unknown"
     }
+}
+
+/// Check if data appears to be a text file rather than a binary.
+///
+/// Uses heuristics:
+/// - Must be valid UTF-8 (or mostly ASCII)
+/// - High ratio of printable characters
+/// - No binary magic numbers at the start
+pub fn is_text_file(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return false;
+    }
+
+    // Check for common binary magic numbers
+    if data.len() >= 4 {
+        let magic = &data[0..4];
+        // ELF
+        if magic == [0x7f, b'E', b'L', b'F'] {
+            return false;
+        }
+        // Mach-O (32-bit and 64-bit, both endiannesses)
+        if magic == [0xfe, 0xed, 0xfa, 0xce]
+            || magic == [0xce, 0xfa, 0xed, 0xfe]
+            || magic == [0xfe, 0xed, 0xfa, 0xcf]
+            || magic == [0xcf, 0xfa, 0xed, 0xfe]
+        {
+            return false;
+        }
+        // Fat Mach-O
+        if magic == [0xca, 0xfe, 0xba, 0xbe] || magic == [0xbe, 0xba, 0xfe, 0xca] {
+            return false;
+        }
+    }
+    if data.len() >= 2 {
+        // PE (MZ header)
+        if data[0..2] == [b'M', b'Z'] {
+            return false;
+        }
+    }
+
+    // Sample up to 8KB for performance
+    let sample_size = data.len().min(8192);
+    let sample = &data[..sample_size];
+
+    // Count printable vs non-printable bytes
+    let mut printable = 0usize;
+    let mut null_bytes = 0usize;
+
+    for &b in sample {
+        if b == 0 {
+            null_bytes += 1;
+        } else if b.is_ascii_graphic() || b.is_ascii_whitespace() {
+            printable += 1;
+        }
+    }
+
+    // Text files should have very few null bytes (allow a couple for edge cases)
+    if null_bytes > 2 {
+        return false;
+    }
+
+    // At least 85% should be printable ASCII for it to be considered text
+    printable * 100 / sample_size >= 85
 }
 
 #[cfg(test)]
@@ -796,8 +974,19 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_strings_invalid_binary() {
+    fn test_extract_strings_from_printable_data() {
+        // Printable data should now be extracted (like traditional `strings`)
         let data = b"not a valid binary format";
+        let strings = extract_strings(data, 4);
+        // Should find the printable string
+        assert!(!strings.is_empty());
+        assert!(strings.iter().any(|s| s.value.contains("valid")));
+    }
+
+    #[test]
+    fn test_extract_strings_pure_binary() {
+        // Pure binary data with no printable runs should return empty
+        let data = &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
         let strings = extract_strings(data, 4);
         assert!(strings.is_empty());
     }
@@ -808,8 +997,15 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_language_invalid() {
-        assert_eq!(detect_language(b"not a binary"), "unknown");
+    fn test_detect_language_text() {
+        // Plain text should be detected as "text"
+        assert_eq!(detect_language(b"not a binary"), "text");
+    }
+
+    #[test]
+    fn test_detect_language_binary_garbage() {
+        // Binary garbage should be "unknown"
+        assert_eq!(detect_language(&[0x00, 0x01, 0x02, 0x03, 0x04]), "unknown");
     }
 
     #[test]
@@ -869,6 +1065,29 @@ mod tests {
     #[test]
     fn test_is_rust_binary_invalid() {
         assert!(!is_rust_binary(b"not a binary"));
+    }
+
+    #[test]
+    fn test_is_text_file_basic() {
+        assert!(is_text_file(b"Hello, world!"));
+        assert!(is_text_file(b"fn main() {\n    println!(\"Hello\");\n}"));
+    }
+
+    #[test]
+    fn test_is_text_file_empty() {
+        assert!(!is_text_file(&[]));
+    }
+
+    #[test]
+    fn test_is_text_file_binary() {
+        // Binary data with null bytes
+        assert!(!is_text_file(&[0x00, 0x01, 0x02, 0x03]));
+        // ELF magic
+        assert!(!is_text_file(&[0x7f, b'E', b'L', b'F', 0x02, 0x01]));
+        // Mach-O magic
+        assert!(!is_text_file(&[0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00]));
+        // PE magic
+        assert!(!is_text_file(&[b'M', b'Z', 0x90, 0x00]));
     }
 
     // Helper to create minimal ELF header
@@ -954,7 +1173,9 @@ mod tests {
         let data = b"Hello\0World\0";
         let strings = extract_raw_strings(data, 4, Some(".rodata".to_string()), &[]);
 
-        assert!(strings.iter().all(|s| s.section == Some(".rodata".to_string())));
+        assert!(strings
+            .iter()
+            .all(|s| s.section == Some(".rodata".to_string())));
     }
 
     #[test]
@@ -1016,7 +1237,10 @@ mod tests {
         let data = b"https://example.com\0/usr/bin\0PATH\0hello world\0";
         let strings = extract_raw_strings(data, 4, None, &[]);
 
-        let url = strings.iter().find(|s| s.value.contains("example")).unwrap();
+        let url = strings
+            .iter()
+            .find(|s| s.value.contains("example"))
+            .unwrap();
         assert_eq!(url.kind, StringKind::Url);
 
         let path = strings.iter().find(|s| s.value == "/usr/bin").unwrap();
@@ -1072,16 +1296,14 @@ mod tests {
 
     #[test]
     fn test_extract_options_with_r2_strings() {
-        let fake_r2_strings = vec![
-            ExtractedString {
-                value: "test_string".to_string(),
-                data_offset: 0x1000,
-                section: None,
-                method: StringMethod::R2String,
-                kind: StringKind::Const,
-                library: None,
-            },
-        ];
+        let fake_r2_strings = vec![ExtractedString {
+            value: "test_string".to_string(),
+            data_offset: 0x1000,
+            section: None,
+            method: StringMethod::R2String,
+            kind: StringKind::Const,
+            library: None,
+        }];
         let opts = ExtractOptions::new(4).with_r2_strings(fake_r2_strings.clone());
         assert!(opts.r2_strings.is_some());
         assert_eq!(opts.r2_strings.unwrap().len(), 1);
@@ -1089,16 +1311,14 @@ mod tests {
 
     #[test]
     fn test_get_r2_strings_preextracted() {
-        let fake_r2_strings = vec![
-            ExtractedString {
-                value: "preextracted".to_string(),
-                data_offset: 0x2000,
-                section: Some(".text".to_string()),
-                method: StringMethod::R2String,
-                kind: StringKind::FuncName,
-                library: None,
-            },
-        ];
+        let fake_r2_strings = vec![ExtractedString {
+            value: "preextracted".to_string(),
+            data_offset: 0x2000,
+            section: Some(".text".to_string()),
+            method: StringMethod::R2String,
+            kind: StringKind::FuncName,
+            library: None,
+        }];
         let opts = ExtractOptions::new(4).with_r2_strings(fake_r2_strings);
         let result = get_r2_strings(&opts);
         assert!(result.is_some());
@@ -1138,16 +1358,14 @@ mod tests {
     fn test_extract_from_object_with_r2_strings() {
         let data = minimal_macho();
         if let Ok(object) = goblin::Object::parse(&data) {
-            let fake_r2_strings = vec![
-                ExtractedString {
-                    value: "from_r2".to_string(),
-                    data_offset: 0x3000,
-                    section: None,
-                    method: StringMethod::R2String,
-                    kind: StringKind::Const,
-                    library: None,
-                },
-            ];
+            let fake_r2_strings = vec![ExtractedString {
+                value: "from_r2".to_string(),
+                data_offset: 0x3000,
+                section: None,
+                method: StringMethod::R2String,
+                kind: StringKind::Const,
+                library: None,
+            }];
             let opts = ExtractOptions::new(4).with_r2_strings(fake_r2_strings);
             let strings = extract_from_object(&object, &data, &opts);
             // Should include the pre-extracted r2 string

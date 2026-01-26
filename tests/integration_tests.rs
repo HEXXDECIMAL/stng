@@ -1,7 +1,7 @@
 //! Integration tests for strangs library.
 
 use strangs::{
-    extract_strings, extract_strings_with_options, detect_language, is_garbage, is_go_binary,
+    detect_language, extract_strings, extract_strings_with_options, is_garbage, is_go_binary,
     is_rust_binary, ExtractOptions, ExtractedString, StringKind, StringMethod,
 };
 
@@ -54,8 +54,18 @@ fn test_extract_strings_empty_data() {
 }
 
 #[test]
-fn test_extract_strings_invalid_binary() {
+fn test_extract_strings_from_printable_data() {
+    // Printable data should be extracted (like traditional `strings`)
     let data = b"not a valid binary format at all";
+    let strings = extract_strings(data, 4);
+    // Should find the printable string
+    assert!(!strings.is_empty());
+}
+
+#[test]
+fn test_extract_strings_pure_binary() {
+    // Pure binary data with no printable runs should return empty
+    let data = &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     let strings = extract_strings(data, 4);
     assert!(strings.is_empty());
 }
@@ -82,8 +92,15 @@ fn test_detect_language_empty() {
 }
 
 #[test]
-fn test_detect_language_invalid() {
-    assert_eq!(detect_language(b"not a binary"), "unknown");
+fn test_detect_language_text() {
+    // Plain text should be detected as "text"
+    assert_eq!(detect_language(b"not a binary"), "text");
+}
+
+#[test]
+fn test_detect_language_binary_garbage() {
+    // Binary garbage should be "unknown"
+    assert_eq!(detect_language(&[0x00, 0x01, 0x02, 0x03, 0x04]), "unknown");
 }
 
 #[test]
@@ -211,7 +228,7 @@ fn test_is_garbage_repeated_chars() {
 #[test]
 fn test_is_garbage_excessive_whitespace() {
     assert!(is_garbage("   a   ")); // Single char after trim
-    // "ab cd" after trim has proper content, may not be garbage
+                                    // "ab cd" after trim has proper content, may not be garbage
 }
 
 #[test]
@@ -232,7 +249,7 @@ fn test_is_garbage_hex_patterns() {
     // These are actually valid lowercase strings
     // The is_garbage function allows all-lowercase short strings
     assert!(!is_garbage("deadbeef")); // All lowercase, allowed
-    // Mixed case short patterns that look like garbage
+                                      // Mixed case short patterns that look like garbage
     assert!(is_garbage("0a1b2c3d")); // Has digits mixed with letters
 }
 
@@ -461,7 +478,11 @@ mod go_binary_tests {
         }
 
         // Try standard locations
-        let paths = ["/opt/homebrew/bin/go", "/usr/local/go/bin/go", "/usr/bin/go"];
+        let paths = [
+            "/opt/homebrew/bin/go",
+            "/usr/local/go/bin/go",
+            "/usr/bin/go",
+        ];
         for path in paths {
             if Path::new(path).exists() {
                 if let Ok(data) = std::fs::read(path) {
@@ -502,7 +523,11 @@ mod go_binary_tests {
         assert!(!strings.is_empty(), "Go binary should have many strings");
 
         // Go binaries typically have thousands of strings
-        assert!(strings.len() > 100, "Expected many strings from Go binary, got {}", strings.len());
+        assert!(
+            strings.len() > 100,
+            "Expected many strings from Go binary, got {}",
+            strings.len()
+        );
     }
 
     #[test]
@@ -518,7 +543,10 @@ mod go_binary_tests {
         let has_go_version = strings.iter().any(|s| s.value.contains("go1."));
 
         // At least one should be true
-        assert!(has_runtime || has_go_version, "Go binary should have runtime or version strings");
+        assert!(
+            has_runtime || has_go_version,
+            "Go binary should have runtime or version strings"
+        );
     }
 
     #[test]
@@ -538,8 +566,8 @@ mod go_binary_tests {
 // Tests using real Rust binaries
 mod rust_binary_tests {
     use super::*;
-    use std::path::Path;
     use std::env;
+    use std::path::Path;
 
     fn get_rust_binary() -> Option<Vec<u8>> {
         // Try the current project's binary first (guaranteed to exist)
@@ -559,7 +587,8 @@ mod rust_binary_tests {
                         if path.is_file() {
                             // Skip very large binaries for faster tests
                             if let Ok(meta) = std::fs::metadata(&path) {
-                                if meta.len() < 50_000_000 { // < 50MB
+                                if meta.len() < 50_000_000 {
+                                    // < 50MB
                                     if let Ok(data) = std::fs::read(&path) {
                                         // Verify it's actually a Rust binary
                                         if is_rust_binary(&data) {
@@ -642,7 +671,10 @@ mod rust_binary_tests {
         let has_const = strings.iter().any(|s| s.kind == StringKind::Const);
         let has_import = strings.iter().any(|s| s.kind == StringKind::Import);
 
-        assert!(has_const || has_import, "Should have Const or Import strings");
+        assert!(
+            has_const || has_import,
+            "Should have Const or Import strings"
+        );
     }
 
     #[test]
@@ -665,11 +697,11 @@ mod rust_binary_tests {
 
         // Rust binaries often have typical Rust strings
         let has_rust_hint = strings.iter().any(|s| {
-            s.value.contains("rust") ||
-            s.value.contains("panic") ||
-            s.value.contains("unwrap") ||
-            s.value.contains("core::") ||
-            s.value.contains("std::")
+            s.value.contains("rust")
+                || s.value.contains("panic")
+                || s.value.contains("unwrap")
+                || s.value.contains("core::")
+                || s.value.contains("std::")
         });
 
         // May not always be true depending on binary, so just log
@@ -792,7 +824,10 @@ mod fat_binary_tests {
             return;
         };
 
-        assert!(!is_rust_binary(&data), "Fat system binary should not be Rust");
+        assert!(
+            !is_rust_binary(&data),
+            "Fat system binary should not be Rust"
+        );
     }
 
     #[test]
@@ -871,7 +906,10 @@ mod r2_tests {
         }
 
         let result = strangs::r2::extract_strings("/nonexistent/path/to/binary", 4);
-        assert!(result.is_none(), "r2 should return None for nonexistent file");
+        assert!(
+            result.is_none(),
+            "r2 should return None for nonexistent file"
+        );
     }
 
     #[test]
@@ -889,7 +927,10 @@ mod r2_tests {
         let opts = ExtractOptions::new(4).with_r2(path);
         let strings = extract_strings_with_options(&data, &opts);
 
-        assert!(!strings.is_empty(), "Extraction with r2 should find strings");
+        assert!(
+            !strings.is_empty(),
+            "Extraction with r2 should find strings"
+        );
     }
 
     #[test]
@@ -922,7 +963,10 @@ mod cross_compiled_tests {
     use std::path::Path;
 
     fn get_go_elf_binary() -> Option<Vec<u8>> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/testdata/hello_linux_amd64");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/hello_linux_amd64"
+        );
         if Path::new(path).exists() {
             std::fs::read(path).ok()
         } else {
@@ -931,7 +975,10 @@ mod cross_compiled_tests {
     }
 
     fn get_go_pe_binary() -> Option<Vec<u8>> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/testdata/hello_windows.exe");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/hello_windows.exe"
+        );
         if Path::new(path).exists() {
             std::fs::read(path).ok()
         } else {
@@ -947,7 +994,10 @@ mod cross_compiled_tests {
             return;
         };
 
-        assert!(is_go_binary(&data), "ELF Go binary should be detected as Go");
+        assert!(
+            is_go_binary(&data),
+            "ELF Go binary should be detected as Go"
+        );
     }
 
     #[test]
@@ -970,7 +1020,11 @@ mod cross_compiled_tests {
         assert!(!strings.is_empty(), "ELF Go binary should have strings");
 
         // Go binaries should have many strings
-        assert!(strings.len() > 100, "Expected many strings from Go ELF, got {}", strings.len());
+        assert!(
+            strings.len() > 100,
+            "Expected many strings from Go ELF, got {}",
+            strings.len()
+        );
     }
 
     #[test]
@@ -1008,7 +1062,9 @@ mod cross_compiled_tests {
         let strings = extract_strings(&data, 4);
 
         // Should have file paths from debug info
-        let has_path = strings.iter().any(|s| s.kind == StringKind::FilePath || s.kind == StringKind::Path);
+        let has_path = strings
+            .iter()
+            .any(|s| s.kind == StringKind::FilePath || s.kind == StringKind::Path);
         assert!(has_path, "ELF Go binary should have file path strings");
     }
 
@@ -1048,7 +1104,10 @@ mod cross_compiled_tests {
         let has_hello = strings.iter().any(|s| s.value.contains("Hello"));
         let has_runtime = strings.iter().any(|s| s.value.contains("runtime"));
 
-        assert!(has_hello || has_runtime, "PE Go binary should have Hello or runtime strings");
+        assert!(
+            has_hello || has_runtime,
+            "PE Go binary should have Hello or runtime strings"
+        );
     }
 
     #[test]
@@ -1057,7 +1116,10 @@ mod cross_compiled_tests {
             return;
         };
 
-        assert!(!is_rust_binary(&data), "Go ELF should not be detected as Rust");
+        assert!(
+            !is_rust_binary(&data),
+            "Go ELF should not be detected as Rust"
+        );
     }
 
     #[test]
@@ -1066,7 +1128,10 @@ mod cross_compiled_tests {
             return;
         };
 
-        assert!(!is_rust_binary(&data), "Go PE should not be detected as Rust");
+        assert!(
+            !is_rust_binary(&data),
+            "Go PE should not be detected as Rust"
+        );
     }
 
     #[test]
@@ -1170,16 +1235,14 @@ mod api_tests {
         let object = strangs::goblin::Object::parse(&data).unwrap();
 
         // Create fake pre-extracted r2 strings
-        let fake_r2 = vec![
-            ExtractedString {
-                value: "fake_r2_string".to_string(),
-                data_offset: 0x1000,
-                section: None,
-                method: StringMethod::R2String,
-                kind: StringKind::Const,
-                library: None,
-            },
-        ];
+        let fake_r2 = vec![ExtractedString {
+            value: "fake_r2_string".to_string(),
+            data_offset: 0x1000,
+            section: None,
+            method: StringMethod::R2String,
+            kind: StringKind::Const,
+            library: None,
+        }];
 
         let opts = ExtractOptions::new(4).with_r2_strings(fake_r2);
         let strings = strangs::extract_from_object(&object, &data, &opts);
@@ -1218,7 +1281,10 @@ mod api_tests {
 
     #[test]
     fn test_extract_from_elf_object() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/testdata/hello_linux_amd64");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/hello_linux_amd64"
+        );
         if !std::path::Path::new(path).exists() {
             return;
         }
@@ -1233,7 +1299,10 @@ mod api_tests {
 
     #[test]
     fn test_extract_from_pe_object() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/testdata/hello_windows.exe");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/hello_windows.exe"
+        );
         if !std::path::Path::new(path).exists() {
             return;
         }
@@ -1405,7 +1474,7 @@ mod edge_case_tests {
         let mut data = vec![0u8; 512];
         // DOS header magic
         data[0..2].copy_from_slice(&[0x4D, 0x5A]); // MZ
-        // PE offset at 0x3C
+                                                   // PE offset at 0x3C
         data[0x3C..0x40].copy_from_slice(&[0x80, 0x00, 0x00, 0x00]);
         // PE signature at 0x80
         data[0x80..0x84].copy_from_slice(&[0x50, 0x45, 0x00, 0x00]); // PE\0\0

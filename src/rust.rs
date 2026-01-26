@@ -102,10 +102,15 @@ impl RustStringExtractor {
                     classify_string,
                 );
 
-                let existing: HashSet<&str> = strings.iter().map(|s: &ExtractedString| s.value.as_str()).collect();
+                let existing: HashSet<&str> = strings
+                    .iter()
+                    .map(|s: &ExtractedString| s.value.as_str())
+                    .collect();
                 let new_strings: Vec<_> = structured
                     .into_iter()
-                    .filter(|s| s.value.len() >= self.min_length && !existing.contains(s.value.as_str()))
+                    .filter(|s| {
+                        s.value.len() >= self.min_length && !existing.contains(s.value.as_str())
+                    })
                     .collect();
                 strings.extend(new_strings);
             }
@@ -117,7 +122,9 @@ impl RustStringExtractor {
             let existing: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
             let new_strings: Vec<_> = raw
                 .into_iter()
-                .filter(|s| s.value.len() >= self.min_length && !existing.contains(s.value.as_str()))
+                .filter(|s| {
+                    s.value.len() >= self.min_length && !existing.contains(s.value.as_str())
+                })
                 .collect();
             strings.extend(new_strings);
         }
@@ -139,8 +146,8 @@ impl RustStringExtractor {
                         section: s.section,
                         method: StringMethod::Heuristic,
                         kind: s.kind,
-                library: None,
-            });
+                        library: None,
+                    });
                 }
             }
         }
@@ -363,8 +370,8 @@ impl RustStringExtractor {
                                 section: section_name.clone(),
                                 method: StringMethod::RawScan,
                                 kind: classify_string(trimmed),
-                library: None,
-            });
+                                library: None,
+                            });
                         }
                     }
                 }
@@ -556,8 +563,8 @@ impl RustStringExtractor {
             section: section_name.clone(),
             method: StringMethod::Heuristic,
             kind: classify_string(trimmed),
-                library: None,
-            });
+            library: None,
+        });
     }
 }
 
@@ -763,7 +770,12 @@ mod tests {
         let mut strings = Vec::new();
         let mut seen = HashSet::new();
 
-        extractor.add_if_valid("hello_world", &Some(".rodata".to_string()), &mut strings, &mut seen);
+        extractor.add_if_valid(
+            "hello_world",
+            &Some(".rodata".to_string()),
+            &mut strings,
+            &mut seen,
+        );
 
         assert_eq!(strings.len(), 1);
         assert_eq!(strings[0].value, "hello_world");
@@ -823,7 +835,10 @@ mod tests {
         let strings = extractor.extract_raw_strings(data, None);
 
         // Check classification
-        let url = strings.iter().find(|s| s.value.contains("example")).unwrap();
+        let url = strings
+            .iter()
+            .find(|s| s.value.contains("example"))
+            .unwrap();
         assert_eq!(url.kind, StringKind::Url);
 
         let path = strings.iter().find(|s| s.value.contains("/usr")).unwrap();

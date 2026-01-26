@@ -10,7 +10,11 @@ use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(name = "strangs")]
-#[command(author, version, about = "Language-aware string extraction for Go and Rust binaries")]
+#[command(
+    author,
+    version,
+    about = "Language-aware string extraction for Go and Rust binaries"
+)]
 #[command(long_about = "
 strangs extracts strings from compiled Go and Rust binaries with proper
 boundary detection. Unlike traditional `strings(1)`, it understands how
@@ -79,6 +83,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle text files like cat
+    if strangs::is_text_file(&data) {
+        let content = String::from_utf8_lossy(&data);
+        print!("{}", content);
+        return Ok(());
+    }
+
     // Determine whether to use radare2
     let use_r2 = if cli.no_r2 {
         false
@@ -90,8 +101,8 @@ fn main() -> Result<()> {
     };
 
     // Extract strings with options
-    let mut opts = strangs::ExtractOptions::new(cli.min_length)
-        .with_garbage_filter(!cli.unfiltered); // Filter garbage by default unless --unfiltered
+    let mut opts =
+        strangs::ExtractOptions::new(cli.min_length).with_garbage_filter(!cli.unfiltered); // Filter garbage by default unless --unfiltered
 
     if use_r2 {
         opts = opts.with_r2(&cli.target);
@@ -138,20 +149,14 @@ fn main() -> Result<()> {
             return Ok(());
         }
 
-        println!(
-            "Extracted {} strings from {}\n",
-            strings.len(),
-            cli.target
-        );
+        println!("Extracted {} strings from {}\n", strings.len(), cli.target);
 
         // Sort by section, then by offset
-        strings.sort_by(|a, b| {
-            match (&a.section, &b.section) {
-                (Some(sa), Some(sb)) => sa.cmp(sb).then(a.data_offset.cmp(&b.data_offset)),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.data_offset.cmp(&b.data_offset),
-            }
+        strings.sort_by(|a, b| match (&a.section, &b.section) {
+            (Some(sa), Some(sb)) => sa.cmp(sb).then(a.data_offset.cmp(&b.data_offset)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.data_offset.cmp(&b.data_offset),
         });
 
         let mut current_section: Option<&str> = None;
@@ -166,10 +171,7 @@ fn main() -> Result<()> {
                 }
                 let section_name = section.unwrap_or("(unknown)");
                 println!("-- {} {:-<60}", section_name, "");
-                println!(
-                    "{:<12} {:<18} VALUE",
-                    "OFFSET", "KIND"
-                );
+                println!("{:<12} {:<18} VALUE", "OFFSET", "KIND");
                 current_section = section;
             }
 

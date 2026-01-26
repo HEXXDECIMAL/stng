@@ -1,7 +1,7 @@
 //! CLI integration tests for strangs.
 
-use std::process::Command;
 use std::path::Path;
+use std::process::Command;
 
 fn strangs_cmd() -> Command {
     Command::new(env!("CARGO_BIN_EXE_strangs"))
@@ -44,11 +44,31 @@ fn test_cli_nonexistent_file() {
 }
 
 #[test]
-fn test_cli_detect_language() {
-    // Create a temp file with minimal content
+fn test_cli_detect_language_text() {
+    // Create a temp file with text content
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_detect.bin");
+    let temp_file = temp_dir.join("strangs_test_detect_text.txt");
     std::fs::write(&temp_file, b"not a binary").unwrap();
+
+    let output = strangs_cmd()
+        .arg("--detect")
+        .arg(&temp_file)
+        .output()
+        .expect("Failed to execute strangs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("text"));
+
+    std::fs::remove_file(&temp_file).ok();
+}
+
+#[test]
+fn test_cli_detect_language_unknown() {
+    // Create a temp file with binary garbage
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("strangs_test_detect_bin.bin");
+    std::fs::write(&temp_file, &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
 
     let output = strangs_cmd()
         .arg("--detect")
@@ -184,8 +204,12 @@ fn test_cli_unfiltered() {
 
     if output1.status.success() && output2.status.success() {
         // Unfiltered should have more or equal strings
-        let count1 = String::from_utf8_lossy(&output1.stdout).matches("\"value\"").count();
-        let count2 = String::from_utf8_lossy(&output2.stdout).matches("\"value\"").count();
+        let count1 = String::from_utf8_lossy(&output1.stdout)
+            .matches("\"value\"")
+            .count();
+        let count2 = String::from_utf8_lossy(&output2.stdout)
+            .matches("\"value\"")
+            .count();
         assert!(count2 >= count1);
     }
 }
@@ -238,17 +262,37 @@ fn test_cli_no_r2() {
 }
 
 #[test]
-fn test_cli_invalid_binary_format() {
+fn test_cli_text_file_cat() {
+    // Text files should be output like `cat`
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_invalid.txt");
-    std::fs::write(&temp_file, b"This is just a text file, not a binary").unwrap();
+    let temp_file = temp_dir.join("strangs_test_text.txt");
+    let content = b"This is just a text file, not a binary";
+    std::fs::write(&temp_file, content).unwrap();
 
     let output = strangs_cmd()
         .arg(&temp_file)
         .output()
         .expect("Failed to execute strangs");
 
-    // Should succeed but find no strings
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("This is just a text file"));
+
+    std::fs::remove_file(&temp_file).ok();
+}
+
+#[test]
+fn test_cli_binary_garbage() {
+    // Binary garbage should find no strings
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("strangs_test_garbage.bin");
+    std::fs::write(&temp_file, &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
+
+    let output = strangs_cmd()
+        .arg(&temp_file)
+        .output()
+        .expect("Failed to execute strangs");
+
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("No strings found"));

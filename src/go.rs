@@ -433,7 +433,10 @@ fn classify_gopclntab_string(s: &str) -> StringKind {
             }
         }
         // Simple package.Function format (no slashes)
-        if !s.contains('/') && s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_') {
+        if !s.contains('/')
+            && s.chars()
+                .all(|c| c.is_alphanumeric() || c == '.' || c == '_')
+        {
             return StringKind::FuncName;
         }
     }
@@ -459,7 +462,11 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::Url;
     }
     // Database URLs
-    if s.starts_with("postgresql://") || s.starts_with("mysql://") || s.starts_with("redis://") || s.starts_with("mongodb://") {
+    if s.starts_with("postgresql://")
+        || s.starts_with("mysql://")
+        || s.starts_with("redis://")
+        || s.starts_with("mongodb://")
+    {
         return StringKind::Url;
     }
     // File paths
@@ -469,14 +476,23 @@ pub fn classify_string(s: &str) -> StringKind {
     // Environment variable names (UPPERCASE, optionally with _ and digits)
     // Must start with letter, be all uppercase, at least 4 chars (or 3+ with underscore)
     if s.len() >= 3
-        && s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
-        && s.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+        && s.chars()
+            .next()
+            .map(|c| c.is_ascii_uppercase())
+            .unwrap_or(false)
+        && s.chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
         && (s.len() >= 4 || s.contains('_'))
     {
         return StringKind::EnvVar;
     }
     // Error messages often start with lowercase and contain spaces
-    if s.contains("error") || s.contains("failed") || s.contains("invalid") || s.contains("cannot") || s.contains("unable") {
+    if s.contains("error")
+        || s.contains("failed")
+        || s.contains("invalid")
+        || s.contains("cannot")
+        || s.contains("unable")
+    {
         return StringKind::Error;
     }
     StringKind::Const
@@ -526,7 +542,8 @@ mod tests {
             },
         ];
 
-        let strings = extract_from_structures(blob, 0x1000, &structs, Some("test"), |_| StringKind::Const);
+        let strings =
+            extract_from_structures(blob, 0x1000, &structs, Some("test"), |_| StringKind::Const);
 
         assert_eq!(strings.len(), 2);
         assert_eq!(strings[0].value, "Hello");
@@ -563,7 +580,10 @@ mod tests {
     fn test_classify_string_urls() {
         assert_eq!(classify_string("https://example.com"), StringKind::Url);
         assert_eq!(classify_string("http://localhost:8080"), StringKind::Url);
-        assert_eq!(classify_string("postgresql://user:pass@host/db"), StringKind::Url);
+        assert_eq!(
+            classify_string("postgresql://user:pass@host/db"),
+            StringKind::Url
+        );
     }
 
     #[test]
@@ -600,8 +620,14 @@ mod tests {
     #[test]
     fn test_classify_gopclntab_string_source_files() {
         assert_eq!(classify_gopclntab_string("main.go"), StringKind::FilePath);
-        assert_eq!(classify_gopclntab_string("runtime/proc.go"), StringKind::FilePath);
-        assert_eq!(classify_gopclntab_string("asm_amd64.s"), StringKind::FilePath);
+        assert_eq!(
+            classify_gopclntab_string("runtime/proc.go"),
+            StringKind::FilePath
+        );
+        assert_eq!(
+            classify_gopclntab_string("asm_amd64.s"),
+            StringKind::FilePath
+        );
         assert_eq!(classify_gopclntab_string("syscall.c"), StringKind::FilePath);
         assert_eq!(classify_gopclntab_string("types.h"), StringKind::FilePath);
     }
@@ -609,21 +635,39 @@ mod tests {
     #[test]
     fn test_classify_gopclntab_string_functions() {
         // Package.Function format
-        assert_eq!(classify_gopclntab_string("runtime.main"), StringKind::FuncName);
+        assert_eq!(
+            classify_gopclntab_string("runtime.main"),
+            StringKind::FuncName
+        );
         assert_eq!(classify_gopclntab_string("main.init"), StringKind::FuncName);
 
         // With method receiver
-        assert_eq!(classify_gopclntab_string("(*Server).ServeHTTP"), StringKind::FuncName);
-        assert_eq!(classify_gopclntab_string("bufio.(*Reader).Read"), StringKind::FuncName);
+        assert_eq!(
+            classify_gopclntab_string("(*Server).ServeHTTP"),
+            StringKind::FuncName
+        );
+        assert_eq!(
+            classify_gopclntab_string("bufio.(*Reader).Read"),
+            StringKind::FuncName
+        );
 
         // Type assertion
-        assert_eq!(classify_gopclntab_string("error.(Error)"), StringKind::FuncName);
+        assert_eq!(
+            classify_gopclntab_string("error.(Error)"),
+            StringKind::FuncName
+        );
 
         // Package path with function
-        assert_eq!(classify_gopclntab_string("github.com/user/repo/pkg.Function"), StringKind::FuncName);
+        assert_eq!(
+            classify_gopclntab_string("github.com/user/repo/pkg.Function"),
+            StringKind::FuncName
+        );
 
         // Type equality functions
-        assert_eq!(classify_gopclntab_string("type:.eq.runtime.mspan"), StringKind::FuncName);
+        assert_eq!(
+            classify_gopclntab_string("type:.eq.runtime.mspan"),
+            StringKind::FuncName
+        );
     }
 
     #[test]
@@ -636,10 +680,19 @@ mod tests {
 
     #[test]
     fn test_classify_string_database_urls() {
-        assert_eq!(classify_string("mysql://user:pass@localhost/db"), StringKind::Url);
+        assert_eq!(
+            classify_string("mysql://user:pass@localhost/db"),
+            StringKind::Url
+        );
         assert_eq!(classify_string("redis://localhost:6379"), StringKind::Url);
-        assert_eq!(classify_string("mongodb://user:pass@cluster.mongodb.net/db"), StringKind::Url);
-        assert_eq!(classify_string("ftp://ftp.example.com/file.txt"), StringKind::Url);
+        assert_eq!(
+            classify_string("mongodb://user:pass@cluster.mongodb.net/db"),
+            StringKind::Url
+        );
+        assert_eq!(
+            classify_string("ftp://ftp.example.com/file.txt"),
+            StringKind::Url
+        );
     }
 
     #[test]
@@ -655,11 +708,23 @@ mod tests {
 
     #[test]
     fn test_classify_string_error_keywords() {
-        assert_eq!(classify_string("error: something went wrong"), StringKind::Error);
-        assert_eq!(classify_string("operation failed unexpectedly"), StringKind::Error);
+        assert_eq!(
+            classify_string("error: something went wrong"),
+            StringKind::Error
+        );
+        assert_eq!(
+            classify_string("operation failed unexpectedly"),
+            StringKind::Error
+        );
         assert_eq!(classify_string("invalid input provided"), StringKind::Error);
-        assert_eq!(classify_string("cannot connect to server"), StringKind::Error);
-        assert_eq!(classify_string("unable to parse response"), StringKind::Error);
+        assert_eq!(
+            classify_string("cannot connect to server"),
+            StringKind::Error
+        );
+        assert_eq!(
+            classify_string("unable to parse response"),
+            StringKind::Error
+        );
     }
 
     #[test]
@@ -749,13 +814,7 @@ mod tests {
         section_data[0..4].copy_from_slice(&0x1000u32.to_le_bytes());
         section_data[4..8].copy_from_slice(&5u32.to_le_bytes());
 
-        let structs = find_string_structures(
-            &section_data,
-            0x2000,
-            0x1000,
-            0x100,
-            &info,
-        );
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
 
         assert_eq!(structs.len(), 1);
         assert_eq!(structs[0].ptr, 0x1000);
@@ -771,13 +830,7 @@ mod tests {
         section_data[0..8].copy_from_slice(&0x1000u64.to_be_bytes());
         section_data[8..16].copy_from_slice(&5u64.to_be_bytes());
 
-        let structs = find_string_structures(
-            &section_data,
-            0x2000,
-            0x1000,
-            0x100,
-            &info,
-        );
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
 
         assert_eq!(structs.len(), 1);
         assert_eq!(structs[0].ptr, 0x1000);
@@ -814,13 +867,7 @@ mod tests {
         section_data[0..8].copy_from_slice(&0x1000u64.to_le_bytes());
         section_data[8..16].copy_from_slice(&0x200000u64.to_le_bytes()); // > 1MB
 
-        let structs = find_string_structures(
-            &section_data,
-            0x2000,
-            0x1000,
-            0x100,
-            &info,
-        );
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
 
         // Should reject strings > 1MB
         assert!(structs.is_empty());
@@ -835,13 +882,7 @@ mod tests {
         section_data[0..8].copy_from_slice(&0x1000u64.to_le_bytes());
         section_data[8..16].copy_from_slice(&0u64.to_le_bytes());
 
-        let structs = find_string_structures(
-            &section_data,
-            0x2000,
-            0x1000,
-            0x100,
-            &info,
-        );
+        let structs = find_string_structures(&section_data, 0x2000, 0x1000, 0x100, &info);
 
         // Should reject zero-length strings
         assert!(structs.is_empty());
