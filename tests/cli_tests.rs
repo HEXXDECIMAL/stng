@@ -68,7 +68,7 @@ fn test_cli_detect_language_unknown() {
     // Create a temp file with binary garbage
     let temp_dir = std::env::temp_dir();
     let temp_file = temp_dir.join("strangs_test_detect_bin.bin");
-    std::fs::write(&temp_file, &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
+    std::fs::write(&temp_file, [0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
 
     let output = strangs_cmd()
         .arg("--detect")
@@ -231,9 +231,8 @@ fn test_cli_flat_output() {
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Flat mode should not have section headers (-- ...)
-        // Actually it should still have section headers, but no grouping
-        assert!(stdout.contains("Extracted"));
+        // Should have a header with string count
+        assert!(stdout.contains("strings from"));
     }
 }
 
@@ -286,7 +285,7 @@ fn test_cli_binary_garbage() {
     // Binary garbage should find no strings
     let temp_dir = std::env::temp_dir();
     let temp_file = temp_dir.join("strangs_test_garbage.bin");
-    std::fs::write(&temp_file, &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
+    std::fs::write(&temp_file, [0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
 
     let output = strangs_cmd()
         .arg(&temp_file)

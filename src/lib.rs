@@ -38,7 +38,9 @@ mod instr;
 pub mod r2;
 mod rust;
 
-pub use common::{is_garbage, BinaryInfo, ExtractedString, StringKind, StringMethod, StringStruct};
+pub use common::{
+    is_garbage, BinaryInfo, ExtractedString, Severity, StringKind, StringMethod, StringStruct,
+};
 
 pub use go::GoStringExtractor;
 use memchr::memchr_iter;
@@ -298,9 +300,25 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
             if let Some(r2_strings) = get_r2_strings(opts) {
                 strings.extend(r2_strings);
             }
-            if strings.is_empty() && !data.is_empty() {
+
+            // Check if this looks like a PE (MZ header) even if goblin failed to parse
+            let is_pe = data.len() >= 2 && data[0] == 0x4D && data[1] == 0x5A;
+
+            // Extract wide strings for PE-like files (common in Windows binaries)
+            if is_pe && !data.is_empty() {
+                strings.extend(extract_wide_strings(data, opts.min_length, None, &[]));
+            }
+
+            // Raw scan for all unknown formats
+            if !data.is_empty() {
                 strings.extend(extract_raw_strings(data, opts.min_length, None, &[]));
             }
+
+            // Apply garbage filter if enabled
+            if opts.filter_garbage {
+                strings.retain(|s| !common::is_garbage(&s.value));
+            }
+
             strings
         }
     }
@@ -720,6 +738,9 @@ pub fn extract_from_pe(
         strings.extend(r2_strings);
     }
 
+    // Extract UTF-16LE wide strings (common in Windows binaries)
+    strings.extend(extract_wide_strings(data, min_length, None, &segments));
+
     // Also do raw scan for PE
     if strings.is_empty() && !data.is_empty() {
         strings.extend(extract_raw_strings(data, min_length, None, &segments));
@@ -889,6 +910,124 @@ fn extract_printable_runs(
                 }
             }
         }
+    }
+}
+
+/// Extract UTF-16LE wide strings from binary data.
+///
+/// Windows binaries commonly use UTF-16LE for strings (file paths, registry keys,
+/// .NET strings, resource data). This scans for the characteristic pattern of
+/// ASCII bytes alternating with null bytes.
+fn extract_wide_strings(
+    data: &[u8],
+    min_length: usize,
+    section: Option<String>,
+    segment_names: &[String],
+) -> Vec<ExtractedString> {
+    let segment_names_set: HashSet<&str> = segment_names.iter().map(|s| s.as_str()).collect();
+    let mut strings = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // Need at least 4 bytes for a 2-char wide string
+    if data.len() < 4 {
+        return strings;
+    }
+
+    let mut i = 0;
+    while i + 1 < data.len() {
+        // Look for start of UTF-16LE sequence: printable ASCII followed by 0x00
+        let lo = data[i];
+        let hi = data[i + 1];
+
+        if is_printable_ascii(lo) && hi == 0 {
+            // Found potential start of wide string
+            let start = i;
+            let mut code_units: Vec<u16> = Vec::new();
+
+            // Collect UTF-16LE code units
+            while i + 1 < data.len() {
+                let lo = data[i];
+                let hi = data[i + 1];
+                let code_unit = u16::from_le_bytes([lo, hi]);
+
+                // Check for null terminator
+                if code_unit == 0 {
+                    break;
+                }
+
+                // For BMP characters, check if it's a printable character
+                // Allow ASCII printable range and common Unicode ranges
+                if is_valid_wide_char(code_unit) {
+                    code_units.push(code_unit);
+                    i += 2;
+                } else {
+                    break;
+                }
+            }
+
+            // Decode and validate the string
+            if code_units.len() >= min_length {
+                let decoded = String::from_utf16_lossy(&code_units);
+                let trimmed = decoded.trim();
+
+                if trimmed.len() >= min_length && !trimmed.is_empty() && !seen.contains(trimmed) {
+                    let kind = if segment_names_set.contains(trimmed) {
+                        StringKind::Section
+                    } else {
+                        go::classify_string(trimmed)
+                    };
+
+                    seen.insert(trimmed.to_string());
+                    strings.push(ExtractedString {
+                        value: trimmed.to_string(),
+                        data_offset: start as u64,
+                        section: section.clone(),
+                        method: StringMethod::WideString,
+                        kind,
+                        library: None,
+                    });
+                }
+            }
+
+            // Skip the null terminator if present
+            if i + 1 < data.len() && data[i] == 0 && data[i + 1] == 0 {
+                i += 2;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    strings
+}
+
+/// Check if a byte is printable ASCII (space through tilde, plus tab and newline).
+#[inline]
+fn is_printable_ascii(b: u8) -> bool {
+    b.is_ascii_graphic() || matches!(b, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+/// Check if a UTF-16 code unit represents a valid printable character.
+#[inline]
+fn is_valid_wide_char(code_unit: u16) -> bool {
+    match code_unit {
+        // ASCII printable range (space through tilde) plus tab, newline, carriage return
+        0x0009 | 0x000A | 0x000D | 0x0020..=0x007E => true,
+        // Latin-1 Supplement (common accented characters)
+        0x00A0..=0x00FF => true,
+        // Latin Extended-A and B (European languages)
+        0x0100..=0x024F => true,
+        // Greek and Coptic
+        0x0370..=0x03FF => true,
+        // Cyrillic
+        0x0400..=0x04FF => true,
+        // CJK ranges would add too much noise, skip them
+        // General punctuation
+        0x2000..=0x206F => true,
+        // Currency symbols
+        0x20A0..=0x20CF => true,
+        // Arrows, math operators, etc. - skip as they add noise
+        _ => false,
     }
 }
 
@@ -1378,5 +1517,229 @@ mod tests {
             // Should include the pre-extracted r2 string
             assert!(strings.iter().any(|s| s.value == "from_r2"));
         }
+    }
+
+    // Wide string (UTF-16LE) extraction tests
+
+    /// Helper to encode a string as UTF-16LE with null terminator
+    fn to_utf16le_null(s: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for c in s.encode_utf16() {
+            bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        // Add null terminator (two zero bytes)
+        bytes.extend_from_slice(&[0x00, 0x00]);
+        bytes
+    }
+
+    #[test]
+    fn test_extract_wide_strings_empty() {
+        let strings = extract_wide_strings(&[], 4, None, &[]);
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_wide_strings_too_short() {
+        // Less than 4 bytes
+        let strings = extract_wide_strings(&[0x41, 0x00], 4, None, &[]);
+        assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_wide_strings_basic() {
+        let data = to_utf16le_null("Hello");
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "Hello");
+        assert_eq!(strings[0].method, StringMethod::WideString);
+        assert_eq!(strings[0].data_offset, 0);
+    }
+
+    #[test]
+    fn test_extract_wide_strings_multiple() {
+        let mut data = to_utf16le_null("Hello");
+        data.extend(to_utf16le_null("World"));
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 2);
+        assert!(strings.iter().any(|s| s.value == "Hello"));
+        assert!(strings.iter().any(|s| s.value == "World"));
+    }
+
+    #[test]
+    fn test_extract_wide_strings_min_length() {
+        let mut data = to_utf16le_null("Hi"); // 2 chars - below min
+        data.extend(to_utf16le_null("Hello")); // 5 chars - above min
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "Hello");
+    }
+
+    #[test]
+    fn test_extract_wide_strings_with_section() {
+        let data = to_utf16le_null("Hello");
+        let strings = extract_wide_strings(&data, 4, Some(".rsrc".to_string()), &[]);
+
+        assert_eq!(strings[0].section, Some(".rsrc".to_string()));
+    }
+
+    #[test]
+    fn test_extract_wide_strings_mixed_with_ascii() {
+        // Mix of UTF-8 and UTF-16LE data - wide string follows ASCII with some padding
+        let mut data = b"ASCII string\0\0".to_vec(); // Extra null for alignment
+        data.extend(to_utf16le_null("WideString"));
+        data.extend(b"more ASCII\0");
+
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        // Should extract the wide string
+        assert!(
+            strings.iter().any(|s| s.value == "WideString"),
+            "Expected to find 'WideString', found: {:?}",
+            strings.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_extract_wide_strings_path() {
+        let data = to_utf16le_null("C:\\Windows\\System32\\kernel32.dll");
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert!(strings[0].value.contains("Windows"));
+        assert_eq!(strings[0].kind, StringKind::Path);
+    }
+
+    #[test]
+    fn test_extract_wide_strings_url() {
+        let data = to_utf16le_null("https://example.com/api");
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].kind, StringKind::Url);
+    }
+
+    #[test]
+    fn test_extract_wide_strings_deduplication() {
+        let mut data = to_utf16le_null("Hello");
+        data.extend(to_utf16le_null("Hello")); // Duplicate
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.iter().filter(|s| s.value == "Hello").count(), 1);
+    }
+
+    #[test]
+    fn test_extract_wide_strings_segment_detection() {
+        let segment_names = vec![".rdata".to_string()];
+        let data = to_utf16le_null(".rdata");
+        let strings = extract_wide_strings(&data, 4, None, &segment_names);
+
+        assert_eq!(strings[0].kind, StringKind::Section);
+    }
+
+    #[test]
+    fn test_extract_wide_strings_with_spaces() {
+        let data = to_utf16le_null("Hello World");
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "Hello World");
+    }
+
+    #[test]
+    fn test_extract_wide_strings_trimming() {
+        let data = to_utf16le_null("  Hello  ");
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings[0].value, "Hello");
+    }
+
+    #[test]
+    fn test_extract_wide_strings_registry_path() {
+        let data = to_utf16le_null("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft");
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].kind, StringKind::Registry);
+    }
+
+    #[test]
+    fn test_extract_wide_strings_no_null_terminator() {
+        // Wide string without null terminator at end of data
+        let mut data = Vec::new();
+        for c in "Hello".encode_utf16() {
+            data.extend_from_slice(&c.to_le_bytes());
+        }
+        // No null terminator - string ends at data boundary
+
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "Hello");
+    }
+
+    #[test]
+    fn test_extract_wide_strings_embedded_in_binary() {
+        // Binary data, then wide string, then more binary
+        let mut data = vec![0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE]; // random bytes
+        data.extend(to_utf16le_null("Embedded"));
+        data.extend(vec![0x00, 0x01, 0x02, 0x03]); // more random bytes
+
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+        assert!(strings.iter().any(|s| s.value == "Embedded"));
+    }
+
+    #[test]
+    fn test_extract_wide_strings_special_chars() {
+        // Test with common Windows special characters
+        let data = to_utf16le_null("file.exe");
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "file.exe");
+    }
+
+    #[test]
+    fn test_extract_wide_strings_unicode_latin() {
+        // Latin characters with accents (common in European Windows apps)
+        let data = to_utf16le_null("caf\u{00E9}"); // café
+        let strings = extract_wide_strings(&data, 4, None, &[]);
+
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings[0].value, "caf\u{00E9}");
+    }
+
+    #[test]
+    fn test_is_printable_ascii() {
+        assert!(is_printable_ascii(b'A'));
+        assert!(is_printable_ascii(b'z'));
+        assert!(is_printable_ascii(b'0'));
+        assert!(is_printable_ascii(b' '));
+        assert!(is_printable_ascii(b'\t'));
+        assert!(is_printable_ascii(b'\n'));
+        assert!(!is_printable_ascii(0x00));
+        assert!(!is_printable_ascii(0x01));
+        assert!(!is_printable_ascii(0x7F)); // DEL
+    }
+
+    #[test]
+    fn test_is_valid_wide_char() {
+        // ASCII printable
+        assert!(is_valid_wide_char(0x0041)); // 'A'
+        assert!(is_valid_wide_char(0x0020)); // space
+        assert!(is_valid_wide_char(0x0009)); // tab
+
+        // Latin-1 Supplement
+        assert!(is_valid_wide_char(0x00E9)); // é
+        assert!(is_valid_wide_char(0x00F1)); // ñ
+
+        // Control characters should be rejected
+        assert!(!is_valid_wide_char(0x0000)); // NULL
+        assert!(!is_valid_wide_char(0x0001)); // SOH
+        assert!(!is_valid_wide_char(0x007F)); // DEL
+
+        // CJK should be rejected (too much noise)
+        assert!(!is_valid_wide_char(0x4E00)); // CJK
     }
 }

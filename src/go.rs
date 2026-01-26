@@ -457,24 +457,56 @@ fn classify_gopclntab_string(s: &str) -> StringKind {
 /// Classify a general string by its content.
 /// Note: Section names are detected via goblin, not pattern matching here.
 pub fn classify_string(s: &str) -> StringKind {
-    // URLs
-    if s.starts_with("http://") || s.starts_with("https://") || s.starts_with("ftp://") {
-        return StringKind::Url;
+    // Check for shell commands first (high priority for security)
+    if is_shell_command(s) {
+        return StringKind::ShellCmd;
     }
-    // Database URLs
-    if s.starts_with("postgresql://")
+
+    // IP addresses and IP:port
+    if let Some(kind) = classify_ip(s) {
+        return kind;
+    }
+
+    // URLs (including database URLs) - but skip known benign ones
+    if s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.starts_with("ftp://")
+        || s.starts_with("postgresql://")
         || s.starts_with("mysql://")
         || s.starts_with("redis://")
         || s.starts_with("mongodb://")
+        || s.starts_with("ssh://")
+        || s.starts_with("tcp://")
+        || s.starts_with("udp://")
     {
+        // Skip common benign URLs (Apple certs, etc.)
+        if s.starts_with("https://www.apple.com/appleca") {
+            return StringKind::Const;
+        }
         return StringKind::Url;
     }
-    // File paths
+
+    // Windows registry paths
+    if s.starts_with("HKEY_") || s.starts_with("HKLM\\") || s.starts_with("HKCU\\") {
+        return StringKind::Registry;
+    }
+
+    // File paths - check for suspicious patterns
     if s.starts_with('/') || s.starts_with("C:\\") || s.starts_with("./") || s.starts_with("../") {
+        if is_suspicious_path(s) {
+            return StringKind::SuspiciousPath;
+        }
         return StringKind::Path;
     }
+
+    // Base64-encoded data (long strings, right charset, proper padding)
+    if is_base64(s) {
+        return StringKind::Base64;
+    }
+
     // Environment variable names (UPPERCASE, optionally with _ and digits)
-    // Must start with letter, be all uppercase, at least 4 chars (or 3+ with underscore)
+    // Must contain underscore OR digits OR be a known common pattern OR be short enough
+    // This avoids matching x86 instruction patterns like "AWAVAUATSH"
     if s.len() >= 3
         && s.chars()
             .next()
@@ -482,11 +514,23 @@ pub fn classify_string(s: &str) -> StringKind {
             .unwrap_or(false)
         && s.chars()
             .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-        && (s.len() >= 4 || s.contains('_'))
     {
-        return StringKind::EnvVar;
+        let has_underscore = s.contains('_');
+        let has_digit = s.chars().any(|c| c.is_ascii_digit());
+        let is_known_short = matches!(
+            s,
+            "PATH" | "HOME" | "USER" | "TERM" | "SHELL" | "LANG" | "PWD" | "TMP" | "TEMP"
+                | "EDITOR" | "PAGER" | "MAIL" | "LOGNAME" | "HOSTNAME" | "COLUMNS" | "LINES"
+                | "DISPLAY" | "TZ" | "CLICOLOR" | "LSCOLORS" | "COLORTERM"
+        );
+
+        // Accept if: has underscore, has digits (GO111MODULE), known pattern, or short
+        if has_underscore || has_digit || is_known_short || (s.len() <= 8 && s.len() >= 4) {
+            return StringKind::EnvVar;
+        }
     }
-    // Error messages often start with lowercase and contain spaces
+
+    // Error messages
     if s.contains("error")
         || s.contains("failed")
         || s.contains("invalid")
@@ -495,7 +539,170 @@ pub fn classify_string(s: &str) -> StringKind {
     {
         return StringKind::Error;
     }
+
     StringKind::Const
+}
+
+/// Check if a string looks like a shell command
+fn is_shell_command(s: &str) -> bool {
+    // Must have some length and typically contain spaces
+    if s.len() < 4 {
+        return false;
+    }
+
+    // Shell operators and redirects
+    if s.contains(" | ")
+        || s.contains(">/dev/null")
+        || s.contains("2>/dev/null")
+        || s.contains("2>&1")
+        || s.contains(" && ")
+        || s.contains("$(")
+        || s.contains("`")
+    {
+        return true;
+    }
+
+    // Common command prefixes with arguments
+    let cmd_prefixes = [
+        "sed ", "rm ", "kill ", "chmod ", "chown ", "wget ", "curl ", "bash ", "sh ", "/bin/sh",
+        "/bin/bash", "nc ", "ncat ", "python ", "perl ", "ruby ", "php ", "echo ", "cat ",
+        "mkdir ", "cp ", "mv ", "touch ", "tar ", "gzip ", "gunzip ", "base64 ", "openssl ",
+        "dd ", "mount ", "umount ", "iptables ", "systemctl ", "service ", "crontab ",
+        "useradd ", "userdel ", "passwd ", "sudo ", "su ", "chroot ", "nohup ", "setsid ",
+        "exec ", "eval ",
+    ];
+
+    for prefix in cmd_prefixes {
+        if s.starts_with(prefix) || s.contains(&format!(" {}", prefix)) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Check if a string is a suspicious/security-relevant path
+fn is_suspicious_path(s: &str) -> bool {
+    // Hidden paths (contain /. component)
+    if s.contains("/.") {
+        return true;
+    }
+
+    // Known suspicious/rootkit locations
+    let suspicious = [
+        "/etc/ld.so.preload",
+        "/etc/ld.so.conf",
+        "/dev/shm",
+        "/dev/mem",
+        "/dev/kmem",
+        "/proc/",
+        "/sys/",
+        "/.ssh/",
+        "/etc/cron",
+        "/etc/init.d",
+        "/etc/systemd",
+        "/etc/rc.local",
+        "/var/spool/cron",
+        "/Library/LaunchAgents",
+        "/Library/LaunchDaemons",
+        "/.bash_profile",
+        "/.bashrc",
+        "/.profile",
+        "/.bash_login",
+        "/.zshrc",
+        "/tmp/",
+        "/var/tmp/",
+    ];
+
+    for path in suspicious {
+        if s.contains(path) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Classify IP addresses and IP:port combinations
+fn classify_ip(s: &str) -> Option<StringKind> {
+    let s = s.trim();
+
+    // Check for IP:port pattern first
+    if let Some(colon_pos) = s.rfind(':') {
+        let (ip_part, port_part) = s.split_at(colon_pos);
+        let port_str = &port_part[1..];
+
+        // Verify port is numeric and reasonable
+        if let Ok(port) = port_str.parse::<u16>() {
+            if port > 0 && is_ipv4(ip_part) {
+                return Some(StringKind::IPPort);
+            }
+        }
+    }
+
+    // Plain IPv4
+    if is_ipv4(s) {
+        return Some(StringKind::IP);
+    }
+
+    // IPv6 (contains multiple colons, hex chars)
+    if s.contains(':') && s.chars().filter(|&c| c == ':').count() >= 2 {
+        let valid_ipv6 = s
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.');
+        if valid_ipv6 && s.len() >= 3 {
+            return Some(StringKind::IP);
+        }
+    }
+
+    None
+}
+
+/// Check if a string is a valid IPv4 address
+fn is_ipv4(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+
+    for part in parts {
+        match part.parse::<u8>() {
+            Ok(_) => continue,
+            Err(_) => return false,
+        }
+    }
+
+    true
+}
+
+/// Check if a string looks like base64-encoded data
+fn is_base64(s: &str) -> bool {
+    // Must be reasonably long (short base64 could be anything)
+    if s.len() < 20 {
+        return false;
+    }
+
+    // Must not contain spaces or common text patterns
+    if s.contains(' ') || s.contains("the ") || s.contains("and ") {
+        return false;
+    }
+
+    // Check base64 charset: A-Z, a-z, 0-9, +, /, =
+    let valid_b64 = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
+
+    if !valid_b64 {
+        return false;
+    }
+
+    // Should have mixed case and possibly end with = padding
+    let has_upper = s.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = s.chars().any(|c| c.is_ascii_lowercase());
+    let has_digit = s.chars().any(|c| c.is_ascii_digit());
+
+    // Base64 typically has good entropy - mixed chars
+    has_upper && has_lower && has_digit
 }
 
 #[cfg(test)]

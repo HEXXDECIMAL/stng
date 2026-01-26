@@ -48,6 +48,8 @@ pub enum StringMethod {
     R2String,
     /// Found via radare2 symbol analysis (is command)
     R2Symbol,
+    /// Found via UTF-16LE wide string scan (Windows)
+    WideString,
 }
 
 /// Semantic kind of the extracted string.
@@ -82,6 +84,83 @@ pub enum StringKind {
     Import,
     /// Exported symbol
     Export,
+    // Security-focused classifications
+    /// IP address (v4 or v6)
+    IP,
+    /// IP:port or host:port combination
+    IPPort,
+    /// Shell command (pipes, redirects, common commands)
+    ShellCmd,
+    /// Suspicious path (hidden dirs, rootkit locations, persistence)
+    SuspiciousPath,
+    /// Windows registry path
+    Registry,
+    /// Base64-encoded data
+    Base64,
+}
+
+/// Severity level for security-focused output
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Critical IOCs: IPs, URLs, shell commands, suspicious paths
+    High = 0,
+    /// Important context: paths, env vars, imports
+    Medium = 1,
+    /// Supporting info: function names, exports
+    Low = 2,
+    /// Default: constants, identifiers
+    Info = 3,
+}
+
+impl StringKind {
+    /// Get the severity level for this kind
+    pub fn severity(&self) -> Severity {
+        match self {
+            StringKind::IP
+            | StringKind::IPPort
+            | StringKind::Url
+            | StringKind::ShellCmd
+            | StringKind::SuspiciousPath
+            | StringKind::Base64 => Severity::High,
+
+            StringKind::Path
+            | StringKind::FilePath
+            | StringKind::Import
+            | StringKind::EnvVar
+            | StringKind::Registry
+            | StringKind::Error => Severity::Medium,
+
+            StringKind::FuncName | StringKind::Export => Severity::Low,
+
+            _ => Severity::Info,
+        }
+    }
+
+    /// Get short display name for the kind
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            StringKind::Const => "const",
+            StringKind::FuncName => "func",
+            StringKind::FilePath => "file",
+            StringKind::MapKey => "key",
+            StringKind::Error => "error",
+            StringKind::EnvVar => "env",
+            StringKind::Url => "url",
+            StringKind::Path => "path",
+            StringKind::Arg => "arg",
+            StringKind::Ident => "ident",
+            StringKind::Garbage => "garbage",
+            StringKind::Section => "section",
+            StringKind::Import => "import",
+            StringKind::Export => "export",
+            StringKind::IP => "ip",
+            StringKind::IPPort => "ip:port",
+            StringKind::ShellCmd => "shell",
+            StringKind::SuspiciousPath => "sus",
+            StringKind::Registry => "registry",
+            StringKind::Base64 => "base64",
+        }
+    }
 }
 
 /// Binary information needed for string extraction.
