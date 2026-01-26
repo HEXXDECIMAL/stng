@@ -9,13 +9,14 @@
 
 use super::common::{
     extract_from_structures, find_string_structures, BinaryInfo, ExtractedString, StringKind,
-    StringMethod,
+    StringMethod, StringStruct,
 };
 use super::instr::{extract_inline_strings_amd64, extract_inline_strings_arm64};
 use goblin::elf::Elf;
 use goblin::mach::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
 use goblin::mach::MachO;
 use goblin::pe::PE;
+use rayon::prelude::*;
 use std::collections::HashSet;
 
 /// Extracts strings from Go binaries using structure analysis.
@@ -59,30 +60,35 @@ impl GoStringExtractor {
             return strings;
         };
 
-        // Search all sections for string structures pointing into __rodata
-        let mut all_structs = Vec::new();
+        // Collect all sections first for parallel processing
+        let sections_info: Vec<(u64, &[u8])> = macho
+            .segments
+            .iter()
+            .filter_map(|seg| seg.sections().ok())
+            .flatten()
+            .map(|(section, section_data)| (section.addr, section_data))
+            .collect();
 
-        for seg in &macho.segments {
-            if let Ok(sections) = seg.sections() {
-                for (section, section_data) in sections {
-                    let structs = find_string_structures(
-                        section_data,
-                        section.addr,
-                        rodata_addr,
-                        rodata_data.len() as u64,
-                        &info,
-                    );
-                    all_structs.extend(structs);
-                }
-            }
-        }
+        // Search all sections for string structures in parallel
+        let all_structs: Vec<StringStruct> = sections_info
+            .par_iter()
+            .flat_map(|(section_addr, section_data)| {
+                find_string_structures(
+                    section_data,
+                    *section_addr,
+                    rodata_addr,
+                    rodata_data.len() as u64,
+                    &info,
+                )
+            })
+            .collect();
 
         // Extract strings using structure boundaries
         let structured = extract_from_structures(
             rodata_data,
             rodata_addr,
             &all_structs,
-            Some("__rodata".to_string()),
+            Some("__rodata"),
             classify_string,
         );
 
@@ -114,12 +120,12 @@ impl GoStringExtractor {
             };
 
             // Deduplicate against already found strings
-            let existing: HashSet<String> = strings.iter().map(|s| s.value.clone()).collect();
-            for s in inline_strings {
-                if !existing.contains(&s.value) {
-                    strings.push(s);
-                }
-            }
+            let existing: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+            let new_strings: Vec<_> = inline_strings
+                .into_iter()
+                .filter(|s| !existing.contains(s.value.as_str()))
+                .collect();
+            strings.extend(new_strings);
         }
 
         // Also extract from __gopclntab (function/file names)
@@ -169,38 +175,35 @@ impl GoStringExtractor {
 
         let rodata_data = &data[rodata_offset..rodata_offset + rodata_size];
 
-        // Search all sections for string structures
-        let mut all_structs = Vec::new();
-
-        for sh in &elf.section_headers {
-            if sh.sh_type == goblin::elf::section_header::SHT_NOBITS || sh.sh_size == 0 {
-                continue;
-            }
-
-            let offset = sh.sh_offset as usize;
-            let size = sh.sh_size as usize;
-
-            if offset + size > data.len() {
-                continue;
-            }
-
-            let section_data = &data[offset..offset + size];
-            let structs = find_string_structures(
-                section_data,
-                sh.sh_addr,
-                rodata_addr,
-                rodata_size as u64,
-                &info,
-            );
-            all_structs.extend(structs);
-        }
+        // Search all sections for string structures (in parallel)
+        let all_structs: Vec<StringStruct> = elf
+            .section_headers
+            .par_iter()
+            .filter(|sh| sh.sh_type != goblin::elf::section_header::SHT_NOBITS && sh.sh_size > 0)
+            .filter_map(|sh| {
+                let offset = sh.sh_offset as usize;
+                let size = sh.sh_size as usize;
+                if offset + size > data.len() {
+                    return None;
+                }
+                let section_data = &data[offset..offset + size];
+                Some(find_string_structures(
+                    section_data,
+                    sh.sh_addr,
+                    rodata_addr,
+                    rodata_size as u64,
+                    &info,
+                ))
+            })
+            .flatten()
+            .collect();
 
         // Extract strings using structure boundaries
         let structured = extract_from_structures(
             rodata_data,
             rodata_addr,
             &all_structs,
-            Some(".rodata".to_string()),
+            Some(".rodata"),
             classify_string,
         );
 
@@ -235,12 +238,12 @@ impl GoStringExtractor {
                 };
 
                 // Deduplicate against already found strings
-                let existing: HashSet<String> = strings.iter().map(|s| s.value.clone()).collect();
-                for s in inline_strings {
-                    if !existing.contains(&s.value) {
-                        strings.push(s);
-                    }
-                }
+                let existing: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+                let new_strings: Vec<_> = inline_strings
+                    .into_iter()
+                    .filter(|s| !existing.contains(s.value.as_str()))
+                    .collect();
+                strings.extend(new_strings);
             }
         }
 
@@ -335,7 +338,7 @@ impl GoStringExtractor {
             rdata_data,
             rdata_addr,
             &all_structs,
-            Some(".rdata".to_string()),
+            Some(".rdata"),
             classify_string,
         );
 
@@ -523,7 +526,7 @@ mod tests {
             },
         ];
 
-        let strings = extract_from_structures(blob, 0x1000, &structs, Some("test".to_string()), |_| StringKind::Const);
+        let strings = extract_from_structures(blob, 0x1000, &structs, Some("test"), |_| StringKind::Const);
 
         assert_eq!(strings.len(), 2);
         assert_eq!(strings[0].value, "Hello");

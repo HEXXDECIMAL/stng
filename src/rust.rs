@@ -98,34 +98,28 @@ impl RustStringExtractor {
                     target_data,
                     target_addr,
                     &structs,
-                    Some(section_name.to_string()),
+                    Some(section_name),
                     classify_string,
                 );
 
-                let existing: HashSet<String> = strings
-                    .iter()
-                    .map(|s: &ExtractedString| s.value.clone())
+                let existing: HashSet<&str> = strings.iter().map(|s: &ExtractedString| s.value.as_str()).collect();
+                let new_strings: Vec<_> = structured
+                    .into_iter()
+                    .filter(|s| s.value.len() >= self.min_length && !existing.contains(s.value.as_str()))
                     .collect();
-                for s in structured {
-                    if s.value.len() >= self.min_length && !existing.contains(&s.value) {
-                        strings.push(s);
-                    }
-                }
+                strings.extend(new_strings);
             }
         }
 
         // PHASE 2: Raw extraction from __cstring (null-terminated strings)
         if let Some((_, cstring_data)) = cstring_info {
             let raw = self.extract_raw_strings(cstring_data, Some("__cstring".to_string()));
-            let existing: HashSet<String> = strings
-                .iter()
-                .map(|s: &ExtractedString| s.value.clone())
+            let existing: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+            let new_strings: Vec<_> = raw
+                .into_iter()
+                .filter(|s| s.value.len() >= self.min_length && !existing.contains(s.value.as_str()))
                 .collect();
-            for s in raw {
-                if s.value.len() >= self.min_length && !existing.contains(&s.value) {
-                    strings.push(s);
-                }
-            }
+            strings.extend(new_strings);
         }
 
         // PHASE 3: Heuristic extraction from __TEXT,__const for packed strings
@@ -334,7 +328,7 @@ impl RustStringExtractor {
             section_data,
             section_addr,
             &all_structs,
-            Some(target_section.to_string()),
+            Some(target_section),
             classify_string,
         );
 

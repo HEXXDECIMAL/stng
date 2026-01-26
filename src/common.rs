@@ -229,14 +229,14 @@ pub fn extract_from_structures<F>(
     blob: &[u8],
     blob_addr: u64,
     structs: &[StringStruct],
-    section_name: Option<String>,
+    section_name: Option<&str>,
     classify_fn: F,
 ) -> Vec<ExtractedString>
 where
     F: Fn(&str) -> StringKind,
 {
-    let mut result = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut result = Vec::with_capacity(structs.len() / 2);
+    let mut seen: HashSet<&str> = HashSet::with_capacity(structs.len() / 2);
 
     for s in structs {
         if s.ptr < blob_addr {
@@ -254,7 +254,7 @@ where
 
         // Validate UTF-8
         if let Ok(string) = std::str::from_utf8(bytes) {
-            // Skip duplicates
+            // Skip duplicates (no allocation for lookup)
             if seen.contains(string) {
                 continue;
             }
@@ -269,11 +269,11 @@ where
                 continue;
             }
 
-            seen.insert(string.to_string());
+            seen.insert(string);
             result.push(ExtractedString {
                 value: string.to_string(),
                 data_offset: s.ptr,
-                section: section_name.clone(),
+                section: section_name.map(|s| s.to_string()),
                 method: StringMethod::Structure,
                 kind: classify_fn(string),
                 library: None,
@@ -293,10 +293,12 @@ where
 /// - Strings that are mostly whitespace padding
 /// - Strings with embedded null or control characters
 pub fn is_garbage(s: &str) -> bool {
-    // Strings with embedded control characters (other than trailing newline) are garbage
-    let control_count = s.trim_end_matches('\n').chars().filter(|c| c.is_control()).count();
-    if control_count > 0 {
-        return true;
+    // Check for control characters in non-trailing-newline portion
+    let check_control = s.trim_end_matches('\n');
+    for c in check_control.chars() {
+        if c.is_control() {
+            return true;
+        }
     }
 
     // Normalize: trim whitespace
@@ -313,43 +315,114 @@ pub fn is_garbage(s: &str) -> bool {
         return true;
     }
 
-    // Very short strings (2-4 chars) that look like random binary data
-    // But allow: all-uppercase, all-lowercase, or all-numeric
-    if (2..=4).contains(&len) {
-        let upper = trimmed.chars().filter(|c| c.is_ascii_uppercase()).count();
-        let lower = trimmed.chars().filter(|c| c.is_ascii_lowercase()).count();
-        let digit = trimmed.chars().filter(|c| c.is_ascii_digit()).count();
+    // Single-pass character counting
+    let mut upper = 0usize;
+    let mut lower = 0usize;
+    let mut digit = 0usize;
+    let mut alpha = 0usize;
+    let mut whitespace = 0usize;
+    let mut noise_punct = 0usize;
+    let mut open_parens = 0usize;
+    let mut close_parens = 0usize;
+    let mut quotes = 0usize;
+    let mut special = 0usize;
+    let mut hex_only = 0usize;
+    let mut ascii_count = 0usize;
+    let mut alternations = 0usize;
+    let mut prev_is_digit: Option<bool> = None;
+    let mut first_char: Option<char> = None;
+    let mut all_same = true;
+    let mut last_char = '\0';
+    let mut has_non_hex_letter = false;
 
+    for c in trimmed.chars() {
+        // Track first/last and uniformity
+        if first_char.is_none() {
+            first_char = Some(c);
+        } else if all_same && Some(c) != first_char {
+            all_same = false;
+        }
+        last_char = c;
+
+        // ASCII check
+        if c.is_ascii() {
+            ascii_count += 1;
+        }
+
+        // Character type counting
+        if c.is_ascii_uppercase() {
+            upper += 1;
+            alpha += 1;
+            if !c.is_ascii_hexdigit() {
+                has_non_hex_letter = true;
+            }
+            hex_only += 1;
+            // Alternation tracking
+            if prev_is_digit == Some(true) {
+                alternations += 1;
+            }
+            prev_is_digit = Some(false);
+        } else if c.is_ascii_lowercase() {
+            lower += 1;
+            alpha += 1;
+            if !c.is_ascii_hexdigit() {
+                has_non_hex_letter = true;
+            }
+            hex_only += 1;
+            if prev_is_digit == Some(true) {
+                alternations += 1;
+            }
+            prev_is_digit = Some(false);
+        } else if c.is_ascii_digit() {
+            digit += 1;
+            hex_only += 1;
+            if prev_is_digit == Some(false) {
+                alternations += 1;
+            }
+            prev_is_digit = Some(true);
+        } else if c.is_alphabetic() {
+            // Non-ASCII alphabetic
+            alpha += 1;
+            if prev_is_digit == Some(true) {
+                alternations += 1;
+            }
+            prev_is_digit = Some(false);
+        } else if c.is_whitespace() {
+            whitespace += 1;
+        } else {
+            // Punctuation/special characters
+            match c {
+                '#' | '@' | '?' | '>' | '<' | '|' | '\\' | '^' | '`' | '~' => noise_punct += 1,
+                '(' | '[' | '{' => open_parens += 1,
+                ')' | ']' | '}' => close_parens += 1,
+                '"' | '\'' => quotes += 1,
+                _ => {}
+            }
+            if !c.is_alphanumeric() && !c.is_whitespace() {
+                special += 1;
+            }
+        }
+    }
+
+    let alphanumeric = alpha + digit;
+
+    // Very short strings (2-4 chars) that look like random binary data
+    if (2..=4).contains(&len) {
         let is_all_upper = upper == len;
         let is_all_lower = lower == len;
         let is_all_digit = digit == len;
 
-        // Allow homogeneous strings
-        if is_all_upper || is_all_lower || is_all_digit {
-            // These are OK, don't filter
-        } else {
-            // Mixed case with digits in short strings is usually garbage (e.g., "P9O", "8ZAj", "pIo2")
+        if !(is_all_upper || is_all_lower || is_all_digit) {
+            // Mixed case with digits in short strings is usually garbage
             if digit > 0 && (upper > 0 || lower > 0) {
                 return true;
             }
-            // Unusual mixed case patterns (e.g., "PuO", "UoV") - uppercase-lowercase-uppercase
+            // Unusual mixed case patterns
             if upper > 0 && lower > 0 && len <= 3 {
                 return true;
             }
         }
     }
-
-    // Count character types
-    let alpha_count = trimmed.chars().filter(|c| c.is_alphabetic()).count();
-    let digit_count = trimmed.chars().filter(|c| c.is_ascii_digit()).count();
-    let alphanumeric = alpha_count + digit_count;
-    let whitespace_count = trimmed.chars().filter(|c| c.is_whitespace()).count();
-
-    // Count "noise" punctuation (chars unlikely in valid identifiers/text)
-    let noise_punct: usize = trimmed
-        .chars()
-        .filter(|c| matches!(c, '#' | '@' | '?' | '>' | '<' | '|' | '\\' | '^' | '`' | '~'))
-        .count();
 
     // Short strings with noise punctuation are garbage
     if len <= 6 && noise_punct > 0 {
@@ -357,7 +430,6 @@ pub fn is_garbage(s: &str) -> bool {
     }
 
     // Strings with trailing spaces after short content often indicate misaligned reads
-    // Pattern like "asL ", "dL ", "`L " etc.
     if s.ends_with(' ') && len < 10 && alphanumeric < 4 {
         return true;
     }
@@ -365,8 +437,7 @@ pub fn is_garbage(s: &str) -> bool {
     // Pattern: ends with backtick + single letter + optional spaces (Go misaligned reads)
     let bytes = trimmed.as_bytes();
     if len >= 2 {
-        let last_alpha_idx = bytes.iter().rposition(|&b| b.is_ascii_alphabetic());
-        if let Some(idx) = last_alpha_idx {
+        if let Some(idx) = bytes.iter().rposition(|&b| b.is_ascii_alphabetic()) {
             if idx > 0 && bytes[idx - 1] == b'`' {
                 return true;
             }
@@ -379,107 +450,66 @@ pub fn is_garbage(s: &str) -> bool {
     }
 
     // Short strings with unbalanced or unusual punctuation patterns
-    let open_parens = trimmed.chars().filter(|c| *c == '(' || *c == '[' || *c == '{').count();
-    let close_parens = trimmed.chars().filter(|c| *c == ')' || *c == ']' || *c == '}').count();
-    let quotes = trimmed.chars().filter(|c| *c == '"' || *c == '\'').count();
     if len <= 8 && (open_parens != close_parens || quotes == 1) {
         return true;
     }
 
-    // Short strings that look like misaligned binary (uppercase + digit + special char patterns)
-    // e.g., "PuO#", "PIO2", "P$O", "@E?", "0Y/(", etc.
+    // Short strings that look like misaligned binary
     if len <= 6 {
-        let upper_count = trimmed.chars().filter(|c| c.is_ascii_uppercase()).count();
-        let special_count = trimmed
-            .chars()
-            .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
-            .count();
-        // If it's mostly uppercase + digits + special chars in a short string, likely garbage
-        if upper_count > 0 && special_count > 0 && alpha_count == upper_count {
+        if upper > 0 && special > 0 && alpha == upper {
             return true;
         }
-        // Mix of upper and lower with special chars is also suspicious
-        if special_count > 0 && len <= 5 {
+        if special > 0 && len <= 5 {
             return true;
         }
     }
 
-    // Strings that are mostly non-alphanumeric (excluding common punctuation in code)
+    // Strings that are mostly non-alphanumeric
     if len >= 4 && alphanumeric == 0 {
         return true;
     }
 
-    // Alternating digit-letter patterns that look like misread binary (e.g., "1j2`1r2l1128")
-    if len >= 6 && digit_count > 0 && alpha_count > 0 {
-        let mut alternations = 0;
-        let mut prev_is_digit = None;
-        for c in trimmed.chars() {
-            if c.is_ascii_digit() {
-                if prev_is_digit == Some(false) {
-                    alternations += 1;
-                }
-                prev_is_digit = Some(true);
-            } else if c.is_alphabetic() {
-                if prev_is_digit == Some(true) {
-                    alternations += 1;
-                }
-                prev_is_digit = Some(false);
-            }
-        }
-        // High alternation rate suggests garbage
-        if alternations >= 4 && alternations * 2 >= len {
-            return true;
-        }
+    // Alternating digit-letter patterns
+    if len >= 6 && digit > 0 && alpha > 0 && alternations >= 4 && alternations * 2 >= len {
+        return true;
     }
 
-    // Very low ratio of alphanumeric characters (less than 30% for strings > 6 chars)
+    // Very low ratio of alphanumeric characters
     if len > 6 && alphanumeric * 100 / len < 30 {
         return true;
     }
 
     // Strings that look like random hex/binary data
-    // Pattern: mostly digits mixed with a-f and length >= 8
-    if len >= 8 {
-        let hex_chars = trimmed
-            .chars()
-            .filter(|c| c.is_ascii_hexdigit())
-            .count();
-        let has_letters = trimmed.chars().any(|c| c.is_ascii_alphabetic() && !c.is_ascii_hexdigit());
-        if !has_letters && hex_chars == len && digit_count > 0 && alpha_count > 0 {
-            // Could be hex, but pure hex strings without 0x prefix at this length are suspicious
-            // unless they look like version numbers or known patterns
-            if !trimmed.contains('.') && !trimmed.starts_with("0x") {
-                return true;
-            }
-        }
+    if len >= 8
+        && !has_non_hex_letter
+        && hex_only == len
+        && digit > 0
+        && alpha > 0
+        && !trimmed.contains('.')
+        && !trimmed.starts_with("0x")
+    {
+        return true;
     }
 
     // Single repeated character
-    if len >= 4 {
-        let first = trimmed.chars().next().unwrap();
-        if trimmed.chars().all(|c| c == first) {
-            return true;
-        }
+    if len >= 4 && all_same {
+        return true;
     }
 
     // Strings with excessive whitespace relative to content
-    if whitespace_count > 0 && whitespace_count * 3 > len {
+    if whitespace > 0 && whitespace * 3 > len {
         return true;
     }
 
     // Short strings with non-ASCII characters are often misaligned reads
-    // (e.g., "333333ӿ" where unicode garbage appears at the end)
-    let ascii_count = trimmed.chars().filter(|c| c.is_ascii()).count();
     let non_ascii_count = len - ascii_count;
     if non_ascii_count > 0 && len < 20 && non_ascii_count * 5 > ascii_count {
         return true;
     }
 
     // Short strings ending with unusual unicode are suspicious
-    if let Some(last) = trimmed.chars().last() {
-        if !last.is_ascii() && len < 15 && alphanumeric < len / 2 {
-            return true;
-        }
+    if !last_char.is_ascii() && len < 15 && alphanumeric < len / 2 {
+        return true;
     }
 
     false
@@ -565,7 +595,7 @@ mod tests {
             },
         ];
 
-        let strings = extract_from_structures(blob, 0x1000, &structs, Some("test".to_string()), |_| StringKind::Const);
+        let strings = extract_from_structures(blob, 0x1000, &structs, Some("test"), |_| StringKind::Const);
 
         assert_eq!(strings.len(), 2);
         assert_eq!(strings[0].value, "Hello");
@@ -871,7 +901,7 @@ mod tests {
             blob,
             0x1000,
             &structs,
-            Some(".rodata".to_string()),
+            Some(".rodata"),
             |_| StringKind::Const,
         );
 

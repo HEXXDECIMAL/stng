@@ -22,30 +22,37 @@ pub fn is_available() -> bool {
 /// Uses `iz` for data section strings and `is` for symbols.
 /// Returns strings with R2String/R2Symbol methods for clear identification.
 pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedString>> {
+    // Run both r2 commands in parallel
+    let path_owned = path.to_string();
+    let (data_result, symbols_result) = rayon::join(
+        || run_r2_command(&path_owned, "izj"),
+        || run_r2_command(&path_owned, "isj"),
+    );
+
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Get strings from data sections (iz = strings in data sections)
-    if let Some(data_strings) = run_r2_command(path, "izj") {
+    // Process strings from data sections
+    if let Some(data_strings) = data_result {
         if let Ok(json) = serde_json::from_str::<Vec<R2String>>(&data_strings) {
             for s in json {
                 if s.string.len() >= min_length && seen.insert(s.string.clone()) {
-                    // Use our classification for better kind detection
                     let kind = classify_string(&s.string);
                     strings.push(ExtractedString {
                         value: s.string,
                         data_offset: s.vaddr,
                         section: Some(s.section),
                         method: StringMethod::R2String,
-                        library: None, kind,
+                        library: None,
+                        kind,
                     });
                 }
             }
         }
     }
 
-    // Get symbols (is = symbols)
-    if let Some(symbols) = run_r2_command(path, "isj") {
+    // Process symbols
+    if let Some(symbols) = symbols_result {
         if let Ok(json) = serde_json::from_str::<Vec<R2Symbol>>(&symbols) {
             for s in json {
                 if s.name.len() >= min_length && seen.insert(s.name.clone()) {

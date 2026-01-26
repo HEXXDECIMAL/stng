@@ -40,6 +40,7 @@ mod rust;
 
 pub use common::{is_garbage, BinaryInfo, ExtractedString, StringKind, StringMethod, StringStruct};
 
+use memchr::memchr_iter;
 use std::collections::HashSet;
 pub use go::GoStringExtractor;
 pub use rust::RustStringExtractor;
@@ -378,12 +379,12 @@ pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) 
                     s.library = lib.map(|l| l.to_string());
                 }
             }
-            let seen: HashSet<String> = strings.iter().map(|s| s.value.clone()).collect();
-            for s in imports {
-                if !seen.contains(&s.value) {
-                    strings.push(s);
-                }
-            }
+            let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+            let new_imports: Vec<_> = imports
+                .into_iter()
+                .filter(|s| !seen.contains(s.value.as_str()))
+                .collect();
+            strings.extend(new_imports);
         }
         Object::Mach(goblin::mach::Mach::Fat(fat)) => {
             // Fat binary - check for Go/Rust first
@@ -431,12 +432,12 @@ pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) 
                     }
                 }
                 // Add new imports that weren't found before
-                let seen: HashSet<String> = strings.iter().map(|s| s.value.clone()).collect();
-                for s in imports {
-                    if !seen.contains(&s.value) {
-                        strings.push(s);
-                    }
-                }
+                let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+                let new_imports: Vec<_> = imports
+                    .into_iter()
+                    .filter(|s| !seen.contains(s.value.as_str()))
+                    .collect();
+                strings.extend(new_imports);
             }
         }
         Object::Elf(elf) => {
@@ -486,12 +487,12 @@ pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) 
                     s.library = lib.map(|l| l.to_string());
                 }
             }
-            let seen: HashSet<String> = strings.iter().map(|s| s.value.clone()).collect();
-            for s in imports {
-                if !seen.contains(&s.value) {
-                    strings.push(s);
-                }
-            }
+            let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+            let new_imports: Vec<_> = imports
+                .into_iter()
+                .filter(|s| !seen.contains(s.value.as_str()))
+                .collect();
+            strings.extend(new_imports);
         }
         Object::PE(pe) => {
             // Collect PE section names
@@ -537,6 +538,170 @@ pub fn extract_from_object(object: &Object, data: &[u8], opts: &ExtractOptions) 
     strings
 }
 
+/// Extract strings from a pre-parsed Mach-O binary.
+///
+/// This allows library clients who have already parsed the binary to avoid re-parsing.
+pub fn extract_from_macho(macho: &MachO, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+    let min_length = opts.min_length;
+    let mut strings = Vec::new();
+    let segments = collect_macho_segments(macho);
+
+    if macho_has_go_sections(macho) {
+        let extractor = GoStringExtractor::new(min_length);
+        strings.extend(extractor.extract_macho(macho, data));
+    } else if macho_is_rust(macho) {
+        let extractor = RustStringExtractor::new(min_length);
+        strings.extend(extractor.extract_macho(macho, data));
+    } else {
+        // Unknown Mach-O - use r2 if available
+        if let Some(r2_strings) = get_r2_strings(opts) {
+            strings.extend(r2_strings);
+        }
+        // Also do raw scan to catch anything r2 missed
+        let extractor = RustStringExtractor::new(min_length);
+        let rust_strings = extractor.extract_macho(macho, data);
+        if rust_strings.is_empty() {
+            strings.extend(extract_raw_strings(data, min_length, None, &segments));
+        } else {
+            strings.extend(rust_strings);
+        }
+    }
+
+    // Add imports/exports
+    let imports = extract_macho_imports(macho, min_length);
+    let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
+        .iter()
+        .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
+        .collect();
+    for s in strings.iter_mut() {
+        if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
+            s.kind = kind.clone();
+            s.library = lib.map(|l| l.to_string());
+        }
+    }
+    let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+    let new_imports: Vec<_> = imports
+        .into_iter()
+        .filter(|s| !seen.contains(s.value.as_str()))
+        .collect();
+    strings.extend(new_imports);
+
+    // Apply garbage filter if enabled
+    if opts.filter_garbage {
+        strings.retain(|s| !common::is_garbage(&s.value));
+    }
+
+    strings
+}
+
+/// Extract strings from a pre-parsed ELF binary.
+///
+/// This allows library clients who have already parsed the binary to avoid re-parsing.
+pub fn extract_from_elf(elf: &goblin::elf::Elf, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+    let min_length = opts.min_length;
+    let mut strings = Vec::new();
+    let segments = collect_elf_segments(elf);
+
+    // Check for Go sections
+    let has_go = elf.section_headers.iter().any(|sh| {
+        let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
+        name == ".gopclntab" || name == ".go.buildinfo"
+    });
+
+    // Check for Rust
+    let has_rust = elf.section_headers.iter().any(|sh| {
+        let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
+        name.contains("rust") || name == ".rustc"
+    });
+
+    if has_go {
+        let extractor = GoStringExtractor::new(min_length);
+        strings.extend(extractor.extract_elf(elf, data));
+    } else if has_rust {
+        let extractor = RustStringExtractor::new(min_length);
+        strings.extend(extractor.extract_elf(elf, data));
+    } else {
+        // Unknown ELF - use r2 if available + raw scan
+        if let Some(r2_strings) = get_r2_strings(opts) {
+            strings.extend(r2_strings);
+        }
+        let extractor = RustStringExtractor::new(min_length);
+        let rust_strings = extractor.extract_elf(elf, data);
+        if rust_strings.is_empty() {
+            strings.extend(extract_raw_strings(data, min_length, None, &segments));
+        } else {
+            strings.extend(rust_strings);
+        }
+    }
+
+    // Add imports/exports
+    let imports = extract_elf_imports(elf, min_length);
+    let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
+        .iter()
+        .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
+        .collect();
+    for s in strings.iter_mut() {
+        if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
+            s.kind = kind.clone();
+            s.library = lib.map(|l| l.to_string());
+        }
+    }
+    let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+    let new_imports: Vec<_> = imports
+        .into_iter()
+        .filter(|s| !seen.contains(s.value.as_str()))
+        .collect();
+    strings.extend(new_imports);
+
+    // Apply garbage filter if enabled
+    if opts.filter_garbage {
+        strings.retain(|s| !common::is_garbage(&s.value));
+    }
+
+    strings
+}
+
+/// Extract strings from a pre-parsed PE binary.
+///
+/// This allows library clients who have already parsed the binary to avoid re-parsing.
+pub fn extract_from_pe(pe: &goblin::pe::PE, data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+    let min_length = opts.min_length;
+    let mut strings = Vec::new();
+
+    // Collect PE section names
+    let segments: Vec<String> = pe.sections.iter().map(|sec| {
+        String::from_utf8_lossy(&sec.name).trim_end_matches('\0').to_string()
+    }).collect();
+
+    // Check for Go
+    let has_go = pe.sections.iter().any(|sec| {
+        let name = String::from_utf8_lossy(&sec.name);
+        name.contains("go") || name.contains(".rdata")
+    });
+
+    if has_go {
+        let extractor = GoStringExtractor::new(min_length);
+        strings.extend(extractor.extract_pe(pe, data));
+    }
+
+    // Use r2 if available
+    if let Some(r2_strings) = get_r2_strings(opts) {
+        strings.extend(r2_strings);
+    }
+
+    // Also do raw scan for PE
+    if strings.is_empty() && !data.is_empty() {
+        strings.extend(extract_raw_strings(data, min_length, None, &segments));
+    }
+
+    // Apply garbage filter if enabled
+    if opts.filter_garbage {
+        strings.retain(|s| !common::is_garbage(&s.value));
+    }
+
+    strings
+}
+
 /// Extract raw null-terminated strings from binary data (fallback for unknown binaries).
 fn extract_raw_strings(
     data: &[u8],
@@ -545,47 +710,62 @@ fn extract_raw_strings(
     segment_names: &[String],
 ) -> Vec<ExtractedString> {
     // Build a set of known segment/section names for quick lookup
-    let segment_names: HashSet<&str> = segment_names.iter().map(|s| s.as_str()).collect();
+    let segment_names_set: HashSet<&str> = segment_names.iter().map(|s| s.as_str()).collect();
 
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut current = Vec::new();
-    let mut start_offset = 0usize;
+    let mut prev_end = 0usize;
 
-    for (i, &byte) in data.iter().enumerate() {
-        if byte == 0 {
-            if current.len() >= min_length {
-                if let Ok(s) = std::str::from_utf8(&current) {
-                    let trimmed = s.trim();
-                    if !trimmed.is_empty() && !seen.contains(trimmed) {
-                        seen.insert(trimmed.to_string());
+    // Use memchr to quickly find null bytes
+    for null_pos in memchr_iter(0, data) {
+        let chunk = &data[prev_end..null_pos];
+        let chunk_start = prev_end;
+        prev_end = null_pos + 1;
 
-                        // Check if this string matches a known segment/section name
-                        let kind = if segment_names.contains(trimmed) {
-                            StringKind::Section
-                        } else {
-                            go::classify_string(trimmed)
-                        };
+        if chunk.len() < min_length {
+            continue;
+        }
 
-                        strings.push(ExtractedString {
-                            value: trimmed.to_string(),
-                            data_offset: start_offset as u64,
-                            section: section.clone(),
-                            method: StringMethod::RawScan,
-                            kind,
-                            library: None,
-                        });
-                    }
+        // Find the last contiguous printable run that ends at the chunk boundary
+        // (this matches original behavior: non-printable bytes reset the buffer)
+        let mut run_start = None;
+        for (i, &b) in chunk.iter().enumerate() {
+            if b.is_ascii_graphic() || b.is_ascii_whitespace() {
+                if run_start.is_none() {
+                    run_start = Some(i);
                 }
+            } else {
+                run_start = None;
             }
-            current.clear();
-        } else if byte.is_ascii_graphic() || byte.is_ascii_whitespace() {
-            if current.is_empty() {
-                start_offset = i;
+        }
+
+        let Some(start) = run_start else { continue };
+        let candidate = &chunk[start..];
+
+        if candidate.len() < min_length {
+            continue;
+        }
+
+        if let Ok(s) = std::str::from_utf8(candidate) {
+            let trimmed = s.trim();
+            if trimmed.len() >= min_length && !trimmed.is_empty() && !seen.contains(trimmed) {
+                // Check if this string matches a known segment/section name
+                let kind = if segment_names_set.contains(trimmed) {
+                    StringKind::Section
+                } else {
+                    go::classify_string(trimmed)
+                };
+
+                seen.insert(trimmed.to_string());
+                strings.push(ExtractedString {
+                    value: trimmed.to_string(),
+                    data_offset: (chunk_start + start) as u64,
+                    section: section.clone(),
+                    method: StringMethod::RawScan,
+                    kind,
+                    library: None,
+                });
             }
-            current.push(byte);
-        } else {
-            current.clear();
         }
     }
 
