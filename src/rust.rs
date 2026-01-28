@@ -11,9 +11,8 @@
 //!
 //! For inline literals, we also perform instruction pattern analysis.
 
-use super::common::{
-    extract_from_structures, find_string_structures, BinaryInfo, ExtractedString, StringMethod,
-};
+use super::extraction::{extract_from_structures, find_string_structures};
+use super::types::{BinaryInfo, ExtractedString, StringMethod};
 use super::go::classify_string;
 use super::instr::{extract_inline_strings_amd64, extract_inline_strings_arm64};
 use goblin::elf::Elf;

@@ -37,9 +37,6 @@ mod types;
 mod extraction;
 mod validation;
 
-// Re-export module for backward compatibility
-mod common;
-
 // Binary format modules
 mod binary;
 mod imports;
@@ -56,10 +53,10 @@ mod rust;
 pub mod xor;
 
 // Re-export public API
-pub use common::{
-    is_garbage, BinaryInfo, ExtractedString, OverlayInfo, Severity, StringKind, StringMethod,
-    StringStruct,
+pub use types::{
+    BinaryInfo, ExtractedString, OverlayInfo, Severity, StringKind, StringMethod, StringStruct,
 };
+pub use validation::is_garbage;
 pub use binary::{is_go_binary, is_rust_binary};
 pub use detect::{detect_language, is_text_file};
 pub use entitlements::extract_macho_entitlements_xml;
@@ -79,17 +76,6 @@ use entitlements::extract_macho_entitlements;
 use imports::{extract_elf_imports, extract_macho_imports};
 use raw::{extract_raw_strings, extract_wide_strings};
 
-/// macho_is_rust is in binary module but not exported, add local version
-fn macho_is_rust(macho: &MachO) -> bool {
-    macho.segments.iter().any(|seg| {
-        seg.sections().is_ok_and(|secs| {
-            secs.iter().any(|(sec, _)| {
-                let name = sec.name().unwrap_or("");
-                name.contains("rust")
-            })
-        })
-    })
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct ExtractOptions {
@@ -214,29 +200,20 @@ pub fn extract_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
 fn deduplicate_by_offset(strings: Vec<ExtractedString>) -> Vec<ExtractedString> {
     use std::collections::HashMap;
 
-    // Group strings by offset
     let mut offset_map: HashMap<u64, Vec<ExtractedString>> = HashMap::new();
     for s in strings {
         offset_map.entry(s.data_offset).or_default().push(s);
     }
 
-    // At each offset, keep only the longest string
-    let result: Vec<ExtractedString> = offset_map
+    offset_map
         .into_values()
-        .filter_map(|mut strings_at_offset| {
-            if strings_at_offset.is_empty() {
-                None
-            } else if strings_at_offset.len() == 1 {
-                strings_at_offset.pop()
-            } else {
-                // Multiple strings at same offset - keep the longest
+        .map(|mut strings_at_offset| {
+            if strings_at_offset.len() > 1 {
                 strings_at_offset.sort_by_key(|s| std::cmp::Reverse(s.value.len()));
-                strings_at_offset.into_iter().next()
             }
+            strings_at_offset.into_iter().next().unwrap()
         })
-        .collect();
-
-    result
+        .collect()
 }
 
 /// Extract strings with additional options.
@@ -362,7 +339,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
             strings.retain(|s| {
                 s.kind == StringKind::EntitlementsXml
                     || s.kind == StringKind::Section
-                    || !common::is_garbage(&s.value)
+                    || !validation::is_garbage(&s.value)
             });
         }
 
@@ -385,7 +362,7 @@ pub fn extract_from_object(
             if macho_has_go_sections(macho) {
                 let extractor = GoStringExtractor::new(min_length);
                 strings.extend(extractor.extract_macho(macho, data));
-            } else if macho_is_rust(macho) {
+            } else if binary::macho_is_rust(macho) {
                 let extractor = RustStringExtractor::new(min_length);
                 strings.extend(extractor.extract_macho(macho, data));
             } else {
@@ -454,7 +431,7 @@ pub fn extract_from_object(
                         is_go = true;
                         let extractor = GoStringExtractor::new(min_length);
                         strings.extend(extractor.extract_macho(&macho, data));
-                    } else if macho_is_rust(&macho) {
+                    } else if binary::macho_is_rust(&macho) {
                         is_rust = true;
                         let extractor = RustStringExtractor::new(min_length);
                         strings.extend(extractor.extract_macho(&macho, data));
@@ -716,7 +693,7 @@ pub fn extract_from_object(
         strings.retain(|s| {
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
-                || !common::is_garbage(&s.value)
+                || !validation::is_garbage(&s.value)
         });
     }
 
@@ -738,7 +715,7 @@ pub fn extract_from_macho(
     if macho_has_go_sections(macho) {
         let extractor = GoStringExtractor::new(min_length);
         strings.extend(extractor.extract_macho(macho, data));
-    } else if macho_is_rust(macho) {
+    } else if binary::macho_is_rust(macho) {
         let extractor = RustStringExtractor::new(min_length);
         strings.extend(extractor.extract_macho(macho, data));
     } else {
@@ -800,7 +777,7 @@ pub fn extract_from_macho(
         strings.retain(|s| {
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
-                || !common::is_garbage(&s.value)
+                || !validation::is_garbage(&s.value)
         });
     }
 
@@ -879,7 +856,7 @@ pub fn extract_from_elf(
         strings.retain(|s| {
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
-                || !common::is_garbage(&s.value)
+                || !validation::is_garbage(&s.value)
         });
     }
 
@@ -937,7 +914,7 @@ pub fn extract_from_pe(
         strings.retain(|s| {
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
-                || !common::is_garbage(&s.value)
+                || !validation::is_garbage(&s.value)
         });
     }
 

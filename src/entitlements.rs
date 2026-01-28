@@ -25,11 +25,11 @@ pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
             let cs_data = &data[offset..offset + size];
 
             // Look for XML plist (starts with <?xml)
-            if let Some(xml_start) = find_subsequence(cs_data, b"<?xml") {
+            if let Some(xml_start) = cs_data.windows(5).position(|w| w == b"<?xml") {
                 let xml_data = &cs_data[xml_start..];
 
                 // Find end of plist
-                if let Some(plist_end) = find_subsequence(xml_data, b"</plist>") {
+                if let Some(plist_end) = xml_data.windows(8).position(|w| w == b"</plist>") {
                     let xml_content = &xml_data[..plist_end + 8]; // include </plist>
 
                     if let Ok(xml_str) = String::from_utf8(xml_content.to_vec()) {
@@ -68,11 +68,11 @@ pub(crate) fn extract_macho_entitlements(
             let cs_data = &data[offset..offset + size];
 
             // Look for XML plist (starts with <?xml)
-            if let Some(xml_start) = find_subsequence(cs_data, b"<?xml") {
+            if let Some(xml_start) = cs_data.windows(5).position(|w| w == b"<?xml") {
                 let xml_data = &cs_data[xml_start..];
 
                 // Find end of plist
-                if let Some(plist_end) = find_subsequence(xml_data, b"</plist>") {
+                if let Some(plist_end) = xml_data.windows(8).position(|w| w == b"</plist>") {
                     let xml_content = &xml_data[..plist_end + 8]; // include </plist>
 
                     if let Ok(xml_str) = String::from_utf8(xml_content.to_vec()) {
@@ -152,12 +152,3 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
     keys
 }
 
-/// Find a byte subsequence within a slice.
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}

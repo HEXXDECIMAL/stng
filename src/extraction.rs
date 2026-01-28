@@ -5,44 +5,6 @@
 
 use crate::types::{BinaryInfo, ExtractedString, StringKind, StringMethod, StringStruct};
 
-/// Safely read a u64 in little-endian from a slice at a given offset.
-///
-/// Returns `None` if there aren't enough bytes available.
-#[inline]
-fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
-    data.get(offset..offset + 8)?
-        .try_into()
-        .ok()
-        .map(u64::from_le_bytes)
-}
-
-/// Safely read a u64 in big-endian from a slice at a given offset.
-#[inline]
-fn read_u64_be(data: &[u8], offset: usize) -> Option<u64> {
-    data.get(offset..offset + 8)?
-        .try_into()
-        .ok()
-        .map(u64::from_be_bytes)
-}
-
-/// Safely read a u32 in little-endian from a slice at a given offset.
-#[inline]
-fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
-    data.get(offset..offset + 4)?
-        .try_into()
-        .ok()
-        .map(u32::from_le_bytes)
-}
-
-/// Safely read a u32 in big-endian from a slice at a given offset.
-#[inline]
-fn read_u32_be(data: &[u8], offset: usize) -> Option<u32> {
-    data.get(offset..offset + 4)?
-        .try_into()
-        .ok()
-        .map(u32::from_be_bytes)
-}
-
 /// Find pointer+length structures that point into a data blob.
 ///
 /// This scans section data looking for consecutive pointer+length pairs
@@ -96,11 +58,11 @@ fn find_string_structures_64le(
     while i < end {
         // Direct LE reads without runtime endianness checks
         // Loop ensures we have 16 bytes available (end = len - 15)
-        let Some(ptr) = read_u64_le(section_data, i) else {
+        let Some(ptr) = section_data.get(i..i + 8).and_then(|s| s.try_into().ok()).map(u64::from_le_bytes) else {
             i += 8;
             continue;
         };
-        let Some(len) = read_u64_le(section_data, i + 8) else {
+        let Some(len) = section_data.get(i + 8..i + 16).and_then(|s| s.try_into().ok()).map(u64::from_le_bytes) else {
             i += 8;
             continue;
         };
@@ -141,20 +103,20 @@ fn find_string_structures_generic(
     for i in (0..=section_data.len() - struct_size).step_by(info.ptr_size) {
         // Loop ensures we have struct_size bytes available at position i
         let (ptr, len) = if info.is_64bit && info.is_little_endian {
-            let Some(ptr) = read_u64_le(section_data, i) else { continue };
-            let Some(len) = read_u64_le(section_data, i + 8) else { continue };
+            let Some(ptr) = section_data.get(i..i + 8).and_then(|s| s.try_into().ok()).map(u64::from_le_bytes) else { continue };
+            let Some(len) = section_data.get(i + 8..i + 16).and_then(|s| s.try_into().ok()).map(u64::from_le_bytes) else { continue };
             (ptr, len)
         } else if info.is_64bit {
-            let Some(ptr) = read_u64_be(section_data, i) else { continue };
-            let Some(len) = read_u64_be(section_data, i + 8) else { continue };
+            let Some(ptr) = section_data.get(i..i + 8).and_then(|s| s.try_into().ok()).map(u64::from_be_bytes) else { continue };
+            let Some(len) = section_data.get(i + 8..i + 16).and_then(|s| s.try_into().ok()).map(u64::from_be_bytes) else { continue };
             (ptr, len)
         } else if info.is_little_endian {
-            let Some(ptr) = read_u32_le(section_data, i).map(u64::from) else { continue };
-            let Some(len) = read_u32_le(section_data, i + 4).map(u64::from) else { continue };
+            let Some(ptr) = section_data.get(i..i + 4).and_then(|s| s.try_into().ok()).map(u32::from_le_bytes).map(u64::from) else { continue };
+            let Some(len) = section_data.get(i + 4..i + 8).and_then(|s| s.try_into().ok()).map(u32::from_le_bytes).map(u64::from) else { continue };
             (ptr, len)
         } else {
-            let Some(ptr) = read_u32_be(section_data, i).map(u64::from) else { continue };
-            let Some(len) = read_u32_be(section_data, i + 4).map(u64::from) else { continue };
+            let Some(ptr) = section_data.get(i..i + 4).and_then(|s| s.try_into().ok()).map(u32::from_be_bytes).map(u64::from) else { continue };
+            let Some(len) = section_data.get(i + 4..i + 8).and_then(|s| s.try_into().ok()).map(u32::from_be_bytes).map(u64::from) else { continue };
             (ptr, len)
         };
 

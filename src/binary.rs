@@ -69,7 +69,7 @@ pub fn is_rust_binary(data: &[u8]) -> bool {
 }
 
 /// Check if a Mach-O binary appears to be a Rust binary.
-fn macho_is_rust(macho: &MachO) -> bool {
+pub(crate) fn macho_is_rust(macho: &MachO) -> bool {
     macho.segments.iter().any(|seg| {
         seg.sections().is_ok_and(|secs| {
             secs.iter().any(|(sec, _)| {

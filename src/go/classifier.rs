@@ -467,9 +467,8 @@ fn is_base64(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::BinaryInfo;
+    use crate::types::{BinaryInfo, StringStruct};
     use crate::extraction::{extract_from_structures, find_string_structures};
-    use crate::common::StringStruct;
 
     #[test]
     fn test_find_string_structures() {

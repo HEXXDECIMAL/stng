@@ -4,7 +4,7 @@
 //! pointer+length structures. Instead, compilers pass string addresses and lengths
 //! through registers. We extract these by pattern matching instruction sequences.
 
-use super::common::{ExtractedString, StringKind, StringMethod};
+use super::types::{ExtractedString, StringKind, StringMethod};
 use super::go::classify_string;
 use std::collections::HashSet;
 

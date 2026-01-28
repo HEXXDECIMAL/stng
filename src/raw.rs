@@ -185,7 +185,7 @@ pub(crate) fn extract_wide_strings(
         let lo = data[i];
         let hi = data[i + 1];
 
-        if is_printable_ascii(lo) && hi == 0 {
+        if (lo.is_ascii_graphic() || matches!(lo, b' ' | b'\t' | b'\n' | b'\r')) && hi == 0 {
             // Found potential start of wide string
             let start = i;
             let mut code_units: Vec<u16> = Vec::new();
@@ -247,11 +247,6 @@ pub(crate) fn extract_wide_strings(
     strings
 }
 
-/// Check if a byte is printable ASCII (space through tilde, plus tab and newline).
-#[inline]
-fn is_printable_ascii(b: u8) -> bool {
-    b.is_ascii_graphic() || matches!(b, b' ' | b'\t' | b'\n' | b'\r')
-}
 
 /// Check if a UTF-16 code unit represents a valid printable character.
 #[inline]
