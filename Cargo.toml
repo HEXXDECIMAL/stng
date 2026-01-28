@@ -39,6 +39,9 @@ base64 = "0.22"
 # Error handling
 anyhow = "1.0"
 
+# Hashing
+sha2 = "0.10"
+
 [lib]
 name = "strangs"
 path = "src/lib.rs"

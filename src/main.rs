@@ -6,6 +6,7 @@ use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use clap::Parser;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal};
@@ -92,6 +93,53 @@ const DIM: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m"; // Dark red text
 const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
+
+/// Get binary format and architecture string (e.g., "ELF arm32", "PE x64", "Mach-O arm64")
+fn get_binary_format(data: &[u8]) -> String {
+    use strangs::goblin::Object;
+
+    match Object::parse(data) {
+        Ok(Object::Elf(elf)) => {
+            let arch = match elf.header.e_machine {
+                strangs::goblin::elf::header::EM_X86_64 => "x64",
+                strangs::goblin::elf::header::EM_386 => "x86",
+                strangs::goblin::elf::header::EM_AARCH64 => "arm64",
+                strangs::goblin::elf::header::EM_ARM => "arm32",
+                strangs::goblin::elf::header::EM_MIPS => "mips",
+                strangs::goblin::elf::header::EM_PPC => "ppc",
+                strangs::goblin::elf::header::EM_PPC64 => "ppc64",
+                strangs::goblin::elf::header::EM_RISCV => "riscv",
+                strangs::goblin::elf::header::EM_S390 => "s390x",
+                _ => "unknown",
+            };
+            format!("ELF {}", arch)
+        }
+        Ok(Object::PE(pe)) => {
+            let arch = match pe.header.coff_header.machine {
+                strangs::goblin::pe::header::COFF_MACHINE_X86_64 => "x64",
+                strangs::goblin::pe::header::COFF_MACHINE_X86 => "x86",
+                strangs::goblin::pe::header::COFF_MACHINE_ARM64 => "arm64",
+                strangs::goblin::pe::header::COFF_MACHINE_ARMNT => "arm32",
+                _ => "unknown",
+            };
+            format!("PE {}", arch)
+        }
+        Ok(Object::Mach(strangs::goblin::mach::Mach::Binary(macho))) => {
+            let arch = match macho.header.cputype() {
+                strangs::goblin::mach::cputype::CPU_TYPE_X86_64 => "x64",
+                strangs::goblin::mach::cputype::CPU_TYPE_X86 => "x86",
+                strangs::goblin::mach::cputype::CPU_TYPE_ARM64 => "arm64",
+                strangs::goblin::mach::cputype::CPU_TYPE_ARM => "arm32",
+                strangs::goblin::mach::cputype::CPU_TYPE_POWERPC => "ppc",
+                strangs::goblin::mach::cputype::CPU_TYPE_POWERPC64 => "ppc64",
+                _ => "unknown",
+            };
+            format!("Mach-O {}", arch)
+        }
+        Ok(Object::Mach(strangs::goblin::mach::Mach::Fat(_))) => "Mach-O fat".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -181,19 +229,31 @@ fn main() -> Result<()> {
             return Ok(());
         }
 
-        // Print header
+        // Print header with format info
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
+        let format = get_binary_format(&data);
+        let size = data.len();
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let hash = format!("{:x}", hasher.finalize());
+
         if use_color {
             println!(
-                "{}{}  {} strings from {}{}",
+                "{}{}{} · {} · {} bytes · {} strings · {}{}",
                 BOLD,
                 DIM,
-                strings.len(),
                 filename,
+                format,
+                size,
+                strings.len(),
+                hash,
                 RESET
             );
         } else {
-            println!("  {} strings from {}", strings.len(), filename);
+            println!(
+                "{} · {} · {} bytes · {} strings · {}",
+                filename, format, size, strings.len(), hash
+            );
         }
         println!();
 
@@ -250,7 +310,7 @@ fn main() -> Result<()> {
             strangs::StringKind::Url => 4,
             _ => 5,
         });
-        notable.truncate(5);
+        notable.truncate(8);
 
         // Print notable summary if there are high-severity items
         if !notable.is_empty() {
@@ -271,7 +331,117 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn colorize_xml_line(line: &str) -> String {
+    let mut output = line.to_string();
+
+    // Colorize <key>...</key> content (entitlement names) in red
+    if let Some(key_start) = output.find("<key>") {
+        if let Some(key_end) = output.find("</key>") {
+            let before = &output[..key_start + 5];
+            let content = &output[key_start + 5..key_end];
+            let after = &output[key_end..];
+            output = format!("{}{}{}{}{}", before, RED, content, RESET, after);
+        }
+    }
+
+    // Colorize <string>...</string> content (values) in yellow
+    if let Some(str_start) = output.find("<string>") {
+        if let Some(str_end) = output.find("</string>") {
+            let before = &output[..str_start + 8];
+            let content = &output[str_start + 8..str_end];
+            let after = &output[str_end..];
+            output = format!("{}{}{}{}{}", before, YELLOW, content, RESET, after);
+        }
+    }
+
+    output
+}
+
+#[allow(dead_code)]
+fn print_colorized_entitlements(xml: &str, use_color: bool) {
+    if !use_color {
+        println!("{}", xml);
+        return;
+    }
+
+    // Colorize entitlement keys and values
+    let mut output = xml.to_string();
+
+    // Colorize <key>...</key> content (entitlement names) in red
+    let key_pattern = "<key>";
+    let key_end = "</key>";
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    while let Some(start) = output[last_end..].find(key_pattern) {
+        let abs_start = last_end + start;
+        result.push_str(&output[last_end..abs_start]);
+        result.push_str(key_pattern);
+
+        let content_start = abs_start + key_pattern.len();
+        if let Some(end_pos) = output[content_start..].find(key_end) {
+            let content_end = content_start + end_pos;
+            result.push_str(&format!("{}{}{}", RED, &output[content_start..content_end], RESET));
+            result.push_str(key_end);
+            last_end = content_end + key_end.len();
+        } else {
+            result.push_str(&output[content_start..]);
+            break;
+        }
+    }
+    result.push_str(&output[last_end..]);
+
+    // Colorize <string>...</string> content (values) in yellow
+    output = result;
+    result = String::new();
+    last_end = 0;
+    let string_pattern = "<string>";
+    let string_end = "</string>";
+
+    while let Some(start) = output[last_end..].find(string_pattern) {
+        let abs_start = last_end + start;
+        result.push_str(&output[last_end..abs_start]);
+        result.push_str(string_pattern);
+
+        let content_start = abs_start + string_pattern.len();
+        if let Some(end_pos) = output[content_start..].find(string_end) {
+            let content_end = content_start + end_pos;
+            result.push_str(&format!("{}{}{}", YELLOW, &output[content_start..content_end], RESET));
+            result.push_str(string_end);
+            last_end = content_end + string_end.len();
+        } else {
+            result.push_str(&output[content_start..]);
+            break;
+        }
+    }
+    result.push_str(&output[last_end..]);
+
+    println!("{}", result);
+}
+
 fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
+    // Special handling for multi-line entitlements XML
+    if s.kind == strangs::StringKind::EntitlementsXml {
+        let kind_color = if use_color { YELLOW } else { "" };
+        let mut byte_offset = s.data_offset;
+
+        // Print each line with its calculated offset
+        for line in s.value.lines() {
+            let offset = format!("{:>8x}", byte_offset);
+
+            if use_color {
+                let colorized = colorize_xml_line(line);
+                println!("  {}{}{} {}{:<12}{} {}", DIM, offset, RESET, kind_color, "entitlements", RESET, colorized);
+            } else {
+                println!("  {} {:<12} {}", offset, "entitlements", line);
+            }
+
+            // Update offset for next line (line length + newline)
+            byte_offset += line.len() as u64 + 1;
+        }
+        return;
+    }
+
     let offset = format!("{:>8x}", s.data_offset);
 
     // Show encoding suffix for wide strings (except overlay:16LE which already has it)
@@ -316,7 +486,11 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
                 if let Ok(text) = String::from_utf8(decoded) {
                     let text = text.trim();
                     if !text.is_empty() {
-                        value = format!("{} [{}]", value, text);
+                        if use_color {
+                            value = format!("{} {}[{}]{}", value, DIM, text, RESET);
+                        } else {
+                            value = format!("{} [{}]", value, text);
+                        }
                     }
                 }
             }

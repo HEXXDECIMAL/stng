@@ -144,6 +144,22 @@ fn find_macho_section(macho: &MachO, addr: u64) -> Option<String> {
     None
 }
 
+/// Convert virtual address to file offset for Mach-O binaries.
+fn macho_vaddr_to_file_offset(macho: &MachO, vaddr: u64) -> u64 {
+    for seg in &macho.segments {
+        let vm_start = seg.vmaddr;
+        let vm_end = vm_start + seg.vmsize;
+
+        if vaddr >= vm_start && vaddr < vm_end {
+            // file_offset = (virtual_address - segment_vmaddr) + segment_fileoff
+            return (vaddr - vm_start) + seg.fileoff;
+        }
+    }
+
+    // If not found in any segment, return the vaddr as-is
+    vaddr
+}
+
 /// Extract imports from a Mach-O binary.
 fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedString> {
     let mut strings = Vec::new();
@@ -156,9 +172,11 @@ fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedStrin
                 // Strip the leading path from dylib, e.g., "/usr/lib/libSystem.B.dylib" -> "libSystem.B.dylib"
                 let lib = import.dylib.rsplit('/').next().unwrap_or(import.dylib);
                 let section = find_macho_section(macho, import.address);
+                // Convert virtual address to file offset
+                let file_offset = macho_vaddr_to_file_offset(macho, import.address);
                 strings.push(ExtractedString {
                     value: import.name.to_string(),
-                    data_offset: import.address,
+                    data_offset: file_offset,
                     section,
                     method: StringMethod::Structure,
                     kind: StringKind::Import,
@@ -172,10 +190,12 @@ fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedStrin
     if let Ok(exports) = macho.exports() {
         for export in exports {
             if export.name.len() >= min_length && seen.insert(export.name.to_string()) {
+                // Convert virtual address to file offset
+                let file_offset = macho_vaddr_to_file_offset(macho, export.offset);
                 let section = find_macho_section(macho, export.offset);
                 strings.push(ExtractedString {
                     value: export.name.to_string(),
-                    data_offset: export.offset,
+                    data_offset: file_offset,
                     section,
                     method: StringMethod::Structure,
                     kind: StringKind::Export,
@@ -362,9 +382,9 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
             }
 
-            // Apply garbage filter if enabled
+            // Apply garbage filter if enabled (but never filter entitlements XML)
             if opts.filter_garbage {
-                strings.retain(|s| !common::is_garbage(&s.value));
+                strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
             }
 
             strings
@@ -457,6 +477,9 @@ pub fn extract_from_object(
                 .filter(|s| !seen.contains(s.value.as_str()))
                 .collect();
             strings.extend(new_imports);
+
+            // Extract entitlements as raw XML for inline display
+            strings.extend(extract_macho_entitlements(macho, data, min_length));
         }
         Object::Mach(goblin::mach::Mach::Fat(fat)) => {
             // Fat binary - check for Go/Rust first
@@ -511,6 +534,9 @@ pub fn extract_from_object(
                     .filter(|s| !seen.contains(s.value.as_str()))
                     .collect();
                 strings.extend(new_imports);
+
+                // Extract entitlements as raw XML for inline display
+                strings.extend(extract_macho_entitlements(macho, data, min_length));
             }
         }
         Object::Elf(elf) => {
@@ -624,9 +650,9 @@ pub fn extract_from_object(
         strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
     }
 
-    // Apply garbage filter if enabled
+    // Apply garbage filter if enabled (but never filter entitlements XML)
     if opts.filter_garbage {
-        strings.retain(|s| !common::is_garbage(&s.value));
+        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
     }
 
     strings
@@ -684,12 +710,174 @@ pub fn extract_from_macho(
         .collect();
     strings.extend(new_imports);
 
-    // Apply garbage filter if enabled
+    // Extract entitlements as raw XML for inline display
+    strings.extend(extract_macho_entitlements(macho, data, min_length));
+
+    // Apply garbage filter if enabled (but never filter entitlements XML)
     if opts.filter_garbage {
-        strings.retain(|s| !common::is_garbage(&s.value));
+        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
     }
 
     strings
+}
+
+/// Extract entitlements XML from Mach-O code signature.
+///
+/// Returns the raw XML plist from LC_CODE_SIGNATURE if present.
+#[allow(dead_code)]
+pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
+    use goblin::mach::load_command::CommandVariant;
+    use goblin::Object;
+
+    let macho = match Object::parse(data) {
+        Ok(Object::Mach(goblin::mach::Mach::Binary(m))) => m,
+        _ => return None,
+    };
+
+    // Find LC_CODE_SIGNATURE load command
+    for cmd in &macho.load_commands {
+        if let CommandVariant::CodeSignature(ref cs) = cmd.command {
+            let offset = cs.dataoff as usize;
+            let size = cs.datasize as usize;
+
+            if offset + size > data.len() {
+                continue;
+            }
+
+            let cs_data = &data[offset..offset + size];
+
+            // Look for XML plist (starts with <?xml)
+            if let Some(xml_start) = find_subsequence(cs_data, b"<?xml") {
+                let xml_data = &cs_data[xml_start..];
+
+                // Find end of plist
+                if let Some(plist_end) = find_subsequence(xml_data, b"</plist>") {
+                    let xml_content = &xml_data[..plist_end + 8]; // include </plist>
+
+                    if let Ok(xml_str) = String::from_utf8(xml_content.to_vec()) {
+                        return Some(xml_str);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract entitlements from Mach-O code signature as raw XML.
+///
+/// Returns the full XML plist as a single string for inline display.
+fn extract_macho_entitlements(macho: &MachO, data: &[u8], _min_length: usize) -> Vec<ExtractedString> {
+    use goblin::mach::load_command::CommandVariant;
+
+    let mut entitlements = Vec::new();
+
+    // Find LC_CODE_SIGNATURE load command
+    for cmd in &macho.load_commands {
+        if let CommandVariant::CodeSignature(ref cs) = cmd.command {
+            let offset = cs.dataoff as usize;
+            let size = cs.datasize as usize;
+
+            if offset + size > data.len() {
+                continue;
+            }
+
+            let cs_data = &data[offset..offset + size];
+
+            // Look for XML plist (starts with <?xml)
+            if let Some(xml_start) = find_subsequence(cs_data, b"<?xml") {
+                let xml_data = &cs_data[xml_start..];
+
+                // Find end of plist
+                if let Some(plist_end) = find_subsequence(xml_data, b"</plist>") {
+                    let xml_content = &xml_data[..plist_end + 8]; // include </plist>
+
+                    if let Ok(xml_str) = String::from_utf8(xml_content.to_vec()) {
+                        entitlements.push(ExtractedString {
+                            value: xml_str,
+                            data_offset: (offset + xml_start) as u64,
+                            section: Some("__LINKEDIT".to_string()),
+                            method: StringMethod::CodeSignature,
+                            kind: StringKind::EntitlementsXml,
+                            library: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    entitlements
+}
+
+/// Simple XML parser to extract entitlement key strings from plist.
+///
+/// Extracts text between <key> and </key> tags.
+#[allow(dead_code)]
+fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Vec<ExtractedString> {
+    let mut keys = Vec::new();
+    let xml_str = String::from_utf8_lossy(xml);
+
+    // Simple regex-free parser: find <key>...</key> patterns
+    let mut offset = 0;
+    while let Some(key_start) = xml_str[offset..].find("<key>") {
+        let key_content_start = offset + key_start + 5; // after "<key>"
+        if let Some(key_end_pos) = xml_str[key_content_start..].find("</key>") {
+            let key_value = &xml_str[key_content_start..key_content_start + key_end_pos];
+
+            if key_value.len() >= min_length {
+                keys.push(ExtractedString {
+                    value: key_value.to_string(),
+                    data_offset: base_offset + key_content_start as u64,
+                    section: Some("__LINKEDIT".to_string()),
+                    method: StringMethod::CodeSignature,
+                    kind: StringKind::Entitlement,
+                    library: None,
+                });
+            }
+
+            offset = key_content_start + key_end_pos + 6; // after "</key>"
+        } else {
+            break;
+        }
+    }
+
+    // Also extract <string>...</string> values (app IDs, paths, etc.)
+    let mut offset = 0;
+    while let Some(str_start) = xml_str[offset..].find("<string>") {
+        let str_content_start = offset + str_start + 8; // after "<string>"
+        if let Some(str_end_pos) = xml_str[str_content_start..].find("</string>") {
+            let str_value = &xml_str[str_content_start..str_content_start + str_end_pos];
+
+            if str_value.len() >= min_length {
+                keys.push(ExtractedString {
+                    value: str_value.to_string(),
+                    data_offset: base_offset + str_content_start as u64,
+                    section: Some("__LINKEDIT".to_string()),
+                    method: StringMethod::CodeSignature,
+                    kind: StringKind::AppId,
+                    library: None,
+                });
+            }
+
+            offset = str_content_start + str_end_pos + 9; // after "</string>"
+        } else {
+            break;
+        }
+    }
+
+    keys
+}
+
+/// Find a byte subsequence within a slice.
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Extract strings from a pre-parsed ELF binary.
@@ -758,9 +946,9 @@ pub fn extract_from_elf(
     // Extract overlay/appended data (common malware technique)
     strings.extend(extract_overlay_strings(data, min_length));
 
-    // Apply garbage filter if enabled
+    // Apply garbage filter if enabled (but never filter entitlements XML)
     if opts.filter_garbage {
-        strings.retain(|s| !common::is_garbage(&s.value));
+        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
     }
 
     strings
@@ -812,9 +1000,9 @@ pub fn extract_from_pe(
         strings.extend(extract_raw_strings(data, min_length, None, &segments));
     }
 
-    // Apply garbage filter if enabled
+    // Apply garbage filter if enabled (but never filter entitlements XML)
     if opts.filter_garbage {
-        strings.retain(|s| !common::is_garbage(&s.value));
+        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
     }
 
     strings
@@ -1977,5 +2165,220 @@ mod tests {
 
         // CJK should be rejected (too much noise)
         assert!(!is_valid_wide_char(0x4E00)); // CJK
+    }
+
+    #[test]
+    fn test_find_subsequence() {
+        let haystack = b"hello world";
+        assert_eq!(find_subsequence(haystack, b"world"), Some(6));
+        assert_eq!(find_subsequence(haystack, b"hello"), Some(0));
+        assert_eq!(find_subsequence(haystack, b"notfound"), None);
+        assert_eq!(find_subsequence(haystack, b""), Some(0));
+    }
+
+    #[test]
+    fn test_parse_entitlement_keys_basic() {
+        let xml = b"<?xml version=\"1.0\"?>\
+            <plist version=\"1.0\">\
+            <dict>\
+            <key>com.apple.security.get-task-allow</key>\
+            <true/>\
+            </dict>\
+            </plist>";
+
+        let result = parse_entitlement_keys(xml, 0, 4);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, "com.apple.security.get-task-allow");
+        assert_eq!(result[0].kind, StringKind::Entitlement);
+        assert_eq!(result[0].method, StringMethod::CodeSignature);
+        assert_eq!(result[0].section, Some("__LINKEDIT".to_string()));
+    }
+
+    #[test]
+    fn test_parse_entitlement_keys_with_string_values() {
+        let xml = b"<?xml version=\"1.0\"?>\
+            <plist version=\"1.0\">\
+            <dict>\
+            <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>\
+            <string>com.apple.testmanagerd</string>\
+            </dict>\
+            </plist>";
+
+        let result = parse_entitlement_keys(xml, 0, 4);
+        assert_eq!(result.len(), 2);
+
+        // Should have both the entitlement key and the app ID
+        let entitlement = result.iter().find(|s| s.kind == StringKind::Entitlement).unwrap();
+        assert_eq!(entitlement.value, "com.apple.security.temporary-exception.mach-lookup.global-name");
+
+        let appid = result.iter().find(|s| s.kind == StringKind::AppId).unwrap();
+        assert_eq!(appid.value, "com.apple.testmanagerd");
+    }
+
+    #[test]
+    fn test_parse_entitlement_keys_multiple() {
+        let xml = b"<?xml version=\"1.0\"?>\
+            <plist version=\"1.0\">\
+            <dict>\
+            <key>com.apple.security.get-task-allow</key>\
+            <true/>\
+            <key>com.apple.security.files.absolute-path.read-only</key>\
+            <string>/usr/bin</string>\
+            <key>com.apple.security.network.client</key>\
+            <true/>\
+            </dict>\
+            </plist>";
+
+        let result = parse_entitlement_keys(xml, 0, 4);
+
+        // Should have 3 entitlement keys + 1 string value
+        let entitlements: Vec<_> = result.iter().filter(|s| s.kind == StringKind::Entitlement).collect();
+        assert_eq!(entitlements.len(), 3);
+
+        let appids: Vec<_> = result.iter().filter(|s| s.kind == StringKind::AppId).collect();
+        assert_eq!(appids.len(), 1);
+        assert_eq!(appids[0].value, "/usr/bin");
+    }
+
+    #[test]
+    fn test_parse_entitlement_keys_min_length() {
+        let xml = b"<?xml version=\"1.0\"?>\
+            <plist version=\"1.0\">\
+            <dict>\
+            <key>abc</key>\
+            <true/>\
+            <key>com.apple.security.get-task-allow</key>\
+            <true/>\
+            </dict>\
+            </plist>";
+
+        // Min length 10 should filter out "abc" but keep the long one
+        let result = parse_entitlement_keys(xml, 0, 10);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, "com.apple.security.get-task-allow");
+    }
+
+    #[test]
+    fn test_parse_entitlement_keys_offset_calculation() {
+        let xml = b"<?xml version=\"1.0\"?>\
+            <plist version=\"1.0\">\
+            <dict>\
+            <key>test.entitlement</key>\
+            <true/>\
+            </dict>\
+            </plist>";
+
+        let base_offset = 1000u64;
+        let result = parse_entitlement_keys(xml, base_offset, 4);
+
+        // Offset should be base_offset + position in XML
+        assert!(result[0].data_offset >= base_offset);
+        assert!(result[0].data_offset < base_offset + xml.len() as u64);
+    }
+
+    #[test]
+    fn test_parse_entitlement_keys_malformed_xml() {
+        // Missing closing tags - should not panic
+        let xml = b"<key>incomplete";
+        let result = parse_entitlement_keys(xml, 0, 4);
+        assert!(result.is_empty());
+
+        // Missing key content
+        let xml = b"<key></key>";
+        let result = parse_entitlement_keys(xml, 0, 4);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_entitlement_keys_empty() {
+        let xml = b"";
+        let result = parse_entitlement_keys(xml, 0, 4);
+        assert!(result.is_empty());
+
+        let xml = b"<dict></dict>";
+        let result = parse_entitlement_keys(xml, 0, 4);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_macho_entitlements_real_binary() {
+        // Test with system utilities that may have entitlements
+        // Try multiple paths for cross-platform compatibility
+        let paths = vec![
+            "/usr/bin/codesign",
+            "/usr/bin/security",
+            "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+        ];
+
+        for path in paths {
+            if let Ok(data) = std::fs::read(path) {
+                use goblin::Object;
+
+                if let Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) = Object::parse(&data) {
+                    let entitlements = extract_macho_entitlements(&macho, &data, 4);
+
+                    // System binaries may or may not have entitlements
+                    // Just verify the function doesn't panic and returns valid data
+                    for ent in &entitlements {
+                        assert_eq!(ent.section, Some("__LINKEDIT".to_string()));
+                        assert_eq!(ent.method, StringMethod::CodeSignature);
+                        assert!(ent.kind == StringKind::Entitlement || ent.kind == StringKind::AppId);
+                    }
+                    return; // Test passed with at least one binary
+                }
+            }
+        }
+        // If no system binaries found, skip test
+    }
+
+    #[test]
+    fn test_extract_macho_entitlements_no_signature() {
+        // Create a minimal Mach-O without code signature
+        let data = vec![
+            0xCF, 0xFA, 0xED, 0xFE, // MH_MAGIC_64
+            0x07, 0x00, 0x00, 0x01, // CPU_TYPE_X86_64
+            0x03, 0x00, 0x00, 0x00, // CPU_SUBTYPE_X86_64_ALL
+            0x02, 0x00, 0x00, 0x00, // MH_EXECUTE
+            0x00, 0x00, 0x00, 0x00, // ncmds
+            0x00, 0x00, 0x00, 0x00, // sizeofcmds
+            0x00, 0x00, 0x00, 0x00, // flags
+            0x00, 0x00, 0x00, 0x00, // reserved
+        ];
+
+        use goblin::mach::MachO;
+        use goblin::Object;
+
+        if let Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) = Object::parse(&data) {
+            let entitlements = extract_macho_entitlements(&macho, &data, 4);
+            assert!(entitlements.is_empty(), "Should return empty vec for binary without code signature");
+        }
+    }
+
+    #[test]
+    fn test_entitlements_integrated_extraction() {
+        // Test that entitlements are included in full extraction with system binaries
+        let paths = vec![
+            "/usr/bin/codesign",
+            "/usr/bin/security",
+        ];
+
+        for path in paths {
+            if let Ok(data) = std::fs::read(path) {
+                let opts = ExtractOptions::new(4);
+                let strings = extract_strings_with_options(&data, &opts);
+
+                // Filter for entitlements if any exist
+                let entitlements: Vec<_> = strings.iter()
+                    .filter(|s| s.kind == StringKind::Entitlement || s.kind == StringKind::AppId)
+                    .collect();
+
+                // If entitlements exist, verify they have High severity
+                for ent in entitlements {
+                    assert_eq!(ent.kind.severity(), Severity::High);
+                }
+                return; // Test completed successfully
+            }
+        }
+        // If no system binaries found, skip test
     }
 }

@@ -54,6 +54,8 @@ pub enum StringMethod {
     WideString,
     /// Found via XOR decoding (single-byte key)
     XorDecode,
+    /// Found in Mach-O code signature (entitlements)
+    CodeSignature,
 }
 
 /// Semantic kind of the extracted string.
@@ -109,6 +111,12 @@ pub enum StringKind {
     Overlay,
     /// Overlay data in UTF-16LE encoding (common in malware configs)
     OverlayWide,
+    /// macOS entitlement from code signature
+    Entitlement,
+    /// Application/service identifier from entitlements
+    AppId,
+    /// Raw entitlements XML plist from Mach-O code signature
+    EntitlementsXml,
 }
 
 /// Severity level for security-focused output.
@@ -138,14 +146,17 @@ impl StringKind {
             | StringKind::SuspiciousPath
             | StringKind::Base64
             | StringKind::Overlay
-            | StringKind::OverlayWide => Severity::High,
+            | StringKind::OverlayWide
+            | StringKind::Entitlement
+            | StringKind::AppId => Severity::High,
 
             StringKind::Path
             | StringKind::FilePath
             | StringKind::Import
             | StringKind::EnvVar
             | StringKind::Registry
-            | StringKind::Error => Severity::Medium,
+            | StringKind::Error
+            | StringKind::EntitlementsXml => Severity::Medium,
 
             StringKind::FuncName | StringKind::Export => Severity::Low,
 
@@ -179,6 +190,9 @@ impl StringKind {
             StringKind::Base64 => "base64",
             StringKind::Overlay => "overlay",
             StringKind::OverlayWide => "overlay:16LE",
+            StringKind::Entitlement => "entitlement",
+            StringKind::AppId => "appid",
+            StringKind::EntitlementsXml => "entitlements",
         }
     }
 }

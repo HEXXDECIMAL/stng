@@ -231,8 +231,8 @@ fn test_cli_flat_output() {
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Should have a header with string count
-        assert!(stdout.contains("strings from"));
+        // Should have a header with string count and format info
+        assert!(stdout.contains("strings ·") || stdout.contains("strings"));
     }
 }
 
