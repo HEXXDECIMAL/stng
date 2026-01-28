@@ -282,10 +282,9 @@ impl GoStringExtractor {
                 let base = pe
                     .header
                     .optional_header
-                    .map(|h| h.windows_fields.image_base)
-                    .unwrap_or(0);
+                    .map_or(0, |h| h.windows_fields.image_base);
                 rdata_info = Some((
-                    base + section.virtual_address as u64,
+                    base + u64::from(section.virtual_address),
                     section.pointer_to_raw_data as usize,
                     section.size_of_raw_data as usize,
                 ));
@@ -317,11 +316,10 @@ impl GoStringExtractor {
             let base = pe
                 .header
                 .optional_header
-                .map(|h| h.windows_fields.image_base)
-                .unwrap_or(0);
+                .map_or(0, |h| h.windows_fields.image_base);
 
             let section_data = &data[offset..offset + size];
-            let section_addr = base + section.virtual_address as u64;
+            let section_addr = base + u64::from(section.virtual_address);
 
             let structs = find_string_structures(
                 section_data,
@@ -365,8 +363,7 @@ impl GoStringExtractor {
 
         let is_gopclntab = section_name
             .as_ref()
-            .map(|s| s.contains("gopclntab"))
-            .unwrap_or(false);
+            .is_some_and(|s| s.contains("gopclntab"));
 
         for (i, &byte) in data.iter().enumerate() {
             if byte == 0 {
@@ -547,8 +544,7 @@ pub fn classify_string(s: &str) -> StringKind {
         && env_name
             .chars()
             .next()
-            .map(|c| c.is_ascii_uppercase())
-            .unwrap_or(false)
+            .is_some_and(|c| c.is_ascii_uppercase())
         && env_name
             .chars()
             .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())

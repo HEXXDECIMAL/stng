@@ -260,8 +260,36 @@ fn main() -> Result<()> {
 
     let mut strings = stng::extract_strings_with_options(&data, &opts);
 
-    // Deduplicate
-    let mut seen_at_offset: HashSet<(u64, String)> = HashSet::new();
+    // Deduplicate: when multiple strings at same offset, keep only the longest
+    use std::collections::HashMap;
+    let mut offset_map: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (idx, s) in strings.iter().enumerate() {
+        offset_map.entry(s.data_offset).or_default().push(idx);
+    }
+
+    let mut keep_indices = HashSet::new();
+    for indices in offset_map.values() {
+        if indices.len() == 1 {
+            keep_indices.insert(indices[0]);
+        } else {
+            // Multiple strings at same offset - keep the longest
+            let longest_idx = indices
+                .iter()
+                .max_by_key(|&&idx| strings[idx].value.len())
+                .copied()
+                .unwrap();
+            keep_indices.insert(longest_idx);
+        }
+    }
+
+    let mut idx = 0;
+    strings.retain(|_| {
+        let keep = keep_indices.contains(&idx);
+        idx += 1;
+        keep
+    });
+
+    // Deduplicate by value
     let mut seen_values: HashSet<String> = HashSet::new();
     strings.retain(|s| {
         let normalized: String = s
@@ -269,14 +297,7 @@ fn main() -> Result<()> {
             .trim()
             .trim_end_matches(|c: char| c.is_control())
             .to_string();
-        let key = (s.data_offset, normalized.clone());
-        if !seen_at_offset.insert(key) {
-            return false;
-        }
-        if !seen_values.insert(normalized) {
-            return false;
-        }
-        true
+        seen_values.insert(normalized)
     });
 
     // Filter out raw scan noise if --interesting
@@ -349,15 +370,15 @@ fn main() -> Result<()> {
 
         // Sort by section, then by offset (preserves file order)
         // When XOR scan is enabled, sort purely by offset to show XOR strings inline
-        if !cli.no_xor {
-            strings.sort_by_key(|s| s.data_offset);
-        } else {
+        if cli.no_xor {
             strings.sort_by(|a, b| match (&a.section, &b.section) {
                 (Some(sa), Some(sb)) => sa.cmp(sb).then(a.data_offset.cmp(&b.data_offset)),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => a.data_offset.cmp(&b.data_offset),
             });
+        } else {
+            strings.sort_by_key(|s| s.data_offset);
         }
 
         let mut current_section: Option<&str> = None;
@@ -562,11 +583,16 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
     // Get color based on severity
     let (color, kind_color) = if use_color {
-        match s.kind.severity() {
-            Severity::High => (RED, RED),
-            Severity::Medium => (YELLOW, YELLOW),
-            Severity::Low => (GREEN, GREEN),
-            Severity::Info => ("", DIM),
+        // Section names are rarely interesting - show in dim grey
+        if s.kind == stng::StringKind::Section {
+            (DIM, DIM)
+        } else {
+            match s.kind.severity() {
+                Severity::High => (RED, RED),
+                Severity::Medium => (YELLOW, YELLOW),
+                Severity::Low => (GREEN, GREEN),
+                Severity::Info => ("", DIM),
+            }
         }
     } else {
         ("", "")
@@ -593,7 +619,7 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
                 // Show decoded content (text or hex)
                 if printable > decoded.len() / 2 {
                     // Mostly printable - show as text
-                    if let Ok(text) = String::from_utf8(decoded.clone()) {
+                    if let Ok(text) = String::from_utf8(decoded) {
                         let text = text.trim();
                         if !text.is_empty() {
                             if use_color {
@@ -606,9 +632,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
                 } else {
                     // Binary data - show as hex (especially useful for XOR-decoded base64)
                     let hex_preview = if decoded.len() <= 16 {
-                        decoded.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("")
+                        decoded.iter().map(|b| format!("{:02x}", b)).collect::<String>()
                     } else {
-                        format!("{}...", decoded[..16].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""))
+                        format!("{}...", decoded[..16].iter().map(|b| format!("{:02x}", b)).collect::<String>())
                     };
                     if use_color {
                         value = format!("{} {}[0x{}]{}", value, DIM, hex_preview, RESET);

@@ -218,12 +218,9 @@ fn analyze_candidates_by_patterns(
 
     // Get all function names (run aaa first to ensure analysis is done)
     let functions_cmd = "aaa; afl";
-    let functions = match run_tool_command(tool, path, functions_cmd) {
-        Some(f) => f,
-        None => {
-            tracing::debug!("analyze_candidates_by_patterns: failed to get function list");
-            return vec![];
-        }
+    let functions = if let Some(f) = run_tool_command(tool, path, functions_cmd) { f } else {
+        tracing::debug!("analyze_candidates_by_patterns: failed to get function list");
+        return vec![];
     };
 
     let function_lines: Vec<&str> = functions.lines().collect();
@@ -231,12 +228,7 @@ fn analyze_candidates_by_patterns(
         "analyze_candidates_by_patterns: found {} functions",
         function_lines.len()
     );
-    if !function_lines.is_empty() {
-        tracing::debug!(
-            "analyze_candidates_by_patterns: first function line: '{}'",
-            function_lines[0]
-        );
-    } else {
+    if function_lines.is_empty() {
         tracing::debug!(
             "analyze_candidates_by_patterns: functions output length: {} bytes",
             functions.len()
@@ -248,6 +240,11 @@ fn analyze_candidates_by_patterns(
             } else {
                 &functions
             }
+        );
+    } else {
+        tracing::debug!(
+            "analyze_candidates_by_patterns: first function line: '{}'",
+            function_lines[0]
         );
     }
 
@@ -279,14 +276,11 @@ fn analyze_candidates_by_patterns(
         func_addrs.len()
     );
 
-    let all_output = match run_tool_command(tool, path, &compound_cmd) {
-        Some(o) => o,
-        None => {
-            tracing::debug!(
-                "analyze_candidates_by_patterns: failed to run compound disassembly command"
-            );
-            return vec![];
-        }
+    let all_output = if let Some(o) = run_tool_command(tool, path, &compound_cmd) { o } else {
+        tracing::debug!(
+            "analyze_candidates_by_patterns: failed to run compound disassembly command"
+        );
+        return vec![];
     };
 
     // Parse the combined output by splitting on function separators
@@ -329,7 +323,7 @@ fn analyze_candidates_by_patterns(
         }
 
         // Check if any candidate addresses appear in this XOR function
-        for candidate in candidates.iter() {
+        for candidate in candidates {
             let addr_str = format!("0x{:x}", candidate.data_offset);
 
             // Also try virtual address format (add base address)
@@ -377,15 +371,12 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
         candidates.len()
     );
 
-    let tool = match get_tool() {
-        Some(t) => {
-            tracing::debug!("verify_xor_keys: using tool={}", t);
-            t
-        }
-        None => {
-            tracing::debug!("verify_xor_keys: no r2/rizin tool found");
-            return Vec::new();
-        }
+    let tool = if let Some(t) = get_tool() {
+        tracing::debug!("verify_xor_keys: using tool={}", t);
+        t
+    } else {
+        tracing::debug!("verify_xor_keys: no r2/rizin tool found");
+        return Vec::new();
     };
 
     // Check if XOR key is in input candidates
@@ -464,7 +455,7 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
             Some(x) => x,
             None => continue,
         };
-        let xref_lines: Vec<String> = xrefs.lines().map(|s| s.to_string()).collect();
+        let xref_lines: Vec<String> = xrefs.lines().map(std::string::ToString::to_string).collect();
 
         if !xref_lines.is_empty() {
             candidates_with_refs.push((candidate, xref_lines));
@@ -764,4 +755,312 @@ mod tests {
             }
         }
     }
+}
+
+/// Extract IP addresses and ports from `connect()` syscall arguments.
+///
+/// Analyzes code to find `connect()` calls and extracts `sockaddr_in` structures
+/// built in-line (common in embedded malware). Returns IP:port strings.
+pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
+    let tool = match get_tool() {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    tracing::debug!("extract_connect_addrs: analyzing with {}", tool);
+
+    // Analyze binary and disassemble entire .text section
+    let cmd = "aaa; e scr.color=0; s entry0; pdf";
+    let output = match run_tool_command(tool, path, cmd) {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Look for connect syscalls (283 on ARM32, 42 on x86, etc.)
+    // Also look for imports of "connect" function
+    let has_connect = output.contains("283")             // ARM32 connect syscall number
+        || output.contains("syscall.connect")  // Named syscall
+        || output.contains("sym.imp.connect"); // Imported connect
+
+    if !has_connect {
+        tracing::debug!("extract_connect_addrs: no connect syscalls found");
+        return Vec::new();
+    }
+
+    tracing::debug!("extract_connect_addrs: found potential connect syscall");
+
+    // First try parsing from disassembly
+    if let Some(sockaddr) = parse_sockaddr_from_disasm(&output, data) {
+        let ip_str = format!(
+            "{}.{}.{}.{}",
+            sockaddr.ip[0], sockaddr.ip[1], sockaddr.ip[2], sockaddr.ip[3]
+        );
+
+        let value = if sockaddr.port > 0 {
+            format!("{}:{}", ip_str, sockaddr.port)
+        } else {
+            ip_str
+        };
+
+        if seen.insert(value.clone()) {
+            results.push(ExtractedString {
+                value,
+                data_offset: sockaddr.offset,
+                section: Some(".text".to_string()),
+                method: StringMethod::InstructionPattern,
+                kind: if sockaddr.port > 0 {
+                    StringKind::IPPort
+                } else {
+                    StringKind::IP
+                },
+                library: Some("connect()".to_string()),
+            });
+        }
+    } else {
+        // Fallback: scan for IP patterns directly in instruction bytes
+        tracing::debug!("extract_connect_addrs: disasm parsing failed, scanning binary");
+        for sockaddr in find_sockaddr_in_binary(data) {
+            let ip_str = format!(
+                "{}.{}.{}.{}",
+                sockaddr.ip[0], sockaddr.ip[1], sockaddr.ip[2], sockaddr.ip[3]
+            );
+
+            let value = if sockaddr.port > 0 {
+                format!("{}:{}", ip_str, sockaddr.port)
+            } else {
+                ip_str
+            };
+
+            if seen.insert(value.clone()) {
+                results.push(ExtractedString {
+                    value,
+                    data_offset: sockaddr.offset,
+                    section: Some(".text".to_string()),
+                    method: StringMethod::InstructionPattern,
+                    kind: if sockaddr.port > 0 {
+                        StringKind::IPPort
+                    } else {
+                        StringKind::IP
+                    },
+                    library: Some("connect()".to_string()),
+                });
+            }
+        }
+    }
+
+    tracing::debug!(
+        "extract_connect_addrs: found {} unique addresses",
+        results.len()
+    );
+    results
+}
+
+#[derive(Debug)]
+struct SockaddrIn {
+    ip: [u8; 4],
+    port: u16,
+    offset: u64,
+}
+
+/// Parse `sockaddr_in` structure from disassembly output.
+///
+/// Looks for patterns where IP bytes are loaded into registers/stack.
+/// Common patterns:
+/// - ARM32: mov r0, #byte; strb r0, [sp, #offset]
+/// - ARM64: mov w0, #byte; strb w0, [sp, #offset]
+/// - x86: movb $byte, offset(%rsp)
+fn parse_sockaddr_from_disasm(disasm: &str, _data: &[u8]) -> Option<SockaddrIn> {
+    let mut ip_bytes = [0u8; 4];
+    let mut port: u16 = 0;
+    let mut offset = 0u64;
+    let mut found_count = 0;
+
+    // ARM32 pattern: mov r0, #0x2d; strb r0, [sp, #4]
+    // Look for consecutive byte stores to stack offsets 4-7 (sockaddr_in.sin_addr)
+    let mut pending_byte: Option<u8> = None;
+
+    for line in disasm.lines() {
+        // Extract offset from line start (address)
+        if let Some(addr_str) = line.split_whitespace().next() {
+            if let Ok(addr) = u64::from_str_radix(addr_str.trim_start_matches("0x"), 16) {
+                if offset == 0 {
+                    offset = addr;
+                }
+            }
+        }
+
+        // ARM32: mov r*, #imm (captures the immediate value)
+        if line.contains(" mov ") && line.contains(", #") || line.contains(", 0x") {
+            if let Some(imm_pos) = line.rfind(", ") {
+                if let Some(val_str) = line[imm_pos + 2..].split_whitespace().next() {
+                    if let Ok(byte_val) = parse_immediate(val_str) {
+                        pending_byte = Some(byte_val);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // ARM32: strb r*, [stack_offset] (stores the byte)
+        if (line.contains("strb") || line.contains("str ")) && pending_byte.is_some() {
+            if let Some(sp_offset) = extract_stack_offset(line) {
+                let byte_val = pending_byte.unwrap();
+                tracing::debug!("parse_sockaddr: found byte 0x{:02x} at sp+{} from line: {}", byte_val, sp_offset, line.trim());
+
+                // sockaddr_in: sin_family (2 bytes), sin_port (2 bytes), sin_addr (4 bytes)
+                // sin_addr starts at offset 4
+                // ONLY accept offsets 4, 5, 6, 7 (exact IP bytes)
+                if sp_offset == 4 {
+                    ip_bytes[0] = byte_val;
+                    found_count += 1;
+                } else if sp_offset == 5 {
+                    ip_bytes[1] = byte_val;
+                    found_count += 1;
+                } else if sp_offset == 6 {
+                    ip_bytes[2] = byte_val;
+                    found_count += 1;
+                } else if sp_offset == 7 {
+                    ip_bytes[3] = byte_val;
+                    found_count += 1;
+                }
+                // Extract port (offsets 2-3)
+                else if (2..4).contains(&sp_offset) {
+                    if sp_offset == 2 {
+                        port = u16::from(byte_val) << 8;
+                    } else {
+                        port |= u16::from(byte_val);
+                    }
+                }
+                pending_byte = None;
+            }
+        }
+
+    }
+
+    if found_count == 4 && !is_zero_or_invalid(&ip_bytes) {
+        Some(SockaddrIn {
+            ip: ip_bytes,
+            port,
+            offset,
+        })
+    } else {
+        None
+    }
+}
+
+fn parse_immediate(s: &str) -> Result<u8, std::num::ParseIntError> {
+    let cleaned = s.trim_start_matches("0x").trim_end_matches(|c: char| !c.is_ascii_hexdigit());
+    if s.starts_with("0x") {
+        u8::from_str_radix(cleaned, 16)
+    } else {
+        cleaned.parse::<u8>()
+    }
+}
+
+fn extract_stack_offset(line: &str) -> Option<u8> {
+    // Extract the raw instruction bytes (first 8 hex chars after address)
+    // strb r0, [sp, #4] encodes as 0400cde5 (little-endian ARM)
+    // The offset is in the first 2 hex digits
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() >= 2 {
+        let hex_str = parts[1];
+        // Parse instruction bytes for ARM strb: offset in first 2 chars
+        if hex_str.len() >= 8 {
+            // First 2 hex digits (offset in little-endian)
+            if let Ok(offset) = u8::from_str_radix(&hex_str[0..2], 16) {
+                return Some(offset);
+            }
+        }
+    }
+
+    // Fallback: Look for [sp, #offset] or [sp, offset] format
+    if let Some(sp_pos) = line.find("sp,") {
+        let after_sp = &line[sp_pos + 3..];
+        if let Some(num_str) = after_sp
+            .trim_start_matches(|c: char| c.is_whitespace() || c == '#')
+            .split(&[']', ','][..])
+            .next()
+        {
+            return parse_immediate(num_str).ok();
+        }
+    }
+    None
+}
+
+
+fn is_zero_or_invalid(ip: &[u8; 4]) -> bool {
+    ip.iter().all(|&b| b == 0) || ip[0] == 0 || ip[0] >= 224
+}
+
+/// Scan binary data for `sockaddr_in` patterns by looking for mov+strb instruction sequences.
+/// ARM32: mov r0, #byte; strb r0, [sp, #offset]
+fn find_sockaddr_in_binary(data: &[u8]) -> Vec<SockaddrIn> {
+    let mut results = Vec::new();
+
+    // Scan for ARM32 pattern: E3 A0 00 XX (mov r0, #immediate) followed by E5 CD 00 YY (strb r0, [sp, #offset])
+    let mut i = 0;
+    while i + 32 <= data.len() {
+        // Look for sequences of 4 mov+strb pairs with offsets 4, 5, 6, 7
+        let mut ip_bytes = [0u8; 4];
+        let mut found = 0;
+
+        for j in 0..32 {
+            if i + j + 8 > data.len() {
+                break;
+            }
+
+            // Check for mov r0, #imm: XX 00 A0 E3
+            if data[i + j + 2] == 0xA0 && data[i + j + 3] == 0xE3 {
+                let byte_val = data[i + j];
+
+                // Check for strb r0, [sp, #offset]: YY 00 CD E5
+                if i + j + 7 < data.len()
+                    && data[i + j + 6] == 0xCD
+                    && data[i + j + 7] == 0xE5
+                {
+                    let offset = data[i + j + 4];
+
+                    // Collect IP bytes at offsets 4-7
+                    if offset == 4 {
+                        ip_bytes[0] = byte_val;
+                        found |= 1;
+                    } else if offset == 5 {
+                        ip_bytes[1] = byte_val;
+                        found |= 2;
+                    } else if offset == 6 {
+                        ip_bytes[2] = byte_val;
+                        found |= 4;
+                    } else if offset == 7 {
+                        ip_bytes[3] = byte_val;
+                        found |= 8;
+                    }
+                }
+            }
+        }
+
+        // Check if we found all 4 bytes
+        if found == 15 && !is_zero_or_invalid(&ip_bytes) {
+            tracing::debug!(
+                "find_sockaddr_in_binary: found IP {}.{}.{}.{} at offset 0x{:x}",
+                ip_bytes[0],
+                ip_bytes[1],
+                ip_bytes[2],
+                ip_bytes[3],
+                i
+            );
+            results.push(SockaddrIn {
+                ip: ip_bytes,
+                port: 0,
+                offset: i as u64,
+            });
+            i += 32; // Skip past this pattern
+        } else {
+            i += 4;
+        }
+    }
+
+    results
 }

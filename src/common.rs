@@ -246,7 +246,7 @@ impl BinaryInfo {
         }
     }
 
-    /// Create BinaryInfo from ELF header information
+    /// Create `BinaryInfo` from ELF header information
     pub fn from_elf(is_64bit: bool, is_little_endian: bool) -> Self {
         Self {
             is_64bit,
@@ -255,7 +255,7 @@ impl BinaryInfo {
         }
     }
 
-    /// Create BinaryInfo from Mach-O (always little-endian on modern systems)
+    /// Create `BinaryInfo` from Mach-O (always little-endian on modern systems)
     pub fn from_macho(is_64bit: bool) -> Self {
         Self {
             is_64bit,
@@ -264,7 +264,7 @@ impl BinaryInfo {
         }
     }
 
-    /// Create BinaryInfo from PE (always little-endian)
+    /// Create `BinaryInfo` from PE (always little-endian)
     pub fn from_pe(is_64bit: bool) -> Self {
         Self {
             is_64bit,
@@ -518,7 +518,7 @@ where
             result.push(ExtractedString {
                 value: trimmed.to_string(),
                 data_offset: s.ptr,
-                section: section_name.map(|s| s.to_string()),
+                section: section_name.map(std::string::ToString::to_string),
                 method: StringMethod::Structure,
                 kind: classify_fn(trimmed),
                 library: None,
@@ -666,7 +666,7 @@ pub fn is_garbage(s: &str) -> bool {
             && special == 0
             && trimmed
                 .chars()
-                .skip_while(|c| c.is_ascii_digit())
+                .skip_while(char::is_ascii_digit)
                 .all(|c| c.is_ascii_uppercase());
         // Allow PascalCase words: leading uppercase + rest lowercase, no digits (e.g., "Bool", "Exif", "Time")
         let is_pascal_case =
@@ -747,8 +747,29 @@ pub fn is_garbage(s: &str) -> bool {
         if upper > 0 && special > 0 && alpha == upper {
             return true;
         }
+        // Short strings with special chars are usually garbage, BUT:
+        // - Filenames with single '.' (e.g., "a.out", "d.exe", "lib.so") are OK
+        // - Section/path prefixes starting with '.' (e.g., ".text", ".data", ".init") are OK
         if special > 0 && len <= 5 {
-            return true;
+            // Count dots
+            let dot_count = trimmed.chars().filter(|&c| c == '.').count();
+            // If it's ONLY dots as special chars, it might be a filename or section name
+            if dot_count == special as usize {
+                // Single dot in the middle (filename: "d.exe", "a.out")
+                // OR starts with dot (section name: ".text", ".data", ".bss")
+                let is_filename_pattern = (dot_count == 1
+                    && !trimmed.starts_with('.')
+                    && !trimmed.ends_with('.'))
+                    || trimmed.starts_with('.');
+                if is_filename_pattern && alphanumeric > 0 {
+                    // Not garbage - looks like a filename or section name
+                } else {
+                    return true;
+                }
+            } else {
+                // Has other special chars besides dots - likely garbage
+                return true;
+            }
         }
     }
 
@@ -758,9 +779,9 @@ pub fn is_garbage(s: &str) -> bool {
     if (5..=10).contains(&len) && digit > 0 && upper > 0 && lower > 0 {
         // Allow patterns that look like versions (go1.22, v1.0) or dates
         let looks_like_version = trimmed.starts_with("go")
-            || trimmed.starts_with("v")
-            || trimmed.starts_with("V")
-            || trimmed.contains(".");
+            || trimmed.starts_with('v')
+            || trimmed.starts_with('V')
+            || trimmed.contains('.');
         if !looks_like_version {
             return true;
         }
@@ -1290,6 +1311,21 @@ mod tests {
     fn test_is_garbage_trailing_newline_ok() {
         // Trailing newline should not trigger control char detection
         assert!(!is_garbage("hello world\n"));
+    }
+
+    #[test]
+    fn test_is_garbage_short_strings_with_dots() {
+        // Short strings with dots should not be automatically marked as garbage
+        // These are common in filenames and section names
+        assert!(!is_garbage("d.exe"), "d.exe should not be garbage");
+        assert!(!is_garbage(".blah"), ".blah should not be garbage");
+        assert!(!is_garbage("a.out"), "a.out should not be garbage");
+        assert!(!is_garbage("lib.so"), "lib.so should not be garbage");
+
+        // Section names specifically (starts with dot)
+        assert!(!is_garbage(".text"), ".text should not be garbage");
+        assert!(!is_garbage(".data"), ".data should not be garbage");
+        assert!(!is_garbage(".bss"), ".bss should not be garbage");
     }
 
     #[test]

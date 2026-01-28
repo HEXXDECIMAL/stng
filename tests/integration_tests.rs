@@ -1339,9 +1339,17 @@ mod filter_tests {
         let opts = ExtractOptions::new(4).with_garbage_filter(true);
         let strings = extract_strings_with_options(&data, &opts);
 
-        // All strings should pass is_garbage check
+        // All strings should pass is_garbage check, except for special kinds
+        // that are exempt from garbage filtering (Section, EntitlementsXml)
         for s in &strings {
-            assert!(!is_garbage(&s.value), "Found garbage string: {}", s.value);
+            if s.kind != StringKind::Section && s.kind != StringKind::EntitlementsXml {
+                assert!(
+                    !is_garbage(&s.value),
+                    "Found garbage string: {} (kind: {:?})",
+                    s.value,
+                    s.kind
+                );
+            }
         }
     }
 
@@ -2729,6 +2737,179 @@ mod xor_detection_tests {
             xor_strings.iter().any(|s| s.library.as_ref().map(|l| l.contains("0x42")).unwrap_or(false)),
             "Should include XOR key (0x42) in library field. Found: {:?}",
             xor_strings.iter().map(|s| (s.value.clone(), s.library.clone())).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod sockaddr_extraction_tests {
+    use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
+    use std::fs;
+
+    #[test]
+    fn test_kimwolf_installer_ip_extraction() {
+        // Test IP extraction from ARM32 sockaddr_in structures
+        let path = "testdata/malware/kimwolf_installer";
+        let data = fs::read(path).expect("Failed to read kimwolf_installer test sample");
+
+        let opts = ExtractOptions::new(4)
+            .with_r2(path)
+            .with_garbage_filter(true);
+
+        let strings = extract_strings_with_options(&data, &opts);
+
+        // Should find the hardcoded C2 IP: 45.139.197.87
+        let ip_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| matches!(s.kind, StringKind::IP | StringKind::IPPort))
+            .collect();
+
+        assert!(
+            !ip_strings.is_empty(),
+            "Should find at least one IP address in kimwolf_installer"
+        );
+
+        assert!(
+            ip_strings.iter().any(|s| s.value == "45.139.197.87"),
+            "Should find C2 IP 45.139.197.87. Found IPs: {:?}",
+            ip_strings.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+
+        // Verify it's from connect() syscall
+        let connect_ip = ip_strings
+            .iter()
+            .find(|s| s.value == "45.139.197.87")
+            .expect("Should find the target IP");
+
+        assert_eq!(
+            connect_ip.library.as_deref(),
+            Some("connect()"),
+            "IP should be attributed to connect() syscall"
+        );
+
+        assert_eq!(
+            connect_ip.method,
+            StringMethod::InstructionPattern,
+            "IP should be extracted via instruction pattern matching"
+        );
+
+        // Verify the offset is around 0xc0 where the IP construction starts
+        assert!(
+            connect_ip.data_offset >= 0xc0 && connect_ip.data_offset <= 0xd0,
+            "IP should be at offset ~0xc0, found: 0x{:x}",
+            connect_ip.data_offset
+        );
+    }
+
+    #[test]
+    fn test_kimwolf_installer_string_deduplication() {
+        // Test that overlapping strings at same offset only keep the longest
+        let path = "testdata/malware/kimwolf_installer";
+        let data = fs::read(path).expect("Failed to read kimwolf_installer test sample");
+
+        let opts = ExtractOptions::new(4)
+            .with_r2(path)
+            .with_garbage_filter(true);
+
+        let strings = extract_strings_with_options(&data, &opts);
+
+        // Check strings at offset 0x1d4
+        let strings_at_1d4: Vec<_> = strings
+            .iter()
+            .filter(|s| s.data_offset == 0x1d4)
+            .collect();
+
+        // Should only have ONE string at this offset (the longest one)
+        assert_eq!(
+            strings_at_1d4.len(),
+            1,
+            "Should only have one string at offset 0x1d4 (the longest). Found: {:?}",
+            strings_at_1d4.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+
+        // The kept string should be the longest one
+        let kept_string = strings_at_1d4[0];
+        assert!(
+            kept_string.value.len() >= "krebsforeheadindustrie".len(),
+            "Kept string should be at least as long as the shorter variant"
+        );
+    }
+}
+
+#[cfg(test)]
+mod string_deduplication_tests {
+    use stng::{extract_strings_with_options, ExtractOptions};
+    use std::fs;
+
+    #[test]
+    fn test_overlapping_strings_keep_longest() {
+        // Create binary with overlapping strings at same offset
+        let data = b"\x00\x00\x00\x00HelloWorld\x00Extra\x00";
+
+        let opts = ExtractOptions::new(4);
+        let strings = extract_strings_with_options(data, &opts);
+
+        // Group strings by offset
+        let mut by_offset = std::collections::HashMap::new();
+        for s in &strings {
+            by_offset
+                .entry(s.data_offset)
+                .or_insert_with(Vec::new)
+                .push(s);
+        }
+
+        // At each offset, should only have one string
+        for (offset, strings_at_offset) in by_offset {
+            assert_eq!(
+                strings_at_offset.len(),
+                1,
+                "Offset 0x{:x} should only have one string (the longest). Found: {:?}",
+                offset,
+                strings_at_offset.iter().map(|s| &s.value).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn test_kimwolf_installer_section_names() {
+        // Test that we extract all section names that GNU strings finds
+        let path = "testdata/malware/kimwolf_installer";
+        let data = fs::read(path).expect("Failed to read kimwolf_installer test sample");
+
+        let opts = ExtractOptions::new(4);
+        let strings = extract_strings_with_options(&data, &opts);
+
+        let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+
+        eprintln!("Extracted {} strings: {:?}", values.len(), values);
+
+        // Print strings around offset 520-560
+        for s in &strings {
+            if s.data_offset >= 520 && s.data_offset <= 560 {
+                eprintln!("Offset {:#x} ({}): {:?}", s.data_offset, s.data_offset, s.value);
+            }
+        }
+
+        // Section names that GNU strings finds
+        assert!(
+            values.contains(&".shstrtab"),
+            "Should find .shstrtab section name. Found: {:?}",
+            values
+        );
+        assert!(
+            values.contains(&".text"),
+            "Should find .text section name. Found: {:?}",
+            values
+        );
+        assert!(
+            values.contains(&".data"),
+            "Should find .data section name. Found: {:?}",
+            values
+        );
+        assert!(
+            values.contains(&".ARM.attributes"),
+            "Should find .ARM.attributes section name. Found: {:?}",
+            values
         );
     }
 }

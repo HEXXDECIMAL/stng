@@ -58,13 +58,13 @@ impl RustStringExtractor {
                     let name = section.name().unwrap_or("");
                     match (seg_name, name) {
                         ("__TEXT", "__cstring") => {
-                            cstring_info = Some((section.addr, section_data))
+                            cstring_info = Some((section.addr, section_data));
                         }
                         ("__TEXT", "__const") => {
-                            text_const_info = Some((section.addr, section_data))
+                            text_const_info = Some((section.addr, section_data));
                         }
                         ("__DATA_CONST", "__const") => {
-                            data_const_info = Some((section.addr, section_data))
+                            data_const_info = Some((section.addr, section_data));
                         }
                         ("__TEXT", "__text") => text_info = Some((section.addr, section_data)),
                         _ => {}
@@ -507,8 +507,8 @@ impl RustStringExtractor {
             for i in 1..chars.len().saturating_sub(3) {
                 if chars[i - 1].is_ascii_lowercase()
                     && chars[i].is_ascii_uppercase()
-                    && chars.get(i + 1).is_some_and(|c| c.is_ascii_uppercase())
-                    && chars.get(i + 2).is_some_and(|c| c.is_ascii_uppercase())
+                    && chars.get(i + 1).is_some_and(char::is_ascii_uppercase)
+                    && chars.get(i + 2).is_some_and(char::is_ascii_uppercase)
                 {
                     let sub: String = chars[last_idx..i].iter().collect();
                     if sub.len() >= self.min_length {
@@ -543,7 +543,7 @@ impl RustStringExtractor {
             return;
         }
         // Skip if mostly digits
-        let digit_count = trimmed.chars().filter(|c| c.is_ascii_digit()).count();
+        let digit_count = trimmed.chars().filter(char::is_ascii_digit).count();
         if digit_count > trimmed.len() * 7 / 10 {
             return;
         }

@@ -37,7 +37,7 @@ fn calculate_entropy(data: &[u8]) -> f64 {
 
     for &count in &freq {
         if count > 0 {
-            let p = count as f64 / len;
+            let p = f64::from(count) / len;
             entropy -= p * p.log2();
         }
     }
@@ -202,7 +202,7 @@ fn get_automaton_with_wide() -> &'static (AhoCorasick, Vec<PatternInfo>) {
 /// Extract strings decoded with a specified XOR key.
 ///
 /// Applies the given XOR key to the entire binary data and extracts meaningful strings.
-/// The key is cycled for multi-byte keys (key[i % key.len()]).
+/// The key is cycled for multi-byte keys (key[i % `key.len()`]).
 ///
 /// # Arguments
 /// * `data` - Binary data to scan
@@ -1287,7 +1287,7 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
                         // Reject if it alternates between upper/lower too much (gibberish)
                         let mut case_changes = 0;
                         let mut prev_was_upper = false;
-                        for c in name.chars().filter(|c| c.is_ascii_alphabetic()) {
+                        for c in name.chars().filter(char::is_ascii_alphabetic) {
                             let is_upper = c.is_ascii_uppercase();
                             if prev_was_upper != is_upper {
                                 case_changes += 1;

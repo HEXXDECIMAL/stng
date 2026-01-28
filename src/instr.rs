@@ -226,7 +226,7 @@ fn decode_arm64_string(
     // Decode ADRP: extract page address
     let immlo = (inst1 >> 29) & 0x3;
     let immhi = (inst1 >> 5) & 0x7FFFF;
-    let mut page_offset = ((immhi << 2) | immlo) as i64;
+    let mut page_offset = i64::from((immhi << 2) | immlo);
     if (page_offset & 0x100000) != 0 {
         page_offset |= !0x1FFFFF_i64;
     }
@@ -237,7 +237,7 @@ fn decode_arm64_string(
 
     // Decode ADD: extract immediate
     let add_imm = (inst2 >> 10) & 0xFFF;
-    let str_addr = (page_addr as u64).wrapping_add(add_imm as u64);
+    let str_addr = (page_addr as u64).wrapping_add(u64::from(add_imm));
 
     // Decode MOV/ORR: extract length
     let str_len = decode_arm_mov_immediate(inst3)?;
@@ -270,8 +270,8 @@ fn decode_arm64_string(
 fn decode_arm_mov_immediate(inst: u32) -> Option<u64> {
     // Check for MOVZ/MOVK (D2xxxxxx)
     if (inst & 0xFF000000) == 0xD2000000 {
-        let imm16 = ((inst >> 5) & 0xFFFF) as u64;
-        let shift = (((inst >> 21) & 0x3) * 16) as u64;
+        let imm16 = u64::from((inst >> 5) & 0xFFFF);
+        let shift = u64::from(((inst >> 21) & 0x3) * 16);
         return Some(imm16 << shift);
     }
 
@@ -454,7 +454,7 @@ fn extract_amd64_first_arg_string(
                     .expect("bounds checked above"),
             );
             let rip_addr = text_addr + (pos + 7) as u64;
-            let str_addr = (rip_addr as i64 + offset as i64) as u64;
+            let str_addr = (rip_addr as i64 + i64::from(offset)) as u64;
 
             // Look for MOVL/MOVQ $len, RSI
             let mut str_len = 0u64;
@@ -468,11 +468,11 @@ fn extract_amd64_first_arg_string(
                 // MOVL $imm32, ESI (BE xx xx xx xx)
                 if text_data[pos + off] == 0xBE {
                     // SAFETY: bounds checked in loop (pos + off + 5 <= text_data.len())
-                    str_len = u32::from_le_bytes(
+                    str_len = u64::from(u32::from_le_bytes(
                         text_data[pos + off + 1..pos + off + 5]
                             .try_into()
                             .expect("bounds checked in loop"),
-                    ) as u64;
+                    ));
                     found_len = true;
                     break;
                 }
@@ -484,11 +484,11 @@ fn extract_amd64_first_arg_string(
                     && text_data[pos + off + 2] == 0xC6
                 {
                     // SAFETY: bounds checked in if condition above
-                    str_len = u32::from_le_bytes(
+                    str_len = u64::from(u32::from_le_bytes(
                         text_data[pos + off + 3..pos + off + 7]
                             .try_into()
                             .expect("bounds checked above"),
-                    ) as u64;
+                    ));
                     found_len = true;
                     break;
                 }
@@ -560,7 +560,7 @@ fn extract_amd64_key_string(
                     .expect("bounds checked above"),
             );
             let rip_addr = text_addr + (pos + 7) as u64;
-            let str_addr = (rip_addr as i64 + offset as i64) as u64;
+            let str_addr = (rip_addr as i64 + i64::from(offset)) as u64;
 
             // Find MOVL $len, EDX (BA xx xx xx xx)
             let mut str_len = 0u64;
@@ -573,11 +573,11 @@ fn extract_amd64_key_string(
 
                 if text_data[pos + off] == 0xBA {
                     // SAFETY: bounds checked in loop (pos + off + 5 <= text_data.len())
-                    str_len = u32::from_le_bytes(
+                    str_len = u64::from(u32::from_le_bytes(
                         text_data[pos + off + 1..pos + off + 5]
                             .try_into()
                             .expect("bounds checked in loop"),
-                    ) as u64;
+                    ));
                     found_len = true;
                     break;
                 }
@@ -653,11 +653,11 @@ fn extract_amd64_value_string(
             && text_data[call_pos + offset + 2] == 0x40
             && text_data[call_pos + offset + 3] == 0x08
         {
-            str_len = u32::from_le_bytes(
+            str_len = u64::from(u32::from_le_bytes(
                 text_data[call_pos + offset + 4..call_pos + offset + 8]
                     .try_into()
                     .unwrap(),
-            ) as u64;
+            ));
             found_len = true;
             break;
         }
@@ -683,7 +683,7 @@ fn extract_amd64_value_string(
                     .unwrap(),
             );
             let rip_addr = text_addr + (call_pos + offset + 7) as u64;
-            let str_addr = (rip_addr as i64 + rip_offset as i64) as u64;
+            let str_addr = (rip_addr as i64 + i64::from(rip_offset)) as u64;
 
             if str_addr < rodata_addr || str_addr >= rodata_end {
                 continue;

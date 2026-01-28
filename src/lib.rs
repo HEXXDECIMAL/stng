@@ -76,7 +76,7 @@ fn collect_macho_segments(macho: &MachO) -> Vec<String> {
 fn collect_elf_segments(elf: &goblin::elf::Elf) -> Vec<String> {
     elf.section_headers
         .iter()
-        .filter_map(|sh| elf.shdr_strtab.get_at(sh.sh_name).map(|s| s.to_string()))
+        .filter_map(|sh| elf.shdr_strtab.get_at(sh.sh_name).map(std::string::ToString::to_string))
         .collect()
 }
 
@@ -133,7 +133,7 @@ fn macho_is_rust(macho: &MachO) -> bool {
 /// Find the section name containing an address in a Mach-O binary.
 fn find_macho_section(macho: &MachO, addr: u64) -> Option<String> {
     for seg in &macho.segments {
-        for (sec, _) in seg.sections().ok()?.iter() {
+        for (sec, _) in &seg.sections().ok()? {
             let start = sec.addr;
             let end = start + sec.size;
             if addr >= start && addr < end {
@@ -189,12 +189,12 @@ fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedStrin
     // Extract exports
     if let Ok(exports) = macho.exports() {
         for export in exports {
-            if export.name.len() >= min_length && seen.insert(export.name.to_string()) {
+            if export.name.len() >= min_length && seen.insert(export.name.clone()) {
                 // Convert virtual address to file offset
                 let file_offset = macho_vaddr_to_file_offset(macho, export.offset);
                 let section = find_macho_section(macho, export.offset);
                 strings.push(ExtractedString {
-                    value: export.name.to_string(),
+                    value: export.name.clone(),
                     data_offset: file_offset,
                     section,
                     method: StringMethod::Structure,
@@ -232,13 +232,13 @@ fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> Vec<Extract
             let lib = elf
                 .verneed
                 .iter()
-                .flat_map(|v| v.iter())
+                .flat_map(goblin::elf::VerneedSection::iter)
                 .find(|vn| {
                     vn.iter()
                         .any(|aux| elf.dynstrtab.get_at(aux.vna_name) == Some(name))
                 })
                 .and_then(|vn| elf.dynstrtab.get_at(vn.vn_file))
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             (StringKind::Import, lib)
         } else if sym.st_bind() == goblin::elf::sym::STB_GLOBAL
             || sym.st_bind() == goblin::elf::sym::STB_WEAK
@@ -253,7 +253,7 @@ fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> Vec<Extract
         let section = if sym.st_shndx > 0 && sym.st_shndx < elf.section_headers.len() {
             elf.shdr_strtab
                 .get_at(elf.section_headers[sym.st_shndx].sh_name)
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
         } else {
             None
         };
@@ -277,7 +277,7 @@ pub struct ExtractOptions {
     pub min_length: usize,
     /// Use radare2 for extraction (if available). Default: false for library use.
     pub use_r2: bool,
-    /// Path to the binary file (required if use_r2 is true)
+    /// Path to the binary file (required if `use_r2` is true)
     pub path: Option<String>,
     /// Pre-extracted strings from radare2 (allows clients to run r2 themselves)
     pub r2_strings: Option<Vec<ExtractedString>>,
@@ -373,115 +373,142 @@ pub fn extract_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
     extract_strings_with_options(data, &ExtractOptions::new(min_length))
 }
 
+/// Deduplicate strings by keeping only the longest string at each offset.
+/// This handles cases where overlapping strings exist at the same offset.
+fn deduplicate_by_offset(strings: Vec<ExtractedString>) -> Vec<ExtractedString> {
+    use std::collections::HashMap;
+
+    // Group strings by offset
+    let mut offset_map: HashMap<u64, Vec<ExtractedString>> = HashMap::new();
+    for s in strings {
+        offset_map.entry(s.data_offset).or_default().push(s);
+    }
+
+    // At each offset, keep only the longest string
+    let mut result = Vec::new();
+    for mut strings_at_offset in offset_map.into_values() {
+        if strings_at_offset.len() == 1 {
+            result.push(strings_at_offset.pop().unwrap());
+        } else {
+            // Multiple strings at same offset - keep the longest
+            strings_at_offset.sort_by_key(|s| std::cmp::Reverse(s.value.len()));
+            result.push(strings_at_offset.into_iter().next().unwrap());
+        }
+    }
+
+    result
+}
+
 /// Extract strings with additional options.
 ///
 /// This allows specifying whether to use radare2 for extraction.
 pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
-    match Object::parse(data) {
-        Ok(object) => extract_from_object(&object, data, opts),
-        Err(_) => {
-            // Unknown format - use r2 if available, otherwise raw scan
-            let mut strings = Vec::new();
-            if let Some(r2_strings) = get_r2_strings(opts) {
-                strings.extend(r2_strings);
-            }
+    if let Ok(object) = Object::parse(data) {
+        deduplicate_by_offset(extract_from_object(&object, data, opts))
+    } else {
+        // Unknown format - use r2 if available, otherwise raw scan
+        let mut strings = Vec::new();
+        if let Some(r2_strings) = get_r2_strings(opts) {
+            strings.extend(r2_strings);
+        }
 
-            // Check if this looks like a PE (MZ header) even if goblin failed to parse
-            let is_pe = data.len() >= 2 && data[0] == 0x4D && data[1] == 0x5A;
+        // Check if this looks like a PE (MZ header) even if goblin failed to parse
+        let is_pe = data.len() >= 2 && data[0] == 0x4D && data[1] == 0x5A;
 
-            // Extract wide strings for PE-like files (common in Windows binaries)
-            if is_pe && !data.is_empty() {
-                strings.extend(extract_wide_strings(data, opts.min_length, None, &[]));
-            }
+        // Extract wide strings for PE-like files (common in Windows binaries)
+        if is_pe && !data.is_empty() {
+            strings.extend(extract_wide_strings(data, opts.min_length, None, &[]));
+        }
 
-            // Raw scan for all unknown formats
-            if !data.is_empty() {
-                strings.extend(extract_raw_strings(data, opts.min_length, None, &[]));
-            }
+        // Raw scan for all unknown formats
+        if !data.is_empty() {
+            strings.extend(extract_raw_strings(data, opts.min_length, None, &[]));
+        }
 
-            // XOR string detection
-            if !data.is_empty() {
-                // Custom XOR key takes precedence over auto-detection
-                if let Some(ref key) = opts.xor_key {
-                    tracing::debug!("Custom XOR: using {} byte key", key.len());
+        // XOR string detection
+        if !data.is_empty() {
+            // Custom XOR key takes precedence over auto-detection
+            if let Some(ref key) = opts.xor_key {
+                tracing::debug!("Custom XOR: using {} byte key", key.len());
 
-                    // Check if the XOR key exists in the already-extracted strings
-                    let key_str = String::from_utf8_lossy(key).to_string();
-                    let key_found = strings.iter_mut().find(|s| s.value == key_str);
-                    if let Some(key_string) = key_found {
-                        // Mark the key as XorKey type
+                // Check if the XOR key exists in the already-extracted strings
+                let key_str = String::from_utf8_lossy(key).to_string();
+                let key_found = strings.iter_mut().find(|s| s.value == key_str);
+                if let Some(key_string) = key_found {
+                    // Mark the key as XorKey type
+                    key_string.kind = StringKind::XorKey;
+                }
+
+                strings.extend(xor::extract_custom_xor_strings(
+                    data,
+                    key,
+                    opts.xor_min_length,
+                ));
+            } else if opts.xor_scan {
+                // Try auto-detecting XOR key from extracted strings (small files only)
+                let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
+                    xor::auto_detect_xor_key(data, &strings, opts.xor_min_length)
+                } else {
+                    None
+                };
+
+                if let Some((key, key_str, _key_offset)) = auto_key {
+                    // Auto-detected key - use it
+                    tracing::info!("Using auto-detected XOR key: '{}'", key_str);
+
+                    // Mark the XOR key string as XorKey type (it already exists from raw scan)
+                    if let Some(key_string) = strings.iter_mut().find(|s| s.value == key_str) {
                         key_string.kind = StringKind::XorKey;
                     }
 
                     strings.extend(xor::extract_custom_xor_strings(
                         data,
-                        key,
+                        &key,
                         opts.xor_min_length,
                     ));
-                } else if opts.xor_scan {
-                    // Try auto-detecting XOR key from extracted strings (small files only)
-                    let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
-                        xor::auto_detect_xor_key(data, &strings, opts.xor_min_length)
-                    } else {
-                        None
-                    };
+                } else {
+                    // Fallback to single-byte XOR scan
+                    strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
 
-                    if let Some((key, key_str, _key_offset)) = auto_key {
-                        // Auto-detected key - use it
-                        tracing::info!("Using auto-detected XOR key: '{}'", key_str);
-
-                        // Mark the XOR key string as XorKey type (it already exists from raw scan)
-                        if let Some(key_string) = strings.iter_mut().find(|s| s.value == key_str) {
-                            key_string.kind = StringKind::XorKey;
-                        }
-
-                        strings.extend(xor::extract_custom_xor_strings(
-                            data,
-                            &key,
-                            opts.xor_min_length,
-                        ));
-                    } else {
-                        // Fallback to single-byte XOR scan
-                        strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
-
-                        // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
-                        if opts.xorscan {
-                            if let Some(ref path) = opts.path {
-                                tracing::debug!(
-                                    "Multi-byte XOR: analyzing {} candidate strings",
-                                    strings.len()
-                                );
-                                // Use already extracted strings as XOR key candidates
-                                let xor_keys = r2::verify_xor_keys(path, &strings);
-                                tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
-                                if !xor_keys.is_empty() {
-                                    let decoded = xor::extract_multikey_xor_strings(
-                                        data,
-                                        &xor_keys,
-                                        opts.xor_min_length,
-                                    );
-                                    tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
-                                    strings.extend(decoded);
-                                } else {
-                                    tracing::debug!("Multi-byte XOR: no high-confidence keys found");
-                                }
+                    // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
+                    if opts.xorscan {
+                        if let Some(ref path) = opts.path {
+                            tracing::debug!(
+                                "Multi-byte XOR: analyzing {} candidate strings",
+                                strings.len()
+                            );
+                            // Use already extracted strings as XOR key candidates
+                            let xor_keys = r2::verify_xor_keys(path, &strings);
+                            tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
+                            if xor_keys.is_empty() {
+                                tracing::debug!("Multi-byte XOR: no high-confidence keys found");
                             } else {
-                                tracing::debug!("Multi-byte XOR: path not provided, skipping");
+                                let decoded = xor::extract_multikey_xor_strings(
+                                    data,
+                                    &xor_keys,
+                                    opts.xor_min_length,
+                                );
+                                tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
+                                strings.extend(decoded);
                             }
+                        } else {
+                            tracing::debug!("Multi-byte XOR: path not provided, skipping");
                         }
                     }
                 }
             }
-
-            // Apply garbage filter if enabled (but never filter entitlements XML)
-            if opts.filter_garbage {
-                strings.retain(|s| {
-                    s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value)
-                });
-            }
-
-            strings
         }
+
+        // Apply garbage filter if enabled (but never filter entitlements XML or section names)
+        if opts.filter_garbage {
+            strings.retain(|s| {
+                s.kind == StringKind::EntitlementsXml
+                    || s.kind == StringKind::Section
+                    || !common::is_garbage(&s.value)
+            });
+        }
+
+        deduplicate_by_offset(strings)
     }
 }
 
@@ -558,10 +585,10 @@ pub fn extract_from_object(
                 .iter()
                 .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
                 .collect();
-            for s in strings.iter_mut() {
+            for s in &mut strings {
                 if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
                     s.kind = *kind;
-                    s.library = lib.map(|l| l.to_string());
+                    s.library = lib.map(std::string::ToString::to_string);
                 }
             }
             let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
@@ -597,7 +624,7 @@ pub fn extract_from_object(
             let mut is_rust = false;
             let mut segments = Vec::new();
             let mut first_macho: Option<MachO> = None;
-            for arch_result in fat.into_iter() {
+            for arch_result in fat {
                 if let Ok(goblin::mach::SingleArch::MachO(macho)) = arch_result {
                     segments = collect_macho_segments(&macho);
                     if macho_has_go_sections(&macho) {
@@ -631,10 +658,10 @@ pub fn extract_from_object(
                         .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
                         .collect();
                 // Update existing strings that are actually imports
-                for s in strings.iter_mut() {
+                for s in &mut strings {
                     if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
                         s.kind = *kind;
-                        s.library = lib.map(|l| l.to_string());
+                        s.library = lib.map(std::string::ToString::to_string);
                     }
                 }
                 // Add new imports that weren't found before
@@ -707,10 +734,10 @@ pub fn extract_from_object(
                 .iter()
                 .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
                 .collect();
-            for s in strings.iter_mut() {
+            for s in &mut strings {
                 if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
                     s.kind = *kind;
-                    s.library = lib.map(|l| l.to_string());
+                    s.library = lib.map(std::string::ToString::to_string);
                 }
             }
             let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
@@ -827,7 +854,9 @@ pub fn extract_from_object(
                         );
                         let xor_keys = r2::verify_xor_keys(path, &strings);
                         tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
-                        if !xor_keys.is_empty() {
+                        if xor_keys.is_empty() {
+                            tracing::debug!("Multi-byte XOR: no high-confidence keys found");
+                        } else {
                             tracing::debug!(
                                 "Multi-byte XOR: attempting decryption with {} keys",
                                 xor_keys.len()
@@ -836,8 +865,6 @@ pub fn extract_from_object(
                                 xor::extract_multikey_xor_strings(data, &xor_keys, opts.xor_min_length);
                             tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
                             strings.extend(decoded);
-                        } else {
-                            tracing::debug!("Multi-byte XOR: no high-confidence keys found");
                         }
                     } else {
                         tracing::debug!("Multi-byte XOR: path not provided, skipping");
@@ -847,12 +874,30 @@ pub fn extract_from_object(
         }
     }
 
-    // Apply garbage filter if enabled (but never filter entitlements XML)
-    if opts.filter_garbage {
-        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
+    // Extract IP addresses from connect() syscalls using radare2 (if enabled)
+    if opts.use_r2 {
+        if let Some(ref path) = opts.path {
+            let connect_addrs = r2::extract_connect_addrs(path, data);
+            if !connect_addrs.is_empty() {
+                tracing::debug!(
+                    "Found {} IP addresses from connect() calls",
+                    connect_addrs.len()
+                );
+                strings.extend(connect_addrs);
+            }
+        }
     }
 
-    strings
+    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
+    if opts.filter_garbage {
+        strings.retain(|s| {
+            s.kind == StringKind::EntitlementsXml
+                || s.kind == StringKind::Section
+                || !common::is_garbage(&s.value)
+        });
+    }
+
+    deduplicate_by_offset(strings)
 }
 
 /// Extract strings from a pre-parsed Mach-O binary.
@@ -894,10 +939,10 @@ pub fn extract_from_macho(
         .iter()
         .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
         .collect();
-    for s in strings.iter_mut() {
+    for s in &mut strings {
         if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
             s.kind = *kind;
-            s.library = lib.map(|l| l.to_string());
+            s.library = lib.map(std::string::ToString::to_string);
         }
     }
     let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
@@ -927,9 +972,13 @@ pub fn extract_from_macho(
 
     strings.extend(entitlements);
 
-    // Apply garbage filter if enabled (but never filter entitlements XML)
+    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
     if opts.filter_garbage {
-        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
+        strings.retain(|s| {
+            s.kind == StringKind::EntitlementsXml
+                || s.kind == StringKind::Section
+                || !common::is_garbage(&s.value)
+        });
     }
 
     strings
@@ -937,7 +986,7 @@ pub fn extract_from_macho(
 
 /// Extract entitlements XML from Mach-O code signature.
 ///
-/// Returns the raw XML plist from LC_CODE_SIGNATURE if present.
+/// Returns the raw XML plist from `LC_CODE_SIGNATURE` if present.
 #[allow(dead_code)]
 pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
     use goblin::mach::load_command::CommandVariant;
@@ -1148,10 +1197,10 @@ pub fn extract_from_elf(
         .iter()
         .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
         .collect();
-    for s in strings.iter_mut() {
+    for s in &mut strings {
         if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
             s.kind = *kind;
-            s.library = lib.map(|l| l.to_string());
+            s.library = lib.map(std::string::ToString::to_string);
         }
     }
     let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
@@ -1164,9 +1213,13 @@ pub fn extract_from_elf(
     // Extract overlay/appended data (common malware technique)
     strings.extend(extract_overlay_strings(data, min_length));
 
-    // Apply garbage filter if enabled (but never filter entitlements XML)
+    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
     if opts.filter_garbage {
-        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
+        strings.retain(|s| {
+            s.kind == StringKind::EntitlementsXml
+                || s.kind == StringKind::Section
+                || !common::is_garbage(&s.value)
+        });
     }
 
     strings
@@ -1218,9 +1271,13 @@ pub fn extract_from_pe(
         strings.extend(extract_raw_strings(data, min_length, None, &segments));
     }
 
-    // Apply garbage filter if enabled (but never filter entitlements XML)
+    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
     if opts.filter_garbage {
-        strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
+        strings.retain(|s| {
+            s.kind == StringKind::EntitlementsXml
+                || s.kind == StringKind::Section
+                || !common::is_garbage(&s.value)
+        });
     }
 
     strings
@@ -1238,7 +1295,7 @@ fn extract_raw_strings(
     segment_names: &[String],
 ) -> Vec<ExtractedString> {
     // Build a set of known segment/section names for quick lookup
-    let segment_names_set: HashSet<&str> = segment_names.iter().map(|s| s.as_str()).collect();
+    let segment_names_set: HashSet<&str> = segment_names.iter().map(std::string::String::as_str).collect();
 
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -1396,7 +1453,7 @@ fn extract_wide_strings(
     section: Option<String>,
     segment_names: &[String],
 ) -> Vec<ExtractedString> {
-    let segment_names_set: HashSet<&str> = segment_names.iter().map(|s| s.as_str()).collect();
+    let segment_names_set: HashSet<&str> = segment_names.iter().map(std::string::String::as_str).collect();
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -1600,7 +1657,7 @@ pub fn detect_elf_overlay(data: &[u8]) -> Option<OverlayInfo> {
     // Section header table end
     if elf.header.e_shnum > 0 {
         let sh_table_end =
-            elf.header.e_shoff + (elf.header.e_shnum as u64 * elf.header.e_shentsize as u64);
+            elf.header.e_shoff + (u64::from(elf.header.e_shnum) * u64::from(elf.header.e_shentsize));
         expected_end = expected_end.max(sh_table_end);
     }
 
