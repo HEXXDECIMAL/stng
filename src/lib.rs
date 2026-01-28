@@ -32,7 +32,14 @@
 //! }
 //! ```
 
+// Core modules
+mod types;
+mod extraction;
+mod validation;
+
+// Re-export module for backward compatibility
 mod common;
+
 mod go;
 mod instr;
 pub mod r2;
