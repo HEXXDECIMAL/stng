@@ -117,6 +117,8 @@ pub enum StringKind {
     AppId,
     /// Raw entitlements XML plist from Mach-O code signature
     EntitlementsXml,
+    /// XOR encryption key (detected or provided)
+    XorKey,
 }
 
 /// Severity level for security-focused output.
@@ -148,7 +150,8 @@ impl StringKind {
             | StringKind::Overlay
             | StringKind::OverlayWide
             | StringKind::Entitlement
-            | StringKind::AppId => Severity::High,
+            | StringKind::AppId
+            | StringKind::XorKey => Severity::High,
 
             StringKind::Path
             | StringKind::FilePath
@@ -193,6 +196,7 @@ impl StringKind {
             StringKind::Entitlement => "entitlement",
             StringKind::AppId => "appid",
             StringKind::EntitlementsXml => "entitlements",
+            StringKind::XorKey => "xor_key",
         }
     }
 }

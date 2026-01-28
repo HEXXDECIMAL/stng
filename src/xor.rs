@@ -17,6 +17,97 @@ pub const DEFAULT_XOR_MIN_LENGTH: usize = 10;
 /// 0x20 (space) just flips letter case, causing "GOROOT OBJECT" to become "gorootOBJECT".
 const SKIP_XOR_KEYS: &[u8] = &[0x20];
 
+/// Maximum file size for auto-detection of XOR keys (512 KB).
+pub const MAX_AUTO_DETECT_SIZE: usize = 512 * 1024;
+
+/// Calculate Shannon entropy of a byte string.
+/// Returns a value between 0.0 (no entropy) and 8.0 (maximum entropy for bytes).
+fn calculate_entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+
+    let mut freq = [0u32; 256];
+    for &byte in data {
+        freq[byte as usize] += 1;
+    }
+
+    let len = data.len() as f64;
+    let mut entropy = 0.0;
+
+    for &count in &freq {
+        if count > 0 {
+            let p = count as f64 / len;
+            entropy -= p * p.log2();
+        }
+    }
+
+    entropy
+}
+
+/// Check if a string is a good XOR key candidate based on entropy.
+/// DPRK malware often uses high-entropy keys like "Moz&Wie;#t/6T!2y", "12GWAPCT1F0I1S14".
+fn is_good_xor_key_candidate(s: &str) -> bool {
+    let len = s.len();
+
+    // Length between 15-32 characters (typical for XOR keys)
+    if !(15..=32).contains(&len) {
+        return false;
+    }
+
+    // Must be ASCII
+    if !s.is_ascii() {
+        return false;
+    }
+
+    // Reject strings with underscores (typically not used in XOR keys)
+    if s.contains('_') {
+        return false;
+    }
+
+    // Calculate entropy - high entropy indicates randomness/key material
+    let entropy = calculate_entropy(s.as_bytes());
+
+    // High entropy threshold: > 3.5 bits per byte
+    // This catches keys like "Moz&Wie;#t/6T!2y" (entropy ~4.8)
+    // and "12GWAPCT1F0I1S14" (entropy ~3.5)
+    // but filters out low-entropy patterns
+    if entropy < 3.5 {
+        return false;
+    }
+
+    // Check for variety in character types (not just numbers, not just letters)
+    let has_upper = s.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = s.chars().any(|c| c.is_ascii_lowercase());
+    let has_digit = s.chars().any(|c| c.is_ascii_digit());
+    let has_special = s.chars().any(|c| !c.is_ascii_alphanumeric());
+
+    // Good keys typically have at least 2 different character types
+    let type_count = [has_upper, has_lower, has_digit, has_special]
+        .iter()
+        .filter(|&&x| x)
+        .count();
+
+    if type_count < 2 {
+        return false;
+    }
+
+    // Reject sequential patterns (like "abcdefghijklmnopqrstuvwxyz")
+    let mut sequential_count = 0;
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len().saturating_sub(2) {
+        if bytes[i] + 1 == bytes[i + 1] && bytes[i + 1] + 1 == bytes[i + 2] {
+            sequential_count += 1;
+        }
+    }
+    // Reject if more than 20% sequential
+    if sequential_count * 5 > bytes.len() {
+        return false;
+    }
+
+    true
+}
+
 /// Minimal high-signal patterns for XOR detection.
 /// These short patterns catch a wide variety of malware indicators:
 /// - `://` catches all URL schemes (http://, https://, ftp://, etc.)
@@ -25,7 +116,20 @@ const SKIP_XOR_KEYS: &[u8] = &[0x20];
 /// - `Mozilla` catches user agent strings
 /// - `.exe` catches Windows executables (cmd.exe, powershell.exe)
 /// - `passw` catches password/passwd variants
-const XOR_PATTERNS: &[&[u8]] = &[b"://", b"/bin", b"C:\\", b"Mozilla", b".exe", b"passw"];
+/// - `Library` catches macOS paths (/Library/...)
+/// - `Ethereum` catches crypto wallet paths
+/// - ` %s ` catches format strings (common in C code)
+const XOR_PATTERNS: &[&[u8]] = &[
+    b"://",
+    b"/bin",
+    b"C:\\",
+    b"Mozilla",
+    b".exe",
+    b"passw",
+    b"Library",
+    b"Ethereum",
+    b" %s ",
+];
 
 /// Metadata for a pattern in the Aho-Corasick automaton.
 #[derive(Clone)]
@@ -172,6 +276,107 @@ pub fn extract_custom_xor_strings(
     }
 
     results
+}
+
+/// Auto-detect XOR key by trying candidate strings from the binary.
+///
+/// For small files (<512KB), tries the last 5 strings (excluding those with _ or starting with "cstr.")
+/// as potential XOR keys and returns the one that produces the most valid decoded strings.
+///
+/// # Arguments
+/// * `data` - Binary data to scan
+/// * `candidate_strings` - Pre-extracted strings to use as XOR key candidates
+/// * `min_length` - Minimum string length for decoded strings
+pub fn auto_detect_xor_key(
+    data: &[u8],
+    candidate_strings: &[ExtractedString],
+    min_length: usize,
+) -> Option<(Vec<u8>, String, u64)> {
+    // Only auto-detect for small files
+    if data.len() > MAX_AUTO_DETECT_SIZE {
+        return None;
+    }
+
+    // Find candidate XOR keys: high-entropy strings near the end of the file
+    // Sort by offset (descending) to get strings physically near the end of the binary
+    let mut candidates_with_offset: Vec<(u64, &str)> = candidate_strings
+        .iter()
+        .filter(|s| {
+            !s.value.contains('_')
+                && !s.value.starts_with("cstr.")
+                && is_good_xor_key_candidate(&s.value)
+        })
+        .map(|s| (s.data_offset, s.value.as_str()))
+        .collect();
+
+    // Sort by offset descending (highest offsets first - near end of file)
+    candidates_with_offset.sort_by(|a, b| b.0.cmp(&a.0));
+
+    // Take last 5 by file offset (not by position in vector)
+    let candidates: Vec<(u64, &str)> = candidates_with_offset
+        .iter()
+        .take(5)
+        .copied()
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    tracing::debug!(
+        "Auto-detecting XOR key from {} candidates: {:?}",
+        candidates.len(),
+        candidates.iter().map(|(_, s)| s).collect::<Vec<_>>()
+    );
+
+    // Try each candidate and count how many valid strings it produces
+    let mut best_key: Option<(Vec<u8>, String, u64)> = None;
+    let mut best_count = 0;
+
+    for (offset, candidate) in candidates {
+        let key = candidate.as_bytes().to_vec();
+        let results = extract_custom_xor_strings(data, &key, min_length);
+
+        // Count high-value strings (not just any string)
+        let value_count = results
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.kind,
+                    StringKind::Url
+                        | StringKind::IP
+                        | StringKind::IPPort
+                        | StringKind::ShellCmd
+                        | StringKind::SuspiciousPath
+                        | StringKind::Path
+                        | StringKind::Base64
+                )
+            })
+            .count();
+
+        tracing::debug!(
+            "XOR key candidate '{}': found {} valuable strings",
+            candidate,
+            value_count
+        );
+
+        if value_count > best_count {
+            best_count = value_count;
+            best_key = Some((key, candidate.to_string(), offset));
+        }
+    }
+
+    if best_count > 0 {
+        if let Some((ref _key, ref key_str, _)) = best_key {
+            tracing::info!(
+                "Auto-detected XOR key: '{}' (found {} valuable strings)",
+                key_str,
+                best_count
+            );
+        }
+    }
+
+    best_key
 }
 
 /// Extract XOR-encoded strings from binary data.
@@ -1032,7 +1237,7 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         StringKind::Url => Some(kind),
         StringKind::ShellCmd => {
             // Reject obvious garbage that starts with backtick but no valid command
-            if s.starts_with('`') && !s[1..].trim_start().chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if s.starts_with('`') && !s[1..].trim_start().chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
                 None
             } else {
                 Some(kind)
@@ -1573,6 +1778,189 @@ mod tests {
             !results3.iter().any(|r| r.kind == StringKind::Path),
             "Garbage with special chars should NOT be path"
         );
+    }
+
+    #[test]
+    fn test_xor_library_pattern() {
+        // Test Library pattern detection
+        let plaintext = b"/Library/Application Support/";
+        let key: u8 = 0x33;
+        let data = make_xor_test_data(plaintext, key, 20);
+        let results = extract_xor_strings(&data, 10, false);
+        assert!(
+            results.iter().any(|r| r.value.contains("Library")),
+            "Should detect Library in XOR'd path. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_xor_ethereum_pattern() {
+        // Test Ethereum pattern detection
+        let plaintext = b"/Library/Ethereum/keystore";
+        let key: u8 = 0x7F;
+        let data = make_xor_test_data(plaintext, key, 15);
+        let results = extract_xor_strings(&data, 10, false);
+        assert!(
+            results.iter().any(|r| r.value.contains("Ethereum")),
+            "Should detect Ethereum in XOR'd path. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_xor_format_string_pattern() {
+        // Test " %s " pattern detection with a longer, more meaningful string
+        let plaintext = b"File path is %s and size is %d bytes";
+        let key: u8 = 0x42;
+        let data = make_xor_test_data(plaintext, key, 25);
+        let results = extract_xor_strings(&data, 10, false);
+        assert!(
+            !results.is_empty(),
+            "Should detect format string with ' %s ' pattern. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_known_xor_keys_qualify() {
+        // Test known DPRK and other malware XOR keys
+        let known_keys = vec![
+            "fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf", // HomaBrew malware
+            "Moz&Wie;#t/6T!2y",                 // DPRK malware
+            "12GWAPCT1F0I1S14",                 // DPRK malware
+            "009WAYHb90687PXkS",                // Another sample
+            ".sV%58&.lypQ[$=",                  // Another sample
+        ];
+
+        for key in &known_keys {
+            let qualifies = is_good_xor_key_candidate(key);
+            let entropy = calculate_entropy(key.as_bytes());
+            assert!(
+                qualifies,
+                "Known XOR key '{}' should qualify (entropy: {:.2})",
+                key,
+                entropy
+            );
+        }
+    }
+
+    #[test]
+    fn test_bad_xor_key_candidates_rejected() {
+        // These should NOT qualify as good XOR keys
+        let bad_keys = vec![
+            "abcdefghijklmnopqrstuvwxyz", // Sequential, despite high entropy
+            "short",                       // Too short
+            "this_has_underscores_12345", // Has underscores
+            "AAAAAAAAAAAAAAAAA",           // Low entropy
+            "1111111111111111",            // Low entropy, all same type
+            "verylongkeythatexceedsthirtytwocharacterslimit", // Too long
+        ];
+
+        for key in &bad_keys {
+            let qualifies = is_good_xor_key_candidate(key);
+            assert!(
+                !qualifies,
+                "Bad key candidate '{}' should NOT qualify",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_entropy_calculation() {
+        // Test entropy calculation
+        let uniform = "abcdefgh"; // 8 unique chars = 3.0 bits
+        let entropy1 = calculate_entropy(uniform.as_bytes());
+        assert!(
+            entropy1 > 2.9 && entropy1 < 3.1,
+            "Uniform distribution should have ~3.0 bits entropy, got {:.2}",
+            entropy1
+        );
+
+        let repeated = "aaaaaaaa"; // All same = 0 bits
+        let entropy2 = calculate_entropy(repeated.as_bytes());
+        assert!(
+            entropy2 < 0.1,
+            "All same character should have ~0 bits entropy, got {:.2}",
+            entropy2
+        );
+
+        let mixed = "aAbBcCdD1!2@3#"; // High entropy
+        let entropy3 = calculate_entropy(mixed.as_bytes());
+        assert!(
+            entropy3 > 3.5,
+            "Mixed characters should have high entropy, got {:.2}",
+            entropy3
+        );
+    }
+
+    #[test]
+    fn test_auto_detect_xor_key() {
+        // Create test data with a known XOR key (realistic DPRK-style key)
+        let plaintext = b"http://evil.com/malware.exe";
+        let key_string = "fYztZORL5VNS7nC"; // 15 chars, high entropy
+        let key_bytes = key_string.as_bytes();
+
+        // XOR the plaintext
+        let xored: Vec<u8> = plaintext
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key_bytes[i % key_bytes.len()])
+            .collect();
+
+        // Create candidate strings (simulating extracted strings from binary)
+        let candidates = vec![
+            ExtractedString {
+                value: "some_underscore_string".to_string(),
+                data_offset: 0,
+                section: None,
+                method: StringMethod::RawScan,
+                kind: StringKind::Const,
+                library: None,
+            },
+            ExtractedString {
+                value: "cstr.SomeString".to_string(),
+                data_offset: 100,
+                section: None,
+                method: StringMethod::RawScan,
+                kind: StringKind::Const,
+                library: None,
+            },
+            ExtractedString {
+                value: "ShortKey".to_string(),
+                data_offset: 200,
+                section: None,
+                method: StringMethod::RawScan,
+                kind: StringKind::Const,
+                library: None,
+            },
+            ExtractedString {
+                value: key_string.to_string(), // The actual key
+                data_offset: 300,
+                section: None,
+                method: StringMethod::RawScan,
+                kind: StringKind::Const,
+                library: None,
+            },
+        ];
+
+        // Auto-detect should find the right key
+        let detected = auto_detect_xor_key(&xored, &candidates, 10);
+        assert!(
+            detected.is_some(),
+            "Should auto-detect XOR key from candidates"
+        );
+
+        let (detected_key, detected_str, _offset) = detected.unwrap();
+        assert_eq!(
+            detected_key,
+            key_bytes,
+            "Should detect the correct XOR key: got '{}', expected '{}'",
+            String::from_utf8_lossy(&detected_key),
+            key_string
+        );
+        assert_eq!(detected_str, key_string, "Key string should match");
     }
 
     #[test]

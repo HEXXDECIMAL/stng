@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::Path;
-use strangs::Severity;
+use strangs::{Severity, StringKind};
 
 #[derive(Parser, Debug)]
 #[command(name = "strangs")]
@@ -115,7 +115,7 @@ fn parse_xor_key(input: &str) -> Result<Vec<u8>> {
     // Check if it's hex format (0x... or just hex digits)
     let hex_input = if let Some(stripped) = input.strip_prefix("0x") {
         stripped
-    } else if input.chars().all(|c| c.is_ascii_hexdigit()) && input.len() % 2 == 0 {
+    } else if input.chars().all(|c| c.is_ascii_hexdigit()) && input.len().is_multiple_of(2) {
         input
     } else {
         // Plain string - convert to bytes
@@ -310,15 +310,13 @@ fn main() -> Result<()> {
         let hash = format!("{:x}", hasher.finalize());
 
         // Format custom XOR key for display
+        // Check for XOR key (custom or auto-detected)
         let xor_key_display = if let Some(ref key) = custom_xor_key {
-            if key.len() <= 16 {
-                format!(" · xor:{}", String::from_utf8_lossy(key))
-            } else {
-                format!(
-                    " · xor:{}...",
-                    String::from_utf8_lossy(&key[..16])
-                )
-            }
+            // Custom XOR key from --xor flag
+            format!(" · xor:{}", String::from_utf8_lossy(key))
+        } else if let Some(xor_key_str) = strings.iter().find(|s| s.kind == StringKind::XorKey) {
+            // Auto-detected XOR key
+            format!(" · xor:{}", xor_key_str.value)
         } else {
             String::new()
         };
