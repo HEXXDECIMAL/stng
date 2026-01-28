@@ -1,6 +1,6 @@
-//! Integration tests for strangs library.
+//! Integration tests for stng library.
 
-use strangs::{
+use stng::{
     detect_language, extract_strings, extract_strings_with_options, is_garbage, is_go_binary,
     is_rust_binary, ExtractOptions, ExtractedString, StringKind, StringMethod,
 };
@@ -571,7 +571,7 @@ mod rust_binary_tests {
 
     fn get_rust_binary() -> Option<Vec<u8>> {
         // Try the current project's binary first (guaranteed to exist)
-        let self_binary = env!("CARGO_BIN_EXE_strangs");
+        let self_binary = env!("CARGO_BIN_EXE_stng");
         if Path::new(self_binary).exists() {
             return std::fs::read(self_binary).ok();
         }
@@ -609,7 +609,7 @@ mod rust_binary_tests {
     #[test]
     fn test_self_binary_detection() {
         // Test against our own binary
-        let self_path = env!("CARGO_BIN_EXE_strangs");
+        let self_path = env!("CARGO_BIN_EXE_stng");
         if !Path::new(self_path).exists() {
             return;
         }
@@ -627,7 +627,7 @@ mod rust_binary_tests {
 
     #[test]
     fn test_self_binary_with_options() {
-        let self_path = env!("CARGO_BIN_EXE_strangs");
+        let self_path = env!("CARGO_BIN_EXE_stng");
         if !Path::new(self_path).exists() {
             return;
         }
@@ -645,21 +645,21 @@ mod rust_binary_tests {
 
     #[test]
     fn test_self_binary_extract_from_object() {
-        let self_path = env!("CARGO_BIN_EXE_strangs");
+        let self_path = env!("CARGO_BIN_EXE_stng");
         if !Path::new(self_path).exists() {
             return;
         }
 
         let data = std::fs::read(self_path).unwrap();
-        let object = strangs::goblin::Object::parse(&data).unwrap();
+        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = strangs::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_from_object(&object, &data, &opts);
         assert!(!strings.is_empty());
     }
 
     #[test]
     fn test_self_binary_string_kinds() {
-        let self_path = env!("CARGO_BIN_EXE_strangs");
+        let self_path = env!("CARGO_BIN_EXE_stng");
         if !Path::new(self_path).exists() {
             return;
         }
@@ -881,7 +881,7 @@ mod r2_tests {
             return;
         }
 
-        let result = strangs::r2::extract_strings(path, 4);
+        let result = stng::r2::extract_strings(path, 4);
         assert!(result.is_some(), "r2 should extract strings from /bin/ls");
 
         let strings = result.unwrap();
@@ -891,7 +891,7 @@ mod r2_tests {
     #[test]
     fn test_r2_is_available() {
         // Just verify the function works
-        let available = strangs::r2::is_available();
+        let available = stng::r2::is_available();
         if available {
             eprintln!("r2 is available");
         } else {
@@ -905,7 +905,7 @@ mod r2_tests {
             return;
         }
 
-        let result = strangs::r2::extract_strings("/nonexistent/path/to/binary", 4);
+        let result = stng::r2::extract_strings("/nonexistent/path/to/binary", 4);
         assert!(
             result.is_none(),
             "r2 should return None for nonexistent file"
@@ -944,7 +944,7 @@ mod r2_tests {
             return;
         }
 
-        let result = strangs::r2::extract_strings(path, 4);
+        let result = stng::r2::extract_strings(path, 4);
         if let Some(strings) = result {
             // r2 strings should have R2String or R2Symbol method
             for s in &strings {
@@ -1192,9 +1192,9 @@ mod cross_compiled_tests {
             return;
         };
 
-        let object = strangs::goblin::Object::parse(&data).unwrap();
+        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = strangs::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_from_object(&object, &data, &opts);
 
         assert!(!strings.is_empty());
         // Should have the same results as extract_strings_with_options
@@ -1208,9 +1208,9 @@ mod cross_compiled_tests {
             return;
         };
 
-        let object = strangs::goblin::Object::parse(&data).unwrap();
+        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = strangs::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_from_object(&object, &data, &opts);
 
         assert!(!strings.is_empty());
     }
@@ -1223,16 +1223,16 @@ mod api_tests {
     #[test]
     fn test_extract_from_object_api() {
         let data = std::fs::read("/bin/ls").unwrap();
-        let object = strangs::goblin::Object::parse(&data).unwrap();
+        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = strangs::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_from_object(&object, &data, &opts);
         assert!(!strings.is_empty());
     }
 
     #[test]
     fn test_extract_from_object_with_preextracted_r2() {
         let data = std::fs::read("/bin/ls").unwrap();
-        let object = strangs::goblin::Object::parse(&data).unwrap();
+        let object = stng::goblin::Object::parse(&data).unwrap();
 
         // Create fake pre-extracted r2 strings
         let fake_r2 = vec![ExtractedString {
@@ -1245,7 +1245,7 @@ mod api_tests {
         }];
 
         let opts = ExtractOptions::new(4).with_r2_strings(fake_r2);
-        let strings = strangs::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_from_object(&object, &data, &opts);
 
         // Should include our fake r2 string
         assert!(strings.iter().any(|s| s.value == "fake_r2_string"));
@@ -1255,7 +1255,7 @@ mod api_tests {
     fn test_goblin_reexport() {
         // Verify goblin is properly re-exported
         let data = std::fs::read("/bin/ls").unwrap();
-        let _object = strangs::goblin::Object::parse(&data).unwrap();
+        let _object = stng::goblin::Object::parse(&data).unwrap();
     }
 
     #[test]
@@ -1290,9 +1290,9 @@ mod api_tests {
         }
 
         let data = std::fs::read(path).unwrap();
-        let object = strangs::goblin::Object::parse(&data).unwrap();
+        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = strangs::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_from_object(&object, &data, &opts);
 
         assert!(!strings.is_empty());
     }
@@ -1308,9 +1308,9 @@ mod api_tests {
         }
 
         let data = std::fs::read(path).unwrap();
-        let object = strangs::goblin::Object::parse(&data).unwrap();
+        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = strangs::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_from_object(&object, &data, &opts);
 
         assert!(!strings.is_empty());
     }
@@ -1735,7 +1735,7 @@ mod wide_string_tests {
 /// Tests for IP detection improvements (filtering version numbers)
 mod ip_detection_tests {
     use super::*;
-    use strangs::Severity;
+    use stng::Severity;
 
     /// Helper to create a minimal PE with embedded ASCII strings
     fn minimal_pe_with_strings(strings: &[&str]) -> Vec<u8> {
@@ -1943,7 +1943,7 @@ mod shell_detection_tests {
 
     #[test]
     fn test_shell_command_has_high_severity() {
-        use strangs::Severity;
+        use stng::Severity;
 
         assert_eq!(
             StringKind::ShellCmd.severity(),
@@ -1955,7 +1955,7 @@ mod shell_detection_tests {
 
 // Tests for extract_from_* functions and overlay detection
 mod extract_from_tests {
-    use strangs::{
+    use stng::{
         detect_elf_overlay, extract_from_elf, extract_from_macho, extract_from_pe,
         extract_overlay_strings, goblin, ExtractOptions,
     };
@@ -2196,7 +2196,7 @@ mod extract_from_tests {
 // Tests for real binaries in testdata
 mod testdata_binary_tests {
     use std::path::Path;
-    use strangs::{extract_from_elf, extract_from_pe, goblin, ExtractOptions, StringKind};
+    use stng::{extract_from_elf, extract_from_pe, goblin, ExtractOptions, StringKind};
 
     #[test]
     fn test_linux_elf_imports() {
@@ -2281,7 +2281,7 @@ mod testdata_binary_tests {
 
 // Tests for edge cases in common.rs
 mod common_edge_cases {
-    use strangs::is_garbage;
+    use stng::is_garbage;
 
     #[test]
     fn test_is_garbage_path_separators() {
@@ -2342,7 +2342,7 @@ mod common_edge_cases {
 
 // Tests for StringKind classification edge cases
 mod string_kind_tests {
-    use strangs::{extract_strings, StringKind};
+    use stng::{extract_strings, StringKind};
 
     fn minimal_elf_with_string(s: &str) -> Vec<u8> {
         let mut data = vec![0u8; 1024];
@@ -2434,7 +2434,7 @@ mod string_kind_tests {
 
 // Tests for severity levels
 mod severity_tests {
-    use strangs::{Severity, StringKind};
+    use stng::{Severity, StringKind};
 
     #[test]
     fn test_all_kinds_have_severity() {
@@ -2503,7 +2503,7 @@ mod severity_tests {
 
 /// XOR detection tests for compiled binaries
 mod xor_detection_tests {
-    use strangs::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
+    use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
 
     /// Helper to create XOR test data (same pattern as unit tests)
     fn make_xor_test_data(plaintext: &[u8], key: u8, offset: usize) -> Vec<u8> {
@@ -2701,7 +2701,7 @@ mod xor_detection_tests {
         let key: u8 = 0x42;
         let data = make_xor_test_data(plaintext, key, 50);
 
-        let results = strangs::xor::extract_xor_strings(&data, 10, false);
+        let results = stng::xor::extract_xor_strings(&data, 10, false);
 
         // Mozilla pattern should be found and context extracted
         assert!(

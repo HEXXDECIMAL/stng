@@ -1,12 +1,12 @@
 [package]
-name = "strangs"
+name = "stng"
 version = "0.1.0"
 edition = "2021"
 authors = ["DISSECT Team"]
 description = "Language-aware string extraction for Go and Rust binaries"
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/hex/strangs"
+repository = "https://github.com/hex/stng"
 keywords = ["binary", "strings", "go", "rust", "reverse-engineering"]
 categories = ["command-line-utilities", "development-tools"]
 
@@ -47,11 +47,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [lib]
-name = "strangs"
+name = "stng"
 path = "src/lib.rs"
 
 [[bin]]
-name = "strangs"
+name = "stng"
 path = "src/main.rs"
 
 [profile.release]

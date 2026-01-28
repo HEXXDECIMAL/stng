@@ -1,42 +1,42 @@
-//! CLI integration tests for strangs.
+//! CLI integration tests for stng.
 
 use std::path::Path;
 use std::process::Command;
 
-fn strangs_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_strangs"))
+fn stng_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_stng"))
 }
 
 #[test]
 fn test_cli_help() {
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--help")
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("strangs"));
+    assert!(stdout.contains("stng"));
     assert!(stdout.contains("--min-length"));
     assert!(stdout.contains("--json"));
 }
 
 #[test]
 fn test_cli_version() {
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--version")
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
 }
 
 #[test]
 fn test_cli_nonexistent_file() {
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("/nonexistent/file/path")
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -47,14 +47,14 @@ fn test_cli_nonexistent_file() {
 fn test_cli_detect_language_text() {
     // Create a temp file with text content
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_detect_text.txt");
+    let temp_file = temp_dir.join("stng_test_detect_text.txt");
     std::fs::write(&temp_file, b"not a binary").unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--detect")
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -67,14 +67,14 @@ fn test_cli_detect_language_text() {
 fn test_cli_detect_language_unknown() {
     // Create a temp file with binary garbage
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_detect_bin.bin");
+    let temp_file = temp_dir.join("stng_test_detect_bin.bin");
     std::fs::write(&temp_file, [0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--detect")
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -95,12 +95,12 @@ fn test_cli_json_output() {
         return;
     };
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--json")
         .arg("--no-r2")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -120,12 +120,12 @@ fn test_cli_simple_output() {
         return;
     };
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--simple")
         .arg("--no-r2")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     if output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -143,22 +143,22 @@ fn test_cli_min_length() {
     };
 
     // Run with min_length 4 (default)
-    let output_default = strangs_cmd()
+    let output_default = stng_cmd()
         .arg("--json")
         .arg("--no-r2")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     // Run with min_length 20
-    let output_long = strangs_cmd()
+    let output_long = stng_cmd()
         .arg("-m")
         .arg("20")
         .arg("--json")
         .arg("--no-r2")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     if output_default.status.success() && output_long.status.success() {
         let count_default = String::from_utf8_lossy(&output_default.stdout)
@@ -186,21 +186,21 @@ fn test_cli_unfiltered() {
     };
 
     // Run without --unfiltered
-    let output1 = strangs_cmd()
+    let output1 = stng_cmd()
         .arg("--json")
         .arg("--no-r2")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     // Run with --unfiltered
-    let output2 = strangs_cmd()
+    let output2 = stng_cmd()
         .arg("--json")
         .arg("--no-r2")
         .arg("--unfiltered")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     if output1.status.success() && output2.status.success() {
         // Unfiltered should have more or equal strings
@@ -222,12 +222,12 @@ fn test_cli_flat_output() {
         return;
     };
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--flat")
         .arg("--no-r2")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -244,12 +244,12 @@ fn test_cli_no_r2() {
         return;
     };
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--no-r2")
         .arg("--json")
         .arg(&binary_path)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -264,14 +264,14 @@ fn test_cli_no_r2() {
 fn test_cli_text_file_cat() {
     // Text files should be output like `cat`
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_text.txt");
+    let temp_file = temp_dir.join("stng_test_text.txt");
     let content = b"This is just a text file, not a binary";
     std::fs::write(&temp_file, content).unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -284,13 +284,13 @@ fn test_cli_text_file_cat() {
 fn test_cli_binary_garbage() {
     // Binary garbage should find no strings
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_garbage.bin");
+    let temp_file = temp_dir.join("stng_test_garbage.bin");
     std::fs::write(&temp_file, [0x00, 0x01, 0x02, 0x03, 0x04, 0x05]).unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -302,13 +302,13 @@ fn test_cli_binary_garbage() {
 #[test]
 fn test_cli_empty_file() {
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_empty.bin");
+    let temp_file = temp_dir.join("stng_test_empty.bin");
     std::fs::write(&temp_file, b"").unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -321,7 +321,7 @@ fn test_cli_empty_file() {
 fn test_cli_base64_decoding() {
     // Test that base64 strings are decoded and shown in brackets
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_base64.bin");
+    let temp_file = temp_dir.join("stng_test_base64.bin");
 
     // Create a fake ELF with a base64-encoded string
     // "VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl" decodes to "This is a secret message"
@@ -331,12 +331,12 @@ fn test_cli_base64_decoding() {
     content.extend_from_slice(&[0x00; 4]); // null terminator
     std::fs::write(&temp_file, &content).unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--no-color")
         .arg("--no-r2")
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -354,7 +354,7 @@ fn test_cli_base64_decoding() {
 fn test_cli_trailing_newlines_trimmed() {
     // Test that trailing newlines/control chars are stripped from output
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_newlines.bin");
+    let temp_file = temp_dir.join("stng_test_newlines.bin");
 
     // Create a fake ELF with strings that have trailing newlines
     let mut content = vec![0x7f, b'E', b'L', b'F']; // ELF magic
@@ -367,12 +367,12 @@ fn test_cli_trailing_newlines_trimmed() {
     content.extend_from_slice(&[0x00]); // null terminator
     std::fs::write(&temp_file, &content).unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--no-color")
         .arg("--no-r2")
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -407,7 +407,7 @@ fn test_cli_trailing_newlines_trimmed() {
 fn test_cli_simple_mode_trims_newlines() {
     // Test that --simple mode also trims trailing control characters
     let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join("strangs_test_simple_newlines.bin");
+    let temp_file = temp_dir.join("stng_test_simple_newlines.bin");
 
     let mut content = vec![0x7f, b'E', b'L', b'F']; // ELF magic
     content.extend_from_slice(&[0x00; 4]); // padding
@@ -415,12 +415,12 @@ fn test_cli_simple_mode_trims_newlines() {
     content.extend_from_slice(&[0x00]); // null terminator
     std::fs::write(&temp_file, &content).unwrap();
 
-    let output = strangs_cmd()
+    let output = stng_cmd()
         .arg("--simple")
         .arg("--no-r2")
         .arg(&temp_file)
         .output()
-        .expect("Failed to execute strangs");
+        .expect("Failed to execute stng");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);

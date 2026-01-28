@@ -1,4 +1,4 @@
-//! strangs - Language-aware string extraction CLI
+//! stng - Language-aware string extraction CLI
 //!
 //! Extract strings from Go and Rust binaries with proper boundary detection.
 
@@ -11,30 +11,30 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::Path;
-use strangs::{Severity, StringKind};
+use stng::{Severity, StringKind};
 
 #[derive(Parser, Debug)]
-#[command(name = "strangs")]
+#[command(name = "stng")]
 #[command(
     author,
     version,
     about = "Security-focused string extraction for binary analysis"
 )]
 #[command(long_about = "
-strangs extracts and classifies strings from binaries with a focus on
+stng extracts and classifies strings from binaries with a focus on
 security research. It highlights IOCs like IPs, URLs, shell commands,
 and suspicious paths while filtering noise. XOR-encoded strings are
 detected by default.
 
 EXAMPLES:
-    strangs malware.elf                            # Full analysis with single-byte XOR detection
-    strangs -i malware.elf                         # Filter out raw scan noise
-    strangs --xor 0xAB malware.elf                 # Decode with custom hex XOR key
-    strangs --xor \"secretkey\" malware.elf          # Decode with string XOR key
-    strangs --xorscan malware.elf                  # Deep scan with multi-byte XOR (slow, requires r2/rizin)
-    strangs --no-xor malware.elf                   # Disable all XOR detection
-    strangs --debug malware.elf                    # Show debug logging
-    strangs --json malware.elf                     # JSON output for tooling
+    stng malware.elf                            # Full analysis with single-byte XOR detection
+    stng -i malware.elf                         # Filter out raw scan noise
+    stng --xor 0xAB malware.elf                 # Decode with custom hex XOR key
+    stng --xor \"secretkey\" malware.elf          # Decode with string XOR key
+    stng --xorscan malware.elf                  # Deep scan with multi-byte XOR (slow, requires r2/rizin)
+    stng --no-xor malware.elf                   # Disable all XOR detection
+    stng --debug malware.elf                    # Show debug logging
+    stng --json malware.elf                     # JSON output for tooling
 ")]
 struct Cli {
     /// Target binary file to analyze
@@ -143,47 +143,47 @@ fn parse_xor_key(input: &str) -> Result<Vec<u8>> {
 
 /// Get binary format and architecture string (e.g., "ELF arm32", "PE x64", "Mach-O arm64")
 fn get_binary_format(data: &[u8]) -> String {
-    use strangs::goblin::Object;
+    use stng::goblin::Object;
 
     match Object::parse(data) {
         Ok(Object::Elf(elf)) => {
             let arch = match elf.header.e_machine {
-                strangs::goblin::elf::header::EM_X86_64 => "x64",
-                strangs::goblin::elf::header::EM_386 => "x86",
-                strangs::goblin::elf::header::EM_AARCH64 => "arm64",
-                strangs::goblin::elf::header::EM_ARM => "arm32",
-                strangs::goblin::elf::header::EM_MIPS => "mips",
-                strangs::goblin::elf::header::EM_PPC => "ppc",
-                strangs::goblin::elf::header::EM_PPC64 => "ppc64",
-                strangs::goblin::elf::header::EM_RISCV => "riscv",
-                strangs::goblin::elf::header::EM_S390 => "s390x",
+                stng::goblin::elf::header::EM_X86_64 => "x64",
+                stng::goblin::elf::header::EM_386 => "x86",
+                stng::goblin::elf::header::EM_AARCH64 => "arm64",
+                stng::goblin::elf::header::EM_ARM => "arm32",
+                stng::goblin::elf::header::EM_MIPS => "mips",
+                stng::goblin::elf::header::EM_PPC => "ppc",
+                stng::goblin::elf::header::EM_PPC64 => "ppc64",
+                stng::goblin::elf::header::EM_RISCV => "riscv",
+                stng::goblin::elf::header::EM_S390 => "s390x",
                 _ => "unknown",
             };
             format!("ELF {}", arch)
         }
         Ok(Object::PE(pe)) => {
             let arch = match pe.header.coff_header.machine {
-                strangs::goblin::pe::header::COFF_MACHINE_X86_64 => "x64",
-                strangs::goblin::pe::header::COFF_MACHINE_X86 => "x86",
-                strangs::goblin::pe::header::COFF_MACHINE_ARM64 => "arm64",
-                strangs::goblin::pe::header::COFF_MACHINE_ARMNT => "arm32",
+                stng::goblin::pe::header::COFF_MACHINE_X86_64 => "x64",
+                stng::goblin::pe::header::COFF_MACHINE_X86 => "x86",
+                stng::goblin::pe::header::COFF_MACHINE_ARM64 => "arm64",
+                stng::goblin::pe::header::COFF_MACHINE_ARMNT => "arm32",
                 _ => "unknown",
             };
             format!("PE {}", arch)
         }
-        Ok(Object::Mach(strangs::goblin::mach::Mach::Binary(macho))) => {
+        Ok(Object::Mach(stng::goblin::mach::Mach::Binary(macho))) => {
             let arch = match macho.header.cputype() {
-                strangs::goblin::mach::cputype::CPU_TYPE_X86_64 => "x64",
-                strangs::goblin::mach::cputype::CPU_TYPE_X86 => "x86",
-                strangs::goblin::mach::cputype::CPU_TYPE_ARM64 => "arm64",
-                strangs::goblin::mach::cputype::CPU_TYPE_ARM => "arm32",
-                strangs::goblin::mach::cputype::CPU_TYPE_POWERPC => "ppc",
-                strangs::goblin::mach::cputype::CPU_TYPE_POWERPC64 => "ppc64",
+                stng::goblin::mach::cputype::CPU_TYPE_X86_64 => "x64",
+                stng::goblin::mach::cputype::CPU_TYPE_X86 => "x86",
+                stng::goblin::mach::cputype::CPU_TYPE_ARM64 => "arm64",
+                stng::goblin::mach::cputype::CPU_TYPE_ARM => "arm32",
+                stng::goblin::mach::cputype::CPU_TYPE_POWERPC => "ppc",
+                stng::goblin::mach::cputype::CPU_TYPE_POWERPC64 => "ppc64",
                 _ => "unknown",
             };
             format!("Mach-O {}", arch)
         }
-        Ok(Object::Mach(strangs::goblin::mach::Mach::Fat(_))) => "Mach-O fat".to_string(),
+        Ok(Object::Mach(stng::goblin::mach::Mach::Fat(_))) => "Mach-O fat".to_string(),
         _ => "unknown".to_string(),
     }
 }
@@ -213,13 +213,13 @@ fn main() -> Result<()> {
 
     // Handle --detect flag
     if cli.detect {
-        let lang = strangs::detect_language(&data);
+        let lang = stng::detect_language(&data);
         println!("{}", lang);
         return Ok(());
     }
 
     // Handle text files like cat
-    if strangs::is_text_file(&data) {
+    if stng::is_text_file(&data) {
         let content = String::from_utf8_lossy(&data);
         print!("{}", content);
         return Ok(());
@@ -231,12 +231,12 @@ fn main() -> Result<()> {
     } else if cli.r2 {
         true
     } else {
-        strangs::r2::is_available()
+        stng::r2::is_available()
     };
 
     // Extract strings with options
     let mut opts =
-        strangs::ExtractOptions::new(cli.min_length).with_garbage_filter(!cli.unfiltered);
+        stng::ExtractOptions::new(cli.min_length).with_garbage_filter(!cli.unfiltered);
 
     if use_r2 {
         opts = opts.with_r2(&cli.target);
@@ -258,7 +258,7 @@ fn main() -> Result<()> {
         None
     };
 
-    let mut strings = strangs::extract_strings_with_options(&data, &opts);
+    let mut strings = stng::extract_strings_with_options(&data, &opts);
 
     // Deduplicate
     let mut seen_at_offset: HashSet<(u64, String)> = HashSet::new();
@@ -281,7 +281,7 @@ fn main() -> Result<()> {
 
     // Filter out raw scan noise if --interesting
     if cli.interesting {
-        strings.retain(|s| s.method != strangs::StringMethod::RawScan);
+        strings.retain(|s| s.method != stng::StringMethod::RawScan);
     }
 
     // Determine if we should use colors
@@ -363,7 +363,7 @@ fn main() -> Result<()> {
         let mut current_section: Option<&str> = None;
 
         // Collect high-severity items for summary
-        let mut notable: Vec<&strangs::ExtractedString> = Vec::new();
+        let mut notable: Vec<&stng::ExtractedString> = Vec::new();
 
         for s in &strings {
             let section = s.section.as_deref();
@@ -393,11 +393,11 @@ fn main() -> Result<()> {
 
         // Sort notable items by priority: IPs first, then shell/suspicious, then base64, then URLs
         notable.sort_by_key(|s| match s.kind {
-            strangs::StringKind::IP | strangs::StringKind::IPPort => 0,
-            strangs::StringKind::ShellCmd | strangs::StringKind::SuspiciousPath => 1,
-            strangs::StringKind::Base64 => 2,
-            strangs::StringKind::Overlay | strangs::StringKind::OverlayWide => 3,
-            strangs::StringKind::Url => 4,
+            stng::StringKind::IP | stng::StringKind::IPPort => 0,
+            stng::StringKind::ShellCmd | stng::StringKind::SuspiciousPath => 1,
+            stng::StringKind::Base64 => 2,
+            stng::StringKind::Overlay | stng::StringKind::OverlayWide => 3,
+            stng::StringKind::Url => 4,
             _ => 5,
         });
         notable.truncate(8);
@@ -519,9 +519,9 @@ fn print_colorized_entitlements(xml: &str, use_color: bool) {
     println!("{}", result);
 }
 
-fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
+fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     // Special handling for multi-line entitlements XML
-    if s.kind == strangs::StringKind::EntitlementsXml {
+    if s.kind == stng::StringKind::EntitlementsXml {
         let kind_color = if use_color { YELLOW } else { "" };
         let mut byte_offset = s.data_offset;
 
@@ -548,11 +548,11 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
     let offset = format!("{:>8x}", s.data_offset);
 
     // Build kind string with prefixes for special methods
-    let kind = if s.method == strangs::StringMethod::XorDecode {
+    let kind = if s.method == stng::StringMethod::XorDecode {
         // XOR-decoded strings get "xor/" prefix
         format!("xor/{}", s.kind.short_name())
-    } else if s.method == strangs::StringMethod::WideString
-        && s.kind != strangs::StringKind::OverlayWide
+    } else if s.method == stng::StringMethod::WideString
+        && s.kind != stng::StringKind::OverlayWide
     {
         // Wide strings get ":16LE" suffix
         format!("{}:16LE", s.kind.short_name())
@@ -582,7 +582,7 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
     };
 
     // Decode base64 strings and show plaintext/hex in brackets
-    if s.kind == strangs::StringKind::Base64 {
+    if s.kind == stng::StringKind::Base64 {
         if let Ok(decoded) = BASE64.decode(s.value.trim()) {
             if !decoded.is_empty() {
                 let printable = decoded
@@ -622,7 +622,7 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
 
     // Add library info for imports (but not for custom XOR keys - those are shown in header)
     let display_value = if let Some(ref lib) = s.library {
-        if s.method == strangs::StringMethod::XorDecode {
+        if s.method == stng::StringMethod::XorDecode {
             // For XOR-decoded strings:
             // - Custom keys (library starts with "key:"): don't show (displayed in header)
             // - Auto-detected keys (library starts with "0x"): show the key

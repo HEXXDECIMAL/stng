@@ -1,4 +1,4 @@
-//! # strangs - Language-aware string extraction
+//! # stng - Language-aware string extraction
 //!
 //! This library provides language-aware string extraction for Go and Rust binaries.
 //! Unlike traditional `strings(1)`, it understands how these languages store strings
@@ -22,7 +22,7 @@
 //! ## Usage
 //!
 //! ```no_run
-//! use strangs::extract_strings;
+//! use stng::extract_strings;
 //!
 //! let data = std::fs::read("my_binary").unwrap();
 //! let strings = extract_strings(&data, 4);
@@ -514,7 +514,7 @@ fn get_r2_strings(opts: &ExtractOptions) -> Option<Vec<ExtractedString>> {
 /// # Example
 ///
 /// ```no_run
-/// use strangs::{extract_from_object, ExtractOptions, goblin};
+/// use stng::{extract_from_object, ExtractOptions, goblin};
 ///
 /// let data = std::fs::read("my_binary").unwrap();
 /// let object = goblin::Object::parse(&data).unwrap();
