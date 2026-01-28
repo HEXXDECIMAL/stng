@@ -491,6 +491,36 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::Registry;
     }
 
+    // Well-known config/system files (even without path prefix)
+    let well_known_files = [
+        ".DS_Store",
+        ".localized",
+        ".bashrc",
+        ".zshrc",
+        ".profile",
+        ".bash_profile",
+        ".gitignore",
+        ".gitconfig",
+        ".ssh/",
+        ".aws/",
+        ".docker/",
+        "authorized_keys",
+        "id_rsa",
+        "id_ed25519",
+        "known_hosts",
+        ".npmrc",
+        ".yarnrc",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "requirements.txt",
+    ];
+    for file in &well_known_files {
+        if s == *file || s.ends_with(file) {
+            return StringKind::FilePath;
+        }
+    }
+
     // File paths - check for suspicious patterns
     // Skip Go runtime metrics (e.g., /gc/heap/allocs:bytes, /sched/latencies:seconds)
     if s.starts_with('/') || s.starts_with("C:\\") || s.starts_with("./") || s.starts_with("../") {
@@ -524,41 +554,49 @@ pub fn classify_string(s: &str) -> StringKind {
             .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
     {
         let has_underscore = env_name.contains('_');
-        let has_digit = env_name.chars().any(|c| c.is_ascii_digit());
+
         // Go runtime env vars (GODEBUG, GOTRACEBACK, GOMAXPROCS, GOMEMLIMIT, etc.)
         let is_go_env = env_name.starts_with("GO") && env_name.len() >= 4;
+
+        // Comprehensive whitelist of well-known environment variables
         let is_known = matches!(
             env_name,
-            "PATH"
-                | "HOME"
-                | "USER"
-                | "TERM"
-                | "SHELL"
-                | "LANG"
-                | "PWD"
-                | "TMP"
-                | "TEMP"
-                | "EDITOR"
-                | "PAGER"
-                | "MAIL"
-                | "LOGNAME"
-                | "HOSTNAME"
-                | "COLUMNS"
-                | "LINES"
-                | "DISPLAY"
-                | "TZ"
-                | "CLICOLOR"
-                | "LSCOLORS"
-                | "COLORTERM"
+            // POSIX/Unix standard
+            "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "PWD" | "TMP" | "TEMP"
+            | "TMPDIR" | "EDITOR" | "PAGER" | "MAIL" | "LOGNAME" | "HOSTNAME" | "DISPLAY"
+            | "TZ" | "UID" | "GID" | "EUID" | "EGID"
+            // Locale
+            | "LC_ALL" | "LC_CTYPE" | "LC_COLLATE" | "LC_MESSAGES" | "LC_MONETARY"
+            | "LC_NUMERIC" | "LC_TIME"
+            // Terminal/Display
+            | "COLUMNS" | "LINES" | "COLORTERM" | "CLICOLOR" | "LSCOLORS"
+            // Development/Build
+            | "CC" | "CXX" | "CFLAGS" | "CXXFLAGS" | "LDFLAGS" | "MAKE" | "AR" | "AS"
+            | "LD" | "NM" | "RANLIB" | "STRIP"
+            // Common application vars
+            | "JAVA_HOME" | "PYTHONPATH" | "NODE_PATH" | "RUBYLIB" | "PERL5LIB"
+            | "CARGO_HOME" | "RUSTUP_HOME" | "GOPATH" | "GOROOT" | "GOBIN" | "GOCACHE"
+            // XDG Base Directory
+            | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_CACHE_HOME" | "XDG_STATE_HOME"
+            | "XDG_RUNTIME_DIR"
+            // Security/Auth
+            | "SSH_AUTH_SOCK" | "SSH_AGENT_PID" | "GPG_AGENT_INFO" | "SUDO_USER"
+            | "SUDO_UID" | "SUDO_GID" | "SUDO_COMMAND"
+            // HTTP/Network
+            | "HTTP_PROXY" | "HTTPS_PROXY" | "FTP_PROXY" | "NO_PROXY" | "ALL_PROXY"
+            // Debugging/Profiling
+            | "DEBUG" | "VERBOSE" | "TRACE"
+            // glibc/system
+            | "LD_LIBRARY_PATH" | "LD_PRELOAD" | "GLIBC_TUNABLES"
+            // macOS specific
+            | "DYLD_LIBRARY_PATH" | "DYLD_INSERT_LIBRARIES" | "DYLD_FRAMEWORK_PATH"
+            // Windows common (for cross-platform tools)
+            | "APPDATA" | "LOCALAPPDATA" | "PROGRAMFILES" | "SYSTEMROOT" | "WINDIR"
+            | "USERPROFILE" | "COMPUTERNAME"
         );
 
-        // Accept if: has underscore, has digits, Go env var, known pattern, or short (4-8 chars)
-        if has_underscore
-            || has_digit
-            || is_go_env
-            || is_known
-            || (env_name.len() <= 8 && env_name.len() >= 4)
-        {
+        // Accept if: well-known name, has underscore (like BUILD_ID, CI_JOB), or Go env var
+        if is_known || (has_underscore && env_name.len() >= 3) || is_go_env {
             return StringKind::EnvVar;
         }
     }
@@ -909,13 +947,25 @@ mod tests {
         assert_eq!(classify_string("GOMEMLIMIT"), StringKind::EnvVar);
         assert_eq!(classify_string("GOMEMLIMIT="), StringKind::EnvVar);
 
-        // Should NOT be classified as EnvVar (too short without underscore)
+        // Whitelisted well-known vars
+        assert_eq!(classify_string("GLIBC_TUNABLES"), StringKind::EnvVar);
+        assert_eq!(classify_string("LD_PRELOAD"), StringKind::EnvVar);
+        assert_eq!(classify_string("DYLD_INSERT_LIBRARIES"), StringKind::EnvVar);
+        assert_eq!(classify_string("JAVA_HOME"), StringKind::EnvVar);
+        assert_eq!(classify_string("HTTP_PROXY"), StringKind::EnvVar);
+
+        // Should NOT be classified as EnvVar (not in whitelist, no underscore)
         assert_ne!(classify_string("THE"), StringKind::EnvVar);
         assert_ne!(classify_string("FOR"), StringKind::EnvVar);
         assert_ne!(classify_string("AND"), StringKind::EnvVar);
+        assert_ne!(classify_string("DATA"), StringKind::EnvVar);
+        assert_ne!(classify_string("OBJECT"), StringKind::EnvVar);
+        assert_ne!(classify_string("CLASS"), StringKind::EnvVar);
 
-        // With underscore, 3 chars is OK
+        // With underscore, 3+ chars is OK
         assert_eq!(classify_string("A_B"), StringKind::EnvVar);
+        assert_eq!(classify_string("BUILD_ID"), StringKind::EnvVar);
+        assert_eq!(classify_string("CI_JOB"), StringKind::EnvVar);
     }
 
     #[test]

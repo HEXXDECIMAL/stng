@@ -95,6 +95,85 @@ fn get_automaton_with_wide() -> &'static (AhoCorasick, Vec<PatternInfo>) {
     })
 }
 
+/// Extract strings decoded with a specified XOR key.
+///
+/// Applies the given XOR key to the entire binary data and extracts meaningful strings.
+/// The key is cycled for multi-byte keys (key[i % key.len()]).
+///
+/// # Arguments
+/// * `data` - Binary data to scan
+/// * `key` - XOR key bytes (single or multi-byte)
+/// * `min_length` - Minimum string length
+pub fn extract_custom_xor_strings(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+) -> Vec<ExtractedString> {
+    if key.is_empty() || data.is_empty() {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    let mut seen: HashSet<(u64, String)> = HashSet::new();
+
+    // Decode the entire data with the XOR key
+    let decoded: Vec<u8> = data
+        .iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key.len()])
+        .collect();
+
+    // Scan for printable ASCII strings in the decoded data
+    let mut start = 0;
+    while start < decoded.len() {
+        // Find start of printable run
+        while start < decoded.len() && !is_printable_char(decoded[start]) {
+            start += 1;
+        }
+
+        if start >= decoded.len() {
+            break;
+        }
+
+        // Find end of printable run
+        let mut end = start;
+        while end < decoded.len() && is_printable_char(decoded[end]) {
+            end += 1;
+        }
+
+        // Extract and validate the string
+        if end - start >= min_length {
+            if let Ok(s) = String::from_utf8(decoded[start..end].to_vec()) {
+                if is_meaningful_string(&s) {
+                    if let Some(kind) = classify_xor_string(&s) {
+                        let offset = start as u64;
+                        if seen.insert((offset, s.clone())) {
+                            let key_preview = if key.len() > 8 {
+                                format!("{}...", String::from_utf8_lossy(&key[..8]))
+                            } else {
+                                String::from_utf8_lossy(key).to_string()
+                            };
+
+                            results.push(ExtractedString {
+                                value: s,
+                                data_offset: offset,
+                                section: None,
+                                method: StringMethod::XorDecode,
+                                kind,
+                                library: Some(format!("key:{}", key_preview)),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        start = end + 1;
+    }
+
+    results
+}
+
 /// Extract XOR-encoded strings from binary data.
 ///
 /// Uses Aho-Corasick for efficient single-pass scanning of all XOR'd patterns.
@@ -129,12 +208,12 @@ pub fn extract_xor_strings(
                     let offset = start as u64;
                     if seen.insert((offset, decoded.clone())) {
                         results.push(ExtractedString {
-                            value: format!("XOR(0x{:02X}):16LE: {}", info.key, decoded),
+                            value: decoded,
                             data_offset: offset,
                             section: None,
                             method: StringMethod::XorDecode,
                             kind,
-                            library: None,
+                            library: Some(format!("0x{:02X}:16LE", info.key)),
                         });
                     }
                 }
@@ -146,12 +225,12 @@ pub fn extract_xor_strings(
                 let offset = start as u64;
                 if seen.insert((offset, decoded.clone())) {
                     results.push(ExtractedString {
-                        value: format!("XOR(0x{:02X}): {}", info.key, decoded),
+                        value: decoded,
                         data_offset: offset,
                         section: None,
                         method: StringMethod::XorDecode,
                         kind,
-                        library: None,
+                        library: Some(format!("0x{:02X}", info.key)),
                     });
                 }
             }
@@ -214,12 +293,12 @@ pub fn extract_multikey_xor_strings(
                             };
 
                             results.push(ExtractedString {
-                                value: format!("XOR(key:{}): {}", key_preview, valid_str),
+                                value: valid_str.to_string(),
                                 data_offset: offset,
                                 section: None,
                                 method: StringMethod::XorDecode,
                                 kind,
-                                library: None,
+                                library: Some(format!("key:{}", key_preview)),
                             });
                         }
                     }
@@ -279,12 +358,12 @@ fn scan_dotted_patterns(
                         let offset = start as u64;
                         if seen.insert((offset, ip.clone())) {
                             results.push(ExtractedString {
-                                value: format!("XOR(0x{:02X}): {}", key, ip),
+                                value: ip,
                                 data_offset: offset,
                                 section: None,
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IP,
-                                library: None,
+                                library: Some(format!("0x{:02X}", key)),
                             });
                         }
                     }
@@ -295,12 +374,12 @@ fn scan_dotted_patterns(
                         let offset = start as u64;
                         if seen.insert((offset, ip_port.clone())) {
                             results.push(ExtractedString {
-                                value: format!("XOR(0x{:02X}): {}", key, ip_port),
+                                value: ip_port,
                                 data_offset: offset,
                                 section: None,
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IPPort,
-                                library: None,
+                                library: Some(format!("0x{:02X}", key)),
                             });
                         }
                     }
@@ -314,12 +393,12 @@ fn scan_dotted_patterns(
                     let offset = start as u64;
                     if seen.insert((offset, hostname.clone())) {
                         results.push(ExtractedString {
-                            value: format!("XOR(0x{:02X}): {}", key, hostname),
+                            value: hostname,
                             data_offset: offset,
                             section: None,
                             method: StringMethod::XorDecode,
                             kind: StringKind::Hostname,
-                            library: None,
+                            library: Some(format!("0x{:02X}", key)),
                         });
                     }
                 }
@@ -871,10 +950,75 @@ const CREDENTIAL_KEYWORDS: &[&str] = &[
     "root",
 ];
 
+/// Well-known suspicious paths that indicate malicious activity.
+const SUSPICIOUS_PATHS: &[&str] = &[
+    "/Library/Ethereum/keystore",
+    "/Library/Application Support/Ethereum",
+    "/.ssh/",
+    "/.aws/",
+    "/.gnupg/",
+    "/Library/Keychains/",
+    "/Keychain",
+    "/wallet.dat",
+    "/Library/Cookies",
+];
+
+/// Well-known shell commands and tools (for lenient matching with trailing garbage).
+const SHELL_COMMANDS: &[&str] = &[
+    "screencapture",
+    "osascript",
+    "curl ",
+    "wget ",
+    "bash ",
+    "sh ",
+    "python ",
+    "perl ",
+    "ruby ",
+    "powershell",
+    "cmd.exe",
+];
+
+/// Shell executable paths that should be classified as suspicious.
+const SHELL_EXECUTABLE_PATHS: &[&str] = &[
+    "/bin/sh",
+    "/bin/bash",
+    "/bin/zsh",
+    "/bin/dash",
+    "/usr/bin/bash",
+    "/usr/bin/sh",
+    "/usr/bin/python",
+    "/usr/bin/perl",
+    "/usr/bin/ruby",
+    "cmd.exe",
+    "powershell.exe",
+];
+
 /// Classify an XOR-decoded string. Returns None if it doesn't look interesting.
 fn classify_xor_string(s: &str) -> Option<StringKind> {
     let lower = s.to_ascii_lowercase();
 
+    // Check for well-known suspicious paths (even with garbage around them)
+    for sus_path in SUSPICIOUS_PATHS {
+        if s.contains(sus_path) {
+            return Some(StringKind::SuspiciousPath);
+        }
+    }
+
+    // Check for shell executable paths (before shell commands)
+    for exe_path in SHELL_EXECUTABLE_PATHS {
+        if lower.contains(exe_path) {
+            return Some(StringKind::SuspiciousPath);
+        }
+    }
+
+    // Check for well-known shell commands (even with trailing garbage)
+    for cmd in SHELL_COMMANDS {
+        if lower.contains(cmd) {
+            return Some(StringKind::ShellCmd);
+        }
+    }
+
+    // Check for credential keywords
     for keyword in CREDENTIAL_KEYWORDS {
         if lower.contains(keyword) {
             return Some(StringKind::SuspiciousPath);
@@ -886,13 +1030,72 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
     match kind {
         StringKind::IP | StringKind::IPPort => Some(kind),
         StringKind::Url => Some(kind),
-        StringKind::ShellCmd => Some(kind),
+        StringKind::ShellCmd => {
+            // Reject obvious garbage that starts with backtick but no valid command
+            if s.starts_with('`') && !s[1..].trim_start().chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+                None
+            } else {
+                Some(kind)
+            }
+        }
         StringKind::SuspiciousPath => Some(kind),
         StringKind::Path => {
             let is_unix_path = s.contains('/')
                 && (s.starts_with('/') || s.starts_with("./") || s.starts_with("../"));
             let is_windows_path = s.contains('\\') && s.len() > 3 && s.chars().nth(1) == Some(':');
+
             if is_unix_path || is_windows_path {
+                // Additional validation: path should have reasonable characters
+                // Reject if path has too many non-path characters
+                let bad_chars = s
+                    .chars()
+                    .filter(|&c| {
+                        !c.is_ascii_alphanumeric()
+                            && !matches!(c, '/' | '\\' | '.' | '_' | '-' | ' ' | ':' | '%')
+                    })
+                    .count();
+
+                // Reject if > 10% bad characters (stricter than before)
+                if bad_chars * 10 > s.len() {
+                    return None;
+                }
+
+                // For single-level Unix paths (no subdirectories), apply stricter validation
+                let slash_count = s.matches('/').count();
+                if is_unix_path && slash_count == 1 {
+                    // Single-level path like "/something"
+                    // Extract the part after the slash
+                    if let Some(name) = s.strip_prefix('/') {
+                        // Reject if it looks like random garbage:
+                        // - Mixed case with numbers in weird patterns
+                        // - Too many uppercase letters mixed with lowercase
+                        // - Contains both uppercase and lowercase without being camelCase or PascalCase
+                        let has_upper = name.chars().any(|c| c.is_ascii_uppercase());
+                        let has_lower = name.chars().any(|c| c.is_ascii_lowercase());
+                        let has_digit = name.chars().any(|c| c.is_ascii_digit());
+
+                        // Reject paths with mixed case + digits (garbage pattern)
+                        if has_upper && has_lower && has_digit && name.len() > 8 {
+                            return None;
+                        }
+
+                        // Reject if it alternates between upper/lower too much (gibberish)
+                        let mut case_changes = 0;
+                        let mut prev_was_upper = false;
+                        for c in name.chars().filter(|c| c.is_ascii_alphabetic()) {
+                            let is_upper = c.is_ascii_uppercase();
+                            if prev_was_upper != is_upper {
+                                case_changes += 1;
+                            }
+                            prev_was_upper = is_upper;
+                        }
+                        // Real paths rarely change case more than 2-3 times
+                        if case_changes > 3 {
+                            return None;
+                        }
+                    }
+                }
+
                 Some(kind)
             } else {
                 None
@@ -1029,8 +1232,9 @@ mod tests {
         let data = make_xor_test_data(plaintext, key, 20);
         let results = extract_xor_strings(&data, 10, false);
         assert!(
-            results.iter().any(|r| r.value.contains("http://evil.com")),
-            "Results: {:?}",
+            results.iter().any(|r| r.value == "http://evil.com"
+                && r.library.as_ref().map(|l| l.contains("0x42")).unwrap_or(false)),
+            "Should find URL with XOR key 0x42. Results: {:?}",
             results
         );
     }
@@ -1042,8 +1246,9 @@ mod tests {
         let data = make_xor_test_data(plaintext, key, 30);
         let results = extract_xor_strings(&data, 8, false);
         assert!(
-            results.iter().any(|r| r.value.contains("192.168.1.100")),
-            "Results: {:?}",
+            results.iter().any(|r| r.value == "192.168.1.100"
+                && r.library.as_ref().map(|l| l.contains("0x5A")).unwrap_or(false)),
+            "Should find IP with XOR key 0x5A. Results: {:?}",
             results
         );
     }
@@ -1055,8 +1260,9 @@ mod tests {
         let data = make_xor_test_data(plaintext, key, 25);
         let results = extract_xor_strings(&data, 8, false);
         assert!(
-            results.iter().any(|r| r.value.contains("10.0.0.1:8080")),
-            "IP:port should be detected. Results: {:?}",
+            results.iter().any(|r| r.value == "10.0.0.1:8080"
+                && r.library.as_ref().map(|l| l.contains("0x3C")).unwrap_or(false)),
+            "IP:port should be detected with XOR key 0x3C. Results: {:?}",
             results
         );
     }
@@ -1068,8 +1274,9 @@ mod tests {
         let data = make_xor_test_data(plaintext, key, 10);
         let results = extract_xor_strings(&data, 10, false);
         assert!(
-            results.iter().any(|r| r.value.contains("/etc/passwd")),
-            "Results: {:?}",
+            results.iter().any(|r| r.value == "/etc/passwd"
+                && r.library.as_ref().map(|l| l.contains("0xAB")).unwrap_or(false)),
+            "Should find path with XOR key 0xAB. Results: {:?}",
             results
         );
     }
@@ -1081,8 +1288,9 @@ mod tests {
         let data = make_xor_test_data(plaintext, key, 20);
         let results = extract_xor_strings(&data, 10, false);
         assert!(
-            results.iter().any(|r| r.value.contains("password")),
-            "Results: {:?}",
+            results.iter().any(|r| r.value == "password=secret123"
+                && r.library.as_ref().map(|l| l.contains("0x77")).unwrap_or(false)),
+            "Should find password string with XOR key 0x77. Results: {:?}",
             results
         );
     }
@@ -1091,7 +1299,7 @@ mod tests {
     fn test_no_false_positives_on_random() {
         let data: Vec<u8> = (0..1000).map(|i| ((i * 7 + 13) % 256) as u8).collect();
         let results = extract_xor_strings(&data, 10, false);
-        assert!(results.len() < 10);
+        assert!(results.len() < 10, "Should have few false positives on random data");
     }
 
     #[test]
@@ -1103,7 +1311,7 @@ mod tests {
         let results = extract_xor_strings(&data, 6, false);
         // Should not find this as it's a false positive
         assert!(
-            !results.iter().any(|r| r.value.contains("XOR(0x20)")),
+            !results.iter().any(|r| r.library.as_ref().map(|l| l.contains("0x20")).unwrap_or(false)),
             "Should skip key 0x20. Results: {:?}",
             results
         );
@@ -1116,8 +1324,9 @@ mod tests {
         let data = make_xor_test_data(plaintext, key, 20);
         let results = extract_xor_strings(&data, 10, false);
         assert!(
-            results.iter().any(|r| r.value.contains("evil.malware.com")),
-            "Hostname should be detected. Results: {:?}",
+            results.iter().any(|r| r.value == "evil.malware.com"
+                && r.library.as_ref().map(|l| l.contains("0x55")).unwrap_or(false)),
+            "Hostname should be detected with XOR key 0x55. Results: {:?}",
             results
         );
     }
@@ -1142,9 +1351,272 @@ mod tests {
 
         let results = extract_xor_strings(&data, 10, false);
         assert!(
-            results.iter().any(|r| r.value.contains("Mozilla")),
-            "Mozilla user agent should be detected. Results: {:?}",
+            results.iter().any(|r| r.value.contains("Mozilla")
+                && r.library.as_ref().map(|l| l.contains("0x42")).unwrap_or(false)),
+            "Mozilla user agent should be detected with XOR key 0x42. Results: {:?}",
             results
+        );
+    }
+
+    #[test]
+    fn test_custom_xor_single_byte_key() {
+        // Test with single-byte custom XOR key
+        let plaintext = b"http://malware.example.com";
+        let key = vec![0x42];
+        let xored: Vec<u8> = plaintext.iter().map(|b| b ^ key[0]).collect();
+
+        let results = extract_custom_xor_strings(&xored, &key, 10);
+        assert!(
+            results.iter().any(|r| r.value == "http://malware.example.com"
+                && r.library.as_ref().map(|l| l.contains("key:B")).unwrap_or(false)),
+            "Custom single-byte XOR should decode URL. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_custom_xor_multi_byte_key() {
+        // Test with multi-byte custom XOR key
+        let plaintext = b"secret password: admin123";
+        let key = b"KEY";
+        let xored: Vec<u8> = plaintext
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        let results = extract_custom_xor_strings(&xored, key, 10);
+        assert!(
+            results.iter().any(|r| r.value == "secret password: admin123"
+                && r.library.as_ref().map(|l| l.contains("key:KEY")).unwrap_or(false)),
+            "Custom multi-byte XOR should decode password. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_custom_xor_string_key() {
+        // Test with a realistic string key (like the user's example)
+        let plaintext = b"https://c2server.evil.com/api/v1/beacon";
+        let key = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
+        let xored: Vec<u8> = plaintext
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        let results = extract_custom_xor_strings(&xored, key, 10);
+        assert!(
+            results.iter().any(|r| r.value == "https://c2server.evil.com/api/v1/beacon"
+                && r.library.as_ref().map(|l| l.contains("key:fYztZORL")).unwrap_or(false)),
+            "Custom string XOR key should decode C2 URL. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_custom_xor_empty_key() {
+        // Empty key should return no results
+        let data = b"test data";
+        let key = vec![];
+        let results = extract_custom_xor_strings(data, &key, 4);
+        assert!(results.is_empty(), "Empty key should return no results");
+    }
+
+    #[test]
+    fn test_custom_xor_empty_data() {
+        // Empty data should return no results
+        let data = b"";
+        let key = b"KEY";
+        let results = extract_custom_xor_strings(data, key, 4);
+        assert!(results.is_empty(), "Empty data should return no results");
+    }
+
+    #[test]
+    fn test_custom_xor_ip_address() {
+        // Test IP address detection with custom XOR
+        let plaintext = b"192.168.1.100";
+        let key = b"SECRET";
+        let xored: Vec<u8> = plaintext
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        let results = extract_custom_xor_strings(&xored, key, 8);
+        assert!(
+            results.iter().any(|r| r.value == "192.168.1.100"
+                && r.library.as_ref().map(|l| l.contains("key:SECRET")).unwrap_or(false)),
+            "Custom XOR should detect IP addresses. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_custom_xor_path() {
+        // Test path detection with custom XOR
+        let plaintext = b"/bin/bash";
+        let key = b"XOR";
+        let xored: Vec<u8> = plaintext
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        let results = extract_custom_xor_strings(&xored, key, 4);
+        assert!(
+            results.iter().any(|r| r.value == "/bin/bash"
+                && r.library.as_ref().map(|l| l.contains("key:XOR")).unwrap_or(false)),
+            "Custom XOR should detect paths. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_suspicious_path_with_garbage() {
+        // Real-world case: Ethereum keystore path with garbage around it
+        let plaintext = b"XQYf%s/Library/Ethereum/keystoregP^pAEO{,\"v";
+        let key = b"KEY";
+        let xored: Vec<u8> = plaintext
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        let results = extract_custom_xor_strings(&xored, key, 10);
+        assert!(
+            results.iter().any(|r| r.kind == StringKind::SuspiciousPath
+                && r.value.contains("/Library/Ethereum/keystore")),
+            "Should detect Ethereum keystore path even with garbage. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_shell_command_with_trailing_garbage() {
+        // Real-world case: screencapture command with trailing garbage
+        let plaintext = b"fscreencapture -x -t %s \"%s\"SlY";
+        let key = b"KEY";
+        let xored: Vec<u8> = plaintext
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        let results = extract_custom_xor_strings(&xored, key, 10);
+        assert!(
+            results.iter().any(|r| r.kind == StringKind::ShellCmd
+                && r.value.contains("screencapture")),
+            "Should detect screencapture command even with trailing garbage. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_backtick_garbage_not_shell() {
+        // Garbage starting with backtick should NOT be classified as shell command
+        let garbage = b"`{ Cy\\.ADpv~~AblBWJU,OWJ.wZOR+qnt";
+        let key = b"KEY";
+        let xored: Vec<u8> = garbage
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        let results = extract_custom_xor_strings(&xored, key, 10);
+        assert!(
+            !results.iter().any(|r| r.kind == StringKind::ShellCmd),
+            "Garbage with backtick should NOT be shell command. Results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn test_garbage_path_rejected() {
+        let key = b"KEY";
+
+        // Test garbage with special chars
+        let garbage1 = b"/<})M9*&D@44$]";
+        let xored1: Vec<u8> = garbage1
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+        let results1 = extract_custom_xor_strings(&xored1, key, 4);
+        assert!(
+            !results1.iter().any(|r| r.kind == StringKind::Path),
+            "Garbage with special chars should NOT be path"
+        );
+
+        // Test garbage with mixed case + digits
+        let garbage2 = b"/1H1ktn5UtJ8VKgaf";
+        let xored2: Vec<u8> = garbage2
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+        let results2 = extract_custom_xor_strings(&xored2, key, 4);
+        assert!(
+            !results2.iter().any(|r| r.kind == StringKind::Path),
+            "Garbage with mixed case and digits should NOT be path"
+        );
+
+        // Test garbage with mixed case + special chars
+        let garbage3 = b"/o2lBYC}rOkeH^";
+        let xored3: Vec<u8> = garbage3
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+        let results3 = extract_custom_xor_strings(&xored3, key, 4);
+        assert!(
+            !results3.iter().any(|r| r.kind == StringKind::Path),
+            "Garbage with special chars should NOT be path"
+        );
+    }
+
+    #[test]
+    fn test_valid_paths_accepted() {
+        let key = b"KEY";
+
+        // Test valid multi-level paths
+        let path1 = b"/usr/bin/bash";
+        let xored1: Vec<u8> = path1
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+        let results1 = extract_custom_xor_strings(&xored1, key, 4);
+        assert!(
+            results1.iter().any(|r| r.kind == StringKind::Path || r.kind == StringKind::SuspiciousPath),
+            "/usr/bin/bash should be detected as path or suspicious path. Found: {:?}",
+            results1.iter().map(|r| (&r.value, &r.kind)).collect::<Vec<_>>()
+        );
+
+        // Test /etc/passwd
+        let path2 = b"/etc/passwd";
+        let xored2: Vec<u8> = path2
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+        let results2 = extract_custom_xor_strings(&xored2, key, 4);
+        assert!(
+            results2.iter().any(|r| r.kind == StringKind::Path || r.kind == StringKind::SuspiciousPath),
+            "/etc/passwd should be detected as path"
+        );
+
+        // Test /dev/urandom
+        let path3 = b"/dev/urandom";
+        let xored3: Vec<u8> = path3
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+        let results3 = extract_custom_xor_strings(&xored3, key, 4);
+        assert!(
+            results3.iter().any(|r| r.kind == StringKind::Path),
+            "/dev/urandom should be detected as path"
         );
     }
 }

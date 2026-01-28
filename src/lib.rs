@@ -285,6 +285,8 @@ pub struct ExtractOptions {
     pub filter_garbage: bool,
     /// Enable XOR string detection (single-byte keys). Default: false.
     pub xor_scan: bool,
+    /// Custom XOR key for decoding (overrides auto-detection if set).
+    pub xor_key: Option<Vec<u8>>,
     /// Minimum length for XOR-decoded strings (default: 10).
     pub xor_min_length: usize,
     /// Enable advanced multi-byte XOR scanning with radare2/rizin (slow). Default: false.
@@ -300,6 +302,7 @@ impl ExtractOptions {
             r2_strings: None,
             filter_garbage: false,
             xor_scan: false,
+            xor_key: None,
             xor_min_length: xor::DEFAULT_XOR_MIN_LENGTH,
             xorscan: false,
         }
@@ -333,6 +336,14 @@ impl ExtractOptions {
         if let Some(len) = min_length {
             self.xor_min_length = len;
         }
+        self
+    }
+
+    /// Specify a custom XOR key for decoding.
+    /// The key can be single-byte or multi-byte and will be applied to all byte streams.
+    /// This overrides automatic XOR detection when set.
+    pub fn with_xor_key(mut self, key: Vec<u8>) -> Self {
+        self.xor_key = Some(key);
         self
     }
 
@@ -388,33 +399,44 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 strings.extend(extract_raw_strings(data, opts.min_length, None, &[]));
             }
 
-            // XOR string detection (if enabled)
-            if opts.xor_scan && !data.is_empty() {
-                strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
+            // XOR string detection
+            if !data.is_empty() {
+                // Custom XOR key takes precedence over auto-detection
+                if let Some(ref key) = opts.xor_key {
+                    tracing::debug!("Custom XOR: using {} byte key", key.len());
+                    strings.extend(xor::extract_custom_xor_strings(
+                        data,
+                        key,
+                        opts.xor_min_length,
+                    ));
+                } else if opts.xor_scan {
+                    // Auto-detection mode
+                    strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
 
-                // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
-                if opts.xorscan {
-                    if let Some(ref path) = opts.path {
-                        tracing::debug!(
-                            "Multi-byte XOR: analyzing {} candidate strings",
-                            strings.len()
-                        );
-                        // Use already extracted strings as XOR key candidates
-                        let xor_keys = r2::verify_xor_keys(path, &strings);
-                        tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
-                        if !xor_keys.is_empty() {
-                            let decoded = xor::extract_multikey_xor_strings(
-                                data,
-                                &xor_keys,
-                                opts.xor_min_length,
+                    // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
+                    if opts.xorscan {
+                        if let Some(ref path) = opts.path {
+                            tracing::debug!(
+                                "Multi-byte XOR: analyzing {} candidate strings",
+                                strings.len()
                             );
-                            tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
-                            strings.extend(decoded);
+                            // Use already extracted strings as XOR key candidates
+                            let xor_keys = r2::verify_xor_keys(path, &strings);
+                            tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
+                            if !xor_keys.is_empty() {
+                                let decoded = xor::extract_multikey_xor_strings(
+                                    data,
+                                    &xor_keys,
+                                    opts.xor_min_length,
+                                );
+                                tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
+                                strings.extend(decoded);
+                            } else {
+                                tracing::debug!("Multi-byte XOR: no high-confidence keys found");
+                            }
                         } else {
-                            tracing::debug!("Multi-byte XOR: no high-confidence keys found");
+                            tracing::debug!("Multi-byte XOR: path not provided, skipping");
                         }
-                    } else {
-                        tracing::debug!("Multi-byte XOR: path not provided, skipping");
                     }
                 }
             }
@@ -717,35 +739,46 @@ pub fn extract_from_object(
         }
     }
 
-    // XOR string detection (if enabled)
-    if opts.xor_scan && !data.is_empty() {
-        let is_pe = matches!(object, Object::PE(_));
-        strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
+    // XOR string detection
+    if !data.is_empty() {
+        // Custom XOR key takes precedence over auto-detection
+        if let Some(ref key) = opts.xor_key {
+            tracing::debug!("Custom XOR: using {} byte key", key.len());
+            strings.extend(xor::extract_custom_xor_strings(
+                data,
+                key,
+                opts.xor_min_length,
+            ));
+        } else if opts.xor_scan {
+            // Auto-detection mode
+            let is_pe = matches!(object, Object::PE(_));
+            strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
 
-        // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
-        if opts.xorscan {
-            if let Some(ref path) = opts.path {
-                tracing::debug!(
-                    "Multi-byte XOR: path={}, analyzing {} candidate strings",
-                    path,
-                    strings.len()
-                );
-                let xor_keys = r2::verify_xor_keys(path, &strings);
-                tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
-                if !xor_keys.is_empty() {
+            // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
+            if opts.xorscan {
+                if let Some(ref path) = opts.path {
                     tracing::debug!(
-                        "Multi-byte XOR: attempting decryption with {} keys",
-                        xor_keys.len()
+                        "Multi-byte XOR: path={}, analyzing {} candidate strings",
+                        path,
+                        strings.len()
                     );
-                    let decoded =
-                        xor::extract_multikey_xor_strings(data, &xor_keys, opts.xor_min_length);
-                    tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
-                    strings.extend(decoded);
+                    let xor_keys = r2::verify_xor_keys(path, &strings);
+                    tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
+                    if !xor_keys.is_empty() {
+                        tracing::debug!(
+                            "Multi-byte XOR: attempting decryption with {} keys",
+                            xor_keys.len()
+                        );
+                        let decoded =
+                            xor::extract_multikey_xor_strings(data, &xor_keys, opts.xor_min_length);
+                        tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
+                        strings.extend(decoded);
+                    } else {
+                        tracing::debug!("Multi-byte XOR: no high-confidence keys found");
+                    }
                 } else {
-                    tracing::debug!("Multi-byte XOR: no high-confidence keys found");
+                    tracing::debug!("Multi-byte XOR: path not provided, skipping");
                 }
-            } else {
-                tracing::debug!("Multi-byte XOR: path not provided, skipping");
             }
         }
     }

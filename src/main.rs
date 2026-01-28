@@ -27,12 +27,14 @@ and suspicious paths while filtering noise. XOR-encoded strings are
 detected by default.
 
 EXAMPLES:
-    strangs malware.elf              # Full analysis with single-byte XOR detection
-    strangs -i malware.elf           # Filter out raw scan noise
-    strangs --xorscan malware.elf    # Deep scan with multi-byte XOR (slow, requires r2/rizin)
-    strangs --no-xor malware.elf     # Disable all XOR detection
-    strangs --debug malware.elf      # Show debug logging
-    strangs --json malware.elf       # JSON output for tooling
+    strangs malware.elf                            # Full analysis with single-byte XOR detection
+    strangs -i malware.elf                         # Filter out raw scan noise
+    strangs --xor 0xAB malware.elf                 # Decode with custom hex XOR key
+    strangs --xor \"secretkey\" malware.elf          # Decode with string XOR key
+    strangs --xorscan malware.elf                  # Deep scan with multi-byte XOR (slow, requires r2/rizin)
+    strangs --no-xor malware.elf                   # Disable all XOR detection
+    strangs --debug malware.elf                    # Show debug logging
+    strangs --json malware.elf                     # JSON output for tooling
 ")]
 struct Cli {
     /// Target binary file to analyze
@@ -83,6 +85,10 @@ struct Cli {
     #[arg(long)]
     no_xor: bool,
 
+    /// Custom XOR key (hex bytes like "0xABCD" or plain string)
+    #[arg(long)]
+    xor: Option<String>,
+
     /// Minimum length for XOR-decoded strings
     #[arg(long, default_value = "10")]
     xor_min_length: usize,
@@ -103,6 +109,37 @@ const DIM: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m"; // Dark red text
 const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
+
+/// Parse XOR key from command line (hex bytes or plain string)
+fn parse_xor_key(input: &str) -> Result<Vec<u8>> {
+    // Check if it's hex format (0x... or just hex digits)
+    let hex_input = if let Some(stripped) = input.strip_prefix("0x") {
+        stripped
+    } else if input.chars().all(|c| c.is_ascii_hexdigit()) && input.len() % 2 == 0 {
+        input
+    } else {
+        // Plain string - convert to bytes
+        return Ok(input.as_bytes().to_vec());
+    };
+
+    // Parse hex bytes
+    let mut bytes = Vec::new();
+    for chunk in hex_input.as_bytes().chunks(2) {
+        if chunk.len() != 2 {
+            anyhow::bail!("Invalid hex string: must have even number of hex digits");
+        }
+        let hex_str = std::str::from_utf8(chunk)?;
+        let byte = u8::from_str_radix(hex_str, 16)
+            .map_err(|e| anyhow::anyhow!("Invalid hex byte '{}': {}", hex_str, e))?;
+        bytes.push(byte);
+    }
+
+    if bytes.is_empty() {
+        anyhow::bail!("XOR key cannot be empty");
+    }
+
+    Ok(bytes)
+}
 
 /// Get binary format and architecture string (e.g., "ELF arm32", "PE x64", "Mach-O arm64")
 fn get_binary_format(data: &[u8]) -> String {
@@ -205,12 +242,21 @@ fn main() -> Result<()> {
         opts = opts.with_r2(&cli.target);
     }
 
-    if !cli.no_xor {
+    // Handle custom XOR key if provided
+    let custom_xor_key: Option<Vec<u8>> = if let Some(ref xor_key_str) = cli.xor {
+        let xor_key = parse_xor_key(xor_key_str)?;
+        opts = opts.with_xor_key(xor_key.clone());
+        Some(xor_key)
+    } else if !cli.no_xor {
+        // Auto-detection mode
         opts = opts.with_xor(Some(cli.xor_min_length));
         if cli.xorscan {
             opts = opts.with_xorscan(true);
         }
-    }
+        None
+    } else {
+        None
+    };
 
     let mut strings = strangs::extract_strings_with_options(&data, &opts);
 
@@ -263,9 +309,23 @@ fn main() -> Result<()> {
         hasher.update(&data);
         let hash = format!("{:x}", hasher.finalize());
 
+        // Format custom XOR key for display
+        let xor_key_display = if let Some(ref key) = custom_xor_key {
+            if key.len() <= 16 {
+                format!(" · xor:{}", String::from_utf8_lossy(key))
+            } else {
+                format!(
+                    " · xor:{}...",
+                    String::from_utf8_lossy(&key[..16])
+                )
+            }
+        } else {
+            String::new()
+        };
+
         if use_color {
             println!(
-                "{}{}{} · {} · {} bytes · {} strings · {}{}",
+                "{}{}{} · {} · {} bytes · {} strings · {}{}{}",
                 BOLD,
                 DIM,
                 filename,
@@ -273,16 +333,18 @@ fn main() -> Result<()> {
                 size,
                 strings.len(),
                 hash,
+                xor_key_display,
                 RESET
             );
         } else {
             println!(
-                "{} · {} · {} bytes · {} strings · {}",
+                "{} · {} · {} bytes · {} strings · {}{}",
                 filename,
                 format,
                 size,
                 strings.len(),
-                hash
+                hash,
+                xor_key_display
             );
         }
         println!();
@@ -487,10 +549,14 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
 
     let offset = format!("{:>8x}", s.data_offset);
 
-    // Show encoding suffix for wide strings (except overlay:16LE which already has it)
-    let kind = if s.method == strangs::StringMethod::WideString
+    // Build kind string with prefixes for special methods
+    let kind = if s.method == strangs::StringMethod::XorDecode {
+        // XOR-decoded strings get "xor/" prefix
+        format!("xor/{}", s.kind.short_name())
+    } else if s.method == strangs::StringMethod::WideString
         && s.kind != strangs::StringKind::OverlayWide
     {
+        // Wide strings get ":16LE" suffix
         format!("{}:16LE", s.kind.short_name())
     } else {
         s.kind.short_name().to_string()
@@ -517,35 +583,69 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
         clean_value.to_string()
     };
 
-    // Decode base64 strings and show plaintext in brackets if printable
+    // Decode base64 strings and show plaintext/hex in brackets
     if s.kind == strangs::StringKind::Base64 {
         if let Ok(decoded) = BASE64.decode(s.value.trim()) {
-            // Only show if mostly printable ASCII
-            let printable = decoded
-                .iter()
-                .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
-                .count();
-            if printable > decoded.len() / 2 && !decoded.is_empty() {
-                if let Ok(text) = String::from_utf8(decoded) {
-                    let text = text.trim();
-                    if !text.is_empty() {
-                        if use_color {
-                            value = format!("{} {}[{}]{}", value, DIM, text, RESET);
-                        } else {
-                            value = format!("{} [{}]", value, text);
+            if !decoded.is_empty() {
+                let printable = decoded
+                    .iter()
+                    .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+                    .count();
+
+                // Show decoded content (text or hex)
+                if printable > decoded.len() / 2 {
+                    // Mostly printable - show as text
+                    if let Ok(text) = String::from_utf8(decoded.clone()) {
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            if use_color {
+                                value = format!("{} {}[{}]{}", value, DIM, text, RESET);
+                            } else {
+                                value = format!("{} [{}]", value, text);
+                            }
                         }
+                    }
+                } else {
+                    // Binary data - show as hex (especially useful for XOR-decoded base64)
+                    let hex_preview = if decoded.len() <= 16 {
+                        decoded.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("")
+                    } else {
+                        format!("{}...", decoded[..16].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""))
+                    };
+                    if use_color {
+                        value = format!("{} {}[0x{}]{}", value, DIM, hex_preview, RESET);
+                    } else {
+                        value = format!("{} [0x{}]", value, hex_preview);
                     }
                 }
             }
         }
     }
 
-    // Add library info for imports
+    // Add library info for imports (but not for custom XOR keys - those are shown in header)
     let display_value = if let Some(ref lib) = s.library {
-        if use_color {
-            format!("{} {}<- {}{}", value, DIM, lib, RESET)
+        if s.method == strangs::StringMethod::XorDecode {
+            // For XOR-decoded strings:
+            // - Custom keys (library starts with "key:"): don't show (displayed in header)
+            // - Auto-detected keys (library starts with "0x"): show the key
+            if lib.starts_with("key:") {
+                // Custom XOR key - already shown in header, don't repeat
+                value
+            } else {
+                // Auto-detected XOR key - show it
+                if use_color {
+                    format!("{} {}[{}]{}", value, DIM, lib, RESET)
+                } else {
+                    format!("{} [{}]", value, lib)
+                }
+            }
         } else {
-            format!("{} <- {}", value, lib)
+            // For imports, show with arrow
+            if use_color {
+                format!("{} {}<- {}{}", value, DIM, lib, RESET)
+            } else {
+                format!("{} <- {}", value, lib)
+            }
         }
     } else {
         value

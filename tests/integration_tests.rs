@@ -2726,9 +2726,9 @@ mod xor_detection_tests {
             .collect();
 
         assert!(
-            xor_strings.iter().any(|s| s.value.contains("XOR(0x42)")),
-            "Should include XOR key in output. Found: {:?}",
-            xor_strings.iter().map(|s| &s.value).collect::<Vec<_>>()
+            xor_strings.iter().any(|s| s.library.as_ref().map(|l| l.contains("0x42")).unwrap_or(false)),
+            "Should include XOR key (0x42) in library field. Found: {:?}",
+            xor_strings.iter().map(|s| (s.value.clone(), s.library.clone())).collect::<Vec<_>>()
         );
     }
 }
