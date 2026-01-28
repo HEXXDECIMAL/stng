@@ -2148,10 +2148,7 @@ mod extract_from_tests {
 
         // Garbage filter should remove noise
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-        assert!(
-            !values.contains(&"@@##$$"),
-            "Garbage should be filtered"
-        );
+        assert!(!values.contains(&"@@##$$"), "Garbage should be filtered");
     }
 
     #[test]
@@ -2170,10 +2167,7 @@ mod extract_from_tests {
         let strings = extract_from_macho(&macho, &data, &opts);
 
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-        assert!(
-            !values.contains(&"@@##$$"),
-            "Garbage should be filtered"
-        );
+        assert!(!values.contains(&"@@##$$"), "Garbage should be filtered");
     }
 
     #[test]

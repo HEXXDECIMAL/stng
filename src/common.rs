@@ -167,7 +167,7 @@ impl StringKind {
     /// Get short display name for the kind
     pub fn short_name(&self) -> &'static str {
         match self {
-            StringKind::Const => "const",
+            StringKind::Const => "-",
             StringKind::FuncName => "func",
             StringKind::FilePath => "file",
             StringKind::MapKey => "key",

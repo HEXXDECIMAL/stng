@@ -27,9 +27,11 @@ and suspicious paths while filtering noise. XOR-encoded strings are
 detected by default.
 
 EXAMPLES:
-    strangs malware.elf              # Full analysis with XOR detection
+    strangs malware.elf              # Full analysis with single-byte XOR detection
     strangs -i malware.elf           # Filter out raw scan noise
-    strangs --no-xor malware.elf     # Disable XOR detection
+    strangs --xorscan malware.elf    # Deep scan with multi-byte XOR (slow, requires r2/rizin)
+    strangs --no-xor malware.elf     # Disable all XOR detection
+    strangs --debug malware.elf      # Show debug logging
     strangs --json malware.elf       # JSON output for tooling
 ")]
 struct Cli {
@@ -84,6 +86,14 @@ struct Cli {
     /// Minimum length for XOR-decoded strings
     #[arg(long, default_value = "10")]
     xor_min_length: usize,
+
+    /// Enable advanced XOR scanning with radare2/rizin (slow but finds multi-byte keys)
+    #[arg(long)]
+    xorscan: bool,
+
+    /// Enable debug logging
+    #[arg(long)]
+    debug: bool,
 }
 
 // ANSI color codes
@@ -144,6 +154,19 @@ fn get_binary_format(data: &[u8]) -> String {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Initialize tracing (modern structured logging)
+    if cli.debug {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_target(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_target(false)
+            .init();
+    }
+
     let path = Path::new(&cli.target);
     if !path.exists() {
         anyhow::bail!("File does not exist: {}", cli.target);
@@ -184,6 +207,9 @@ fn main() -> Result<()> {
 
     if !cli.no_xor {
         opts = opts.with_xor(Some(cli.xor_min_length));
+        if cli.xorscan {
+            opts = opts.with_xorscan(true);
+        }
     }
 
     let mut strings = strangs::extract_strings_with_options(&data, &opts);
@@ -252,7 +278,11 @@ fn main() -> Result<()> {
         } else {
             println!(
                 "{} · {} · {} bytes · {} strings · {}",
-                filename, format, size, strings.len(), hash
+                filename,
+                format,
+                size,
+                strings.len(),
+                hash
             );
         }
         println!();
@@ -381,7 +411,12 @@ fn print_colorized_entitlements(xml: &str, use_color: bool) {
         let content_start = abs_start + key_pattern.len();
         if let Some(end_pos) = output[content_start..].find(key_end) {
             let content_end = content_start + end_pos;
-            result.push_str(&format!("{}{}{}", RED, &output[content_start..content_end], RESET));
+            result.push_str(&format!(
+                "{}{}{}",
+                RED,
+                &output[content_start..content_end],
+                RESET
+            ));
             result.push_str(key_end);
             last_end = content_end + key_end.len();
         } else {
@@ -406,7 +441,12 @@ fn print_colorized_entitlements(xml: &str, use_color: bool) {
         let content_start = abs_start + string_pattern.len();
         if let Some(end_pos) = output[content_start..].find(string_end) {
             let content_end = content_start + end_pos;
-            result.push_str(&format!("{}{}{}", YELLOW, &output[content_start..content_end], RESET));
+            result.push_str(&format!(
+                "{}{}{}",
+                YELLOW,
+                &output[content_start..content_end],
+                RESET
+            ));
             result.push_str(string_end);
             last_end = content_end + string_end.len();
         } else {
@@ -431,7 +471,10 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
 
             if use_color {
                 let colorized = colorize_xml_line(line);
-                println!("  {}{}{} {}{:<12}{} {}", DIM, offset, RESET, kind_color, "entitlement", RESET, colorized);
+                println!(
+                    "  {}{}{} {}{:<12}{} {}",
+                    DIM, offset, RESET, kind_color, "entitlement", RESET, colorized
+                );
             } else {
                 println!("  {} {:<12} {}", offset, "entitlement", line);
             }

@@ -49,6 +49,11 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
 
     // Get file size to filter out symbols with invalid offsets
     let file_size = std::fs::metadata(path).ok()?.len();
+    tracing::debug!(
+        "r2::extract_strings: file_size={} (0x{:x})",
+        file_size,
+        file_size
+    );
 
     // Run both commands in parallel
     let path_owned = path.to_string();
@@ -62,12 +67,34 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
 
     // Process strings from data sections
     if let Some(data_strings) = data_result {
+        tracing::debug!("r2::extract_strings: got izj output, parsing JSON...");
         if let Ok(json) = serde_json::from_str::<Vec<R2String>>(&data_strings) {
+            tracing::debug!(
+                "r2::extract_strings: parsed {} strings from izj",
+                json.len()
+            );
             for s in json {
                 // Skip strings with invalid file offsets
                 if s.paddr > file_size {
+                    tracing::debug!(
+                        "r2::extract_strings: SKIP paddr {} > file_size {} for '{}'",
+                        s.paddr,
+                        file_size,
+                        if s.string.len() > 20 {
+                            &s.string[..20]
+                        } else {
+                            &s.string
+                        }
+                    );
                     continue;
                 }
+
+                // Check if it's our target XOR key
+                if s.string.contains("fYzt") {
+                    tracing::debug!("r2::extract_strings: FOUND XOR KEY: paddr=0x{:x}, len={}, section='{}', string='{}'",
+                        s.paddr, s.string.len(), s.section, s.string);
+                }
+
                 if s.string.len() >= min_length && seen.insert(s.string.clone()) {
                     let kind = classify_string(&s.string);
                     strings.push(ExtractedString {
@@ -78,10 +105,17 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         library: None,
                         kind,
                     });
+                } else if s.string.contains("fYzt") {
+                    tracing::debug!("r2::extract_strings: XOR KEY FILTERED: len={} < min_length={}, or already seen",
+                        s.string.len(), min_length);
                 }
             }
         }
     }
+    tracing::debug!(
+        "r2::extract_strings: collected {} strings from izj",
+        strings.len()
+    );
 
     // Process symbols
     if let Some(symbols) = symbols_result {
@@ -151,6 +185,443 @@ fn classify_r2_symbol(type_str: &str, bind: &str) -> StringKind {
         "OBJECT" if bind == "GLOBAL" => StringKind::Ident,
         _ => StringKind::Ident,
     }
+}
+
+/// Confidence level for XOR key detection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XorConfidence {
+    High,   // Verified XOR loop pattern in disassembly
+    Medium, // Referenced in executable code
+    Low,    // String characteristics suggest XOR key
+}
+
+/// Information about a detected XOR key
+#[derive(Debug, Clone)]
+pub struct XorKeyInfo {
+    pub key: String,
+    pub confidence: XorConfidence,
+    pub reference_count: usize,
+    pub offset: u64,
+}
+
+/// Analyze candidates by XOR loop patterns without requiring xrefs.
+/// Used as a fallback when reference-based filtering finds too few candidates.
+fn analyze_candidates_by_patterns(
+    tool: &str,
+    path: &str,
+    candidates: &[&ExtractedString],
+) -> Vec<XorKeyInfo> {
+    tracing::debug!(
+        "analyze_candidates_by_patterns: analyzing {} candidates",
+        candidates.len()
+    );
+
+    // Get all function names (run aaa first to ensure analysis is done)
+    let functions_cmd = "aaa; afl";
+    let functions = match run_tool_command(tool, path, functions_cmd) {
+        Some(f) => f,
+        None => {
+            tracing::debug!("analyze_candidates_by_patterns: failed to get function list");
+            return vec![];
+        }
+    };
+
+    let function_lines: Vec<&str> = functions.lines().collect();
+    tracing::debug!(
+        "analyze_candidates_by_patterns: found {} functions",
+        function_lines.len()
+    );
+    if !function_lines.is_empty() {
+        tracing::debug!(
+            "analyze_candidates_by_patterns: first function line: '{}'",
+            function_lines[0]
+        );
+    } else {
+        tracing::debug!(
+            "analyze_candidates_by_patterns: functions output length: {} bytes",
+            functions.len()
+        );
+        tracing::debug!(
+            "analyze_candidates_by_patterns: functions output preview: '{}'",
+            if functions.len() > 100 {
+                &functions[..100]
+            } else {
+                &functions
+            }
+        );
+    }
+
+    let mut results = vec![];
+    let mut xor_func_count = 0;
+
+    // Check first 300 functions for XOR loops (more thorough search)
+    let max_funcs = 300.min(function_lines.len());
+
+    // Build a single compound command to disassemble all functions at once
+    // This avoids running 'aaa' 300 times which is prohibitively slow
+    let mut cmd_parts = vec!["aaa".to_string(), "e scr.color=0".to_string()];
+    let mut func_addrs = vec![];
+
+    for func_line in function_lines.iter().take(max_funcs) {
+        let parts: Vec<&str> = func_line.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let func_addr = parts[0];
+        func_addrs.push(func_addr.to_string());
+        cmd_parts.push(format!("pdf @ {}", func_addr));
+        cmd_parts.push(format!("echo ===FUNC_SEPARATOR_{}===", func_addr));
+    }
+
+    let compound_cmd = cmd_parts.join("; ");
+    tracing::debug!(
+        "analyze_candidates_by_patterns: disassembling {} functions in one session",
+        func_addrs.len()
+    );
+
+    let all_output = match run_tool_command(tool, path, &compound_cmd) {
+        Some(o) => o,
+        None => {
+            tracing::debug!(
+                "analyze_candidates_by_patterns: failed to run compound disassembly command"
+            );
+            return vec![];
+        }
+    };
+
+    // Parse the combined output by splitting on function separators
+    // Split by generic separator pattern, then match with function addresses
+    let separator_parts: Vec<&str> = all_output.split("===FUNC_SEPARATOR_").collect();
+
+    for (func_idx, func_addr) in func_addrs.iter().enumerate() {
+        if func_idx % 50 == 0 && func_idx > 0 {
+            tracing::debug!(
+                "  analyzed {}/{} functions... ({} with XOR so far)",
+                func_idx,
+                func_addrs.len(),
+                xor_func_count
+            );
+        }
+
+        // Get the disassembly chunk for this function
+        // Index is func_idx because first split is before any separator
+        let disasm = if func_idx + 1 < separator_parts.len() {
+            // Take the part before this function's separator
+            separator_parts[func_idx]
+        } else {
+            continue;
+        };
+
+        // Look for XOR loop patterns
+        let has_xor_loop = disasm.contains("eor ") || disasm.contains("xor ");
+        if !has_xor_loop {
+            continue;
+        }
+
+        // Track how many XOR functions we've found
+        xor_func_count += 1;
+        if xor_func_count <= 5 {
+            tracing::debug!(
+                "analyze_candidates_by_patterns: function {} (#{}) has XOR instructions",
+                func_addr,
+                xor_func_count
+            );
+        }
+
+        // Check if any candidate addresses appear in this XOR function
+        for candidate in candidates.iter() {
+            let addr_str = format!("0x{:x}", candidate.data_offset);
+
+            // Also try virtual address format (add base address)
+            let vaddr_str = format!("0x{:x}", candidate.data_offset + 0x100000000);
+
+            if disasm.contains(&addr_str) || disasm.contains(&vaddr_str) {
+                tracing::debug!(
+                    "analyze_candidates_by_patterns: found candidate '{}' @ {} in XOR function {}",
+                    if candidate.value.len() > 20 {
+                        &candidate.value[..20]
+                    } else {
+                        &candidate.value
+                    },
+                    addr_str,
+                    func_addr
+                );
+
+                results.push(XorKeyInfo {
+                    key: candidate.value.clone(),
+                    confidence: XorConfidence::High,
+                    reference_count: 1,
+                    offset: candidate.data_offset,
+                });
+            }
+        }
+    }
+
+    tracing::debug!(
+        "analyze_candidates_by_patterns: found {} high-confidence keys",
+        results.len()
+    );
+    results
+}
+
+/// Verify if strings are likely used as XOR keys by analyzing their usage.
+///
+/// This function:
+/// 1. Finds cross-references to each string
+/// 2. Disassembles functions that reference the string
+/// 3. Looks for XOR loop patterns (load byte, XOR, store byte)
+/// 4. Returns high-confidence keys for decryption attempts
+pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKeyInfo> {
+    tracing::debug!(
+        "verify_xor_keys: called with {} candidates",
+        candidates.len()
+    );
+
+    let tool = match get_tool() {
+        Some(t) => {
+            tracing::debug!("verify_xor_keys: using tool={}", t);
+            t
+        }
+        None => {
+            tracing::debug!("verify_xor_keys: no r2/rizin tool found");
+            return Vec::new();
+        }
+    };
+
+    // Check if XOR key is in input candidates
+    let xor_key_in_input = candidates.iter().any(|s| s.value.contains("fYzt"));
+    tracing::debug!(
+        "verify_xor_keys: XOR key in input candidates: {}",
+        xor_key_in_input
+    );
+    if xor_key_in_input {
+        if let Some(key_candidate) = candidates.iter().find(|s| s.value.contains("fYzt")) {
+            tracing::debug!(
+                "verify_xor_keys: XOR key found in input: '{}' @ 0x{:x}, method={:?}",
+                key_candidate.value,
+                key_candidate.data_offset,
+                key_candidate.method
+            );
+        }
+    }
+
+    // Analyze all (analyze all functions) - required for cross-references
+    tracing::debug!("verify_xor_keys: running 'aaa' analysis...");
+    let _ = run_tool_command(tool, path, "aaa");
+
+    // Filter candidates to reasonable XOR key lengths (8-64 chars)
+    let candidates: Vec<_> = candidates
+        .iter()
+        .filter(|s| s.value.len() >= 8 && s.value.len() <= 64)
+        .collect();
+
+    tracing::debug!(
+        "verify_xor_keys: {} candidates after length filter (8-64 chars)",
+        candidates.len()
+    );
+
+    // Check if XOR key survived length filter
+    let xor_key_after_filter = candidates.iter().any(|s| s.value.contains("fYzt"));
+    tracing::debug!(
+        "verify_xor_keys: XOR key after length filter: {}",
+        xor_key_after_filter
+    );
+    for (i, c) in candidates.iter().take(5).enumerate() {
+        tracing::debug!(
+            "  candidate[{}]: '{}' @ 0x{:x}",
+            i,
+            if c.value.len() > 20 {
+                &c.value[..20]
+            } else {
+                &c.value
+            },
+            c.data_offset
+        );
+    }
+
+    // Pre-filter: count references for each candidate to narrow down the search space
+    // Limit to first 200 candidates for performance
+    let max_candidates_to_check = 200.min(candidates.len());
+    tracing::debug!(
+        "verify_xor_keys: counting references for first {} candidates (out of {})...",
+        max_candidates_to_check,
+        candidates.len()
+    );
+
+    let mut candidates_with_refs: Vec<_> = Vec::new();
+    for (i, candidate) in candidates.iter().take(max_candidates_to_check).enumerate() {
+        if i % 50 == 0 && i > 0 {
+            tracing::debug!(
+                "  processed {}/{} candidates...",
+                i,
+                max_candidates_to_check
+            );
+        }
+
+        let vaddr = candidate.data_offset;
+        let xrefs_cmd = format!("axt 0x{:x}", vaddr);
+        let xrefs = match run_tool_command(tool, path, &xrefs_cmd) {
+            Some(x) => x,
+            None => continue,
+        };
+        let xref_lines: Vec<String> = xrefs.lines().map(|s| s.to_string()).collect();
+
+        if !xref_lines.is_empty() {
+            candidates_with_refs.push((candidate, xref_lines));
+        }
+    }
+
+    tracing::debug!(
+        "verify_xor_keys: {} candidates have at least one reference",
+        candidates_with_refs.len()
+    );
+
+    // If we found very few candidates with references, fall back to analyzing all candidates
+    if candidates_with_refs.len() < 10 {
+        tracing::debug!(
+            "verify_xor_keys: too few candidates with references ({}), falling back to pattern-based analysis",
+            candidates_with_refs.len()
+        );
+
+        // Fall back to analyzing all candidates by XOR loop patterns without requiring xrefs
+        return analyze_candidates_by_patterns(tool, path, &candidates);
+    }
+
+    // Count XOR-function references for each candidate
+    tracing::debug!("verify_xor_keys: analyzing XOR-function references...");
+    let mut candidates_with_xor_refs: Vec<_> = Vec::new();
+
+    for (idx, (candidate, xref_lines)) in candidates_with_refs.iter().enumerate() {
+        if idx % 20 == 0 && idx > 0 {
+            tracing::debug!(
+                "  analyzed {}/{} candidates with refs...",
+                idx,
+                candidates_with_refs.len()
+            );
+        }
+
+        let mut xor_function_refs = 0;
+        let total_refs = xref_lines.len();
+
+        // Check each referencing function for XOR instructions (limit to first 10 refs per candidate)
+        for xref_line in xref_lines.iter().take(10) {
+            let parts: Vec<&str> = xref_line.split_whitespace().collect();
+            if parts.is_empty() {
+                continue;
+            }
+
+            let func_name = parts[0];
+
+            // Disassemble the function
+            let pdf_cmd = format!("pdf @ {}", func_name);
+            let disasm = match run_tool_command(tool, path, &pdf_cmd) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            // Check if function contains XOR instructions
+            let has_xor = disasm.contains("eor ") || disasm.contains("xor ");
+            if has_xor {
+                xor_function_refs += 1;
+            }
+        }
+
+        // Prioritize candidates referenced by XOR-containing functions
+        if xor_function_refs > 0 {
+            candidates_with_xor_refs.push((
+                *candidate,
+                xref_lines.clone(),
+                total_refs,
+                xor_function_refs,
+            ));
+        }
+    }
+
+    // Sort by XOR-function references (descending), then total references
+    candidates_with_xor_refs.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| b.2.cmp(&a.2)));
+
+    tracing::debug!(
+        "verify_xor_keys: {} candidates referenced by XOR-containing functions",
+        candidates_with_xor_refs.len()
+    );
+
+    if let Some((candidate, _, total, xor_refs)) = candidates_with_xor_refs.first() {
+        tracing::debug!(
+            "  top candidate: '{}' @ 0x{:x}, total_refs={}, xor_func_refs={}",
+            if candidate.value.len() > 30 {
+                &candidate.value[..30]
+            } else {
+                &candidate.value
+            },
+            candidate.data_offset,
+            total,
+            xor_refs
+        );
+    }
+
+    // Analyze top candidates for XOR loop patterns
+    candidates_with_xor_refs
+        .iter()
+        .take(20) // Only analyze top 20 candidates by XOR-function reference count
+        .filter_map(
+            |(candidate, xref_lines, reference_count, xor_function_refs)| {
+                let mut confidence = XorConfidence::Low;
+
+                // Check each referencing function for XOR loop patterns
+                for xref_line in xref_lines.iter().take(5) {
+                    let parts: Vec<&str> = xref_line.split_whitespace().collect();
+                    if parts.is_empty() {
+                        continue;
+                    }
+
+                    let func_name = parts[0];
+
+                    // Disassemble the function
+                    let pdf_cmd = format!("aaa; pdf @ {}", func_name);
+                    let disasm = match run_tool_command(tool, path, &pdf_cmd) {
+                        Some(d) => d,
+                        None => continue,
+                    };
+
+                    // Look for XOR loop pattern:
+                    // ARM: ldrb (load byte), eor (XOR), strb (store byte)
+                    // x86: movzbl/movzx (load byte), xor, mov/movb (store)
+                    let has_xor = disasm.contains("eor ") || disasm.contains("xor ");
+                    let has_load_byte = disasm.contains("ldrb ")
+                        || disasm.contains("movzbl ")
+                        || disasm.contains("movzx ");
+                    let has_store_byte = disasm.contains("strb ") || disasm.contains("movb ");
+
+                    if has_xor && has_load_byte && has_store_byte {
+                        confidence = XorConfidence::High;
+                        break;
+                    }
+
+                    // Medium confidence: referenced in function with XOR
+                    if has_xor && confidence == XorConfidence::Low {
+                        confidence = XorConfidence::Medium;
+                    }
+                }
+
+                // Return result if confidence is high/medium OR if multiple XOR-function references
+                if confidence != XorConfidence::Low || *xor_function_refs >= 2 {
+                    // Upgrade to medium confidence if multiple XOR-function refs
+                    if *xor_function_refs >= 2 && confidence == XorConfidence::Low {
+                        confidence = XorConfidence::Medium;
+                    }
+
+                    Some(XorKeyInfo {
+                        key: candidate.value.clone(),
+                        confidence,
+                        reference_count: *reference_count,
+                        offset: candidate.data_offset,
+                    })
+                } else {
+                    None
+                }
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]

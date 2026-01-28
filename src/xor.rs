@@ -164,6 +164,91 @@ pub fn extract_xor_strings(
     results
 }
 
+/// Extract strings encrypted with multi-byte XOR keys detected by radare2 analysis.
+///
+/// Uses high-confidence keys from `r2::verify_xor_keys()` to decrypt data by cycling
+/// through key bytes. Only attempts decryption with HIGH confidence keys to minimize
+/// false positives.
+///
+/// # Arguments
+/// * `data` - Binary data to scan
+/// * `keys` - XOR key candidates from radare2 analysis
+/// * `min_length` - Minimum string length
+pub fn extract_multikey_xor_strings(
+    data: &[u8],
+    keys: &[crate::r2::XorKeyInfo],
+    min_length: usize,
+) -> Vec<ExtractedString> {
+    use crate::r2::XorConfidence;
+    let mut results = Vec::new();
+    let mut seen: HashSet<(u64, String)> = HashSet::new();
+
+    // Only use high-confidence keys for decryption attempts
+    for key_info in keys
+        .iter()
+        .filter(|k| matches!(k.confidence, XorConfidence::High))
+    {
+        let key_bytes = key_info.key.as_bytes();
+
+        // Scan through data looking for potential encrypted strings
+        for start in 0..data.len().saturating_sub(min_length) {
+            // Decode using multi-byte key (cycling through key bytes)
+            let max_decode_len = (min_length * 4).min(data.len() - start);
+            let decoded: Vec<u8> = data[start..start + max_decode_len]
+                .iter()
+                .enumerate()
+                .map(|(i, &byte)| byte ^ key_bytes[i % key_bytes.len()])
+                .collect();
+
+            // Try to find a valid string in the decoded data
+            if let Ok(decoded_str) = String::from_utf8(decoded.clone()) {
+                if let Some((valid_str, _, _)) = find_meaningful_substring(&decoded_str, min_length)
+                {
+                    if let Some(kind) = classify_xor_string(valid_str) {
+                        let offset = start as u64;
+                        if seen.insert((offset, valid_str.to_string())) {
+                            let key_preview = if key_info.key.len() > 8 {
+                                format!("{}...", &key_info.key[..8])
+                            } else {
+                                key_info.key.clone()
+                            };
+
+                            results.push(ExtractedString {
+                                value: format!("XOR(key:{}): {}", key_preview, valid_str),
+                                data_offset: offset,
+                                section: None,
+                                method: StringMethod::XorDecode,
+                                kind,
+                                library: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Find the longest meaningful substring in decoded data.
+///
+/// Scans for regions of printable ASCII and validates them using the same
+/// heuristics as single-byte XOR detection.
+fn find_meaningful_substring(s: &str, min_length: usize) -> Option<(&str, usize, usize)> {
+    let bytes = s.as_bytes();
+    for start in 0..bytes.len().saturating_sub(min_length) {
+        for end in (start + min_length..=bytes.len()).rev() {
+            if let Ok(substr) = std::str::from_utf8(&bytes[start..end]) {
+                if is_meaningful_string(substr) {
+                    return Some((substr, start, end));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Scan for XOR'd IP addresses and hostnames.
 /// Uses memchr for fast scanning of XOR'd '.' bytes, then validates surroundings.
 fn scan_dotted_patterns(
@@ -243,284 +328,6 @@ fn scan_dotted_patterns(
     }
 }
 
-/// Known valid TLDs for hostname validation.
-/// This prevents false positives like "zzz.yzzzzzz" from being detected as hostnames.
-const VALID_TLDS: &[&str] = &[
-    // Original gTLDs
-    "com",
-    "org",
-    "net",
-    "edu",
-    "gov",
-    "mil",
-    "int",
-    // European ccTLDs
-    "uk",
-    "de",
-    "fr",
-    "it",
-    "es",
-    "nl",
-    "pl",
-    "se",
-    "no",
-    "fi",
-    "dk",
-    "at",
-    "ch",
-    "be",
-    "ie",
-    "pt",
-    "gr",
-    "cz",
-    "hu",
-    "ro",
-    "ua",
-    "sk",
-    "bg",
-    "hr",
-    "si",
-    "lt",
-    "lv",
-    "ee",
-    "rs",
-    "ba",
-    "mk",
-    "al",
-    "md",
-    "by",
-    "lu",
-    "is",
-    "mt",
-    "cy",
-    "eu",
-    // Americas ccTLDs
-    "us",
-    "ca",
-    "mx",
-    "br",
-    "ar",
-    "cl",
-    "co",
-    "pe",
-    "ve",
-    "ec",
-    "uy",
-    "py",
-    "bo",
-    "cr",
-    "pa",
-    "gt",
-    "cu",
-    "do",
-    "pr",
-    "jm",
-    "tt",
-    "ht",
-    // Asia-Pacific ccTLDs
-    "cn",
-    "jp",
-    "kr",
-    "tw",
-    "hk",
-    "sg",
-    "my",
-    "th",
-    "vn",
-    "ph",
-    "id",
-    "in",
-    "pk",
-    "bd",
-    "np",
-    "lk",
-    "mm",
-    "kh",
-    "la",
-    "mn",
-    "kz",
-    "uz",
-    "az",
-    "ge",
-    "am",
-    "af",
-    // Middle East ccTLDs
-    "il",
-    "tr",
-    "ir",
-    "iq",
-    "jo",
-    "lb",
-    "sy",
-    "ye",
-    "ae",
-    "sa",
-    "om",
-    "qa",
-    "kw",
-    "bh",
-    // Africa ccTLDs
-    "za",
-    "eg",
-    "ng",
-    "ke",
-    "tz",
-    "ug",
-    "et",
-    "gh",
-    "ci",
-    "cm",
-    "sn",
-    "ma",
-    "dz",
-    "tn",
-    "ly",
-    "sd",
-    "zw",
-    "mz",
-    "ao",
-    // Oceania ccTLDs
-    "au",
-    "nz",
-    "fj",
-    "pg",
-    // Russia/CIS
-    "ru",
-    "su",
-    // Generic TLDs
-    "info",
-    "biz",
-    "name",
-    "mobi",
-    "asia",
-    "tel",
-    "jobs",
-    "travel",
-    "cat",
-    "coop",
-    "aero",
-    "museum",
-    "post",
-    // Popular new gTLDs and domain hacks
-    "io",
-    "ai",
-    "co",
-    "me",
-    "tv",
-    "cc",
-    "ws",
-    "bz",
-    "nu",
-    "to",
-    "fm",
-    "am",
-    "ly",
-    "gl",
-    "gd",
-    "gg",
-    "sh",
-    "sx",
-    "so",
-    "st",
-    "tk",
-    "ml",
-    "ga",
-    "cf",
-    "gq",
-    "vc",
-    "ac",
-    "la",
-    "app",
-    "dev",
-    "cloud",
-    "online",
-    "site",
-    "website",
-    "tech",
-    "store",
-    "shop",
-    "blog",
-    "news",
-    "live",
-    "video",
-    "email",
-    "xyz",
-    "top",
-    "win",
-    "vip",
-    "work",
-    "link",
-    "click",
-    "space",
-    "fun",
-    "pro",
-    "one",
-    "zone",
-    "world",
-    "today",
-    "network",
-    "systems",
-    "solutions",
-    "digital",
-    "media",
-    "group",
-    "agency",
-    "studio",
-    "design",
-    "marketing",
-    "consulting",
-    "services",
-    "software",
-    "security",
-    "hosting",
-    "domains",
-    "server",
-    "download",
-    "stream",
-    // Cheap/abused TLDs common in phishing and C2
-    "xyz",
-    "top",
-    "icu",
-    "buzz",
-    "club",
-    "rest",
-    "surf",
-    "monster",
-    "cyou",
-    "pw",
-    "wang",
-    "loan",
-    "racing",
-    "date",
-    "faith",
-    "party",
-    "review",
-    "trade",
-    "bid",
-    "win",
-    "download",
-    "stream",
-    "accountant",
-    "cricket",
-    "science",
-    "gdn",
-    "men",
-    "cam",
-    "bar",
-    "ren",
-    "kim",
-    // Malware-relevant
-    "onion",
-    "bit",
-    "bazar",
-];
-
-/// Check if a TLD is valid (case-insensitive).
-fn is_valid_tld(tld: &str) -> bool {
-    let lower = tld.to_ascii_lowercase();
-    VALID_TLDS.contains(&lower.as_str())
-}
-
 /// Extract a hostname starting from a dot position.
 fn extract_hostname_at_dot(
     data: &[u8],
@@ -573,9 +380,9 @@ fn extract_hostname_at_dot(
         return None;
     }
 
-    // Validate TLD against known list
+    // Only accept .com TLD for single-byte XOR (too many false positives otherwise)
     let tld = parts.last()?;
-    if !is_valid_tld(tld) {
+    if !tld.eq_ignore_ascii_case("com") {
         return None;
     }
 
@@ -1304,12 +1111,12 @@ mod tests {
 
     #[test]
     fn test_xor_hostname_detection() {
-        let plaintext = b"evil.malware.xyz";
+        let plaintext = b"evil.malware.com";
         let key: u8 = 0x55;
         let data = make_xor_test_data(plaintext, key, 20);
         let results = extract_xor_strings(&data, 10, false);
         assert!(
-            results.iter().any(|r| r.value.contains("evil.malware.xyz")),
+            results.iter().any(|r| r.value.contains("evil.malware.com")),
             "Hostname should be detected. Results: {:?}",
             results
         );

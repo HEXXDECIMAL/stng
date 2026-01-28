@@ -42,6 +42,10 @@ anyhow = "1.0"
 # Hashing
 sha2 = "0.10"
 
+# Logging (modern structured logging with tracing)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
 [lib]
 name = "strangs"
 path = "src/lib.rs"

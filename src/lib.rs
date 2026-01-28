@@ -287,6 +287,8 @@ pub struct ExtractOptions {
     pub xor_scan: bool,
     /// Minimum length for XOR-decoded strings (default: 10).
     pub xor_min_length: usize,
+    /// Enable advanced multi-byte XOR scanning with radare2/rizin (slow). Default: false.
+    pub xorscan: bool,
 }
 
 impl ExtractOptions {
@@ -299,6 +301,7 @@ impl ExtractOptions {
             filter_garbage: false,
             xor_scan: false,
             xor_min_length: xor::DEFAULT_XOR_MIN_LENGTH,
+            xorscan: false,
         }
     }
 
@@ -330,6 +333,14 @@ impl ExtractOptions {
         if let Some(len) = min_length {
             self.xor_min_length = len;
         }
+        self
+    }
+
+    /// Enable advanced multi-byte XOR scanning with radare2/rizin.
+    /// This is slower but can detect complex multi-byte XOR obfuscation.
+    /// Requires radare2 or rizin to be installed.
+    pub fn with_xorscan(mut self, enable: bool) -> Self {
+        self.xorscan = enable;
         self
     }
 }
@@ -380,11 +391,39 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
             // XOR string detection (if enabled)
             if opts.xor_scan && !data.is_empty() {
                 strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
+
+                // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
+                if opts.xorscan {
+                    if let Some(ref path) = opts.path {
+                        tracing::debug!(
+                            "Multi-byte XOR: analyzing {} candidate strings",
+                            strings.len()
+                        );
+                        // Use already extracted strings as XOR key candidates
+                        let xor_keys = r2::verify_xor_keys(path, &strings);
+                        tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
+                        if !xor_keys.is_empty() {
+                            let decoded = xor::extract_multikey_xor_strings(
+                                data,
+                                &xor_keys,
+                                opts.xor_min_length,
+                            );
+                            tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
+                            strings.extend(decoded);
+                        } else {
+                            tracing::debug!("Multi-byte XOR: no high-confidence keys found");
+                        }
+                    } else {
+                        tracing::debug!("Multi-byte XOR: path not provided, skipping");
+                    }
+                }
             }
 
             // Apply garbage filter if enabled (but never filter entitlements XML)
             if opts.filter_garbage {
-                strings.retain(|s| s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value));
+                strings.retain(|s| {
+                    s.kind == StringKind::EntitlementsXml || !common::is_garbage(&s.value)
+                });
             }
 
             strings
@@ -682,6 +721,33 @@ pub fn extract_from_object(
     if opts.xor_scan && !data.is_empty() {
         let is_pe = matches!(object, Object::PE(_));
         strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
+
+        // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
+        if opts.xorscan {
+            if let Some(ref path) = opts.path {
+                tracing::debug!(
+                    "Multi-byte XOR: path={}, analyzing {} candidate strings",
+                    path,
+                    strings.len()
+                );
+                let xor_keys = r2::verify_xor_keys(path, &strings);
+                tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
+                if !xor_keys.is_empty() {
+                    tracing::debug!(
+                        "Multi-byte XOR: attempting decryption with {} keys",
+                        xor_keys.len()
+                    );
+                    let decoded =
+                        xor::extract_multikey_xor_strings(data, &xor_keys, opts.xor_min_length);
+                    tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
+                    strings.extend(decoded);
+                } else {
+                    tracing::debug!("Multi-byte XOR: no high-confidence keys found");
+                }
+            } else {
+                tracing::debug!("Multi-byte XOR: path not provided, skipping");
+            }
+        }
     }
 
     // Apply garbage filter if enabled (but never filter entitlements XML)
@@ -819,7 +885,11 @@ pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
 /// Extract entitlements from Mach-O code signature as raw XML.
 ///
 /// Returns the full XML plist as a single string for inline display.
-fn extract_macho_entitlements(macho: &MachO, data: &[u8], _min_length: usize) -> Vec<ExtractedString> {
+fn extract_macho_entitlements(
+    macho: &MachO,
+    data: &[u8],
+    _min_length: usize,
+) -> Vec<ExtractedString> {
     use goblin::mach::load_command::CommandVariant;
 
     let mut entitlements = Vec::new();
@@ -2259,8 +2329,14 @@ mod tests {
         assert_eq!(result.len(), 2);
 
         // Should have both the entitlement key and the app ID
-        let entitlement = result.iter().find(|s| s.kind == StringKind::Entitlement).unwrap();
-        assert_eq!(entitlement.value, "com.apple.security.temporary-exception.mach-lookup.global-name");
+        let entitlement = result
+            .iter()
+            .find(|s| s.kind == StringKind::Entitlement)
+            .unwrap();
+        assert_eq!(
+            entitlement.value,
+            "com.apple.security.temporary-exception.mach-lookup.global-name"
+        );
 
         let appid = result.iter().find(|s| s.kind == StringKind::AppId).unwrap();
         assert_eq!(appid.value, "com.apple.testmanagerd");
@@ -2283,10 +2359,16 @@ mod tests {
         let result = parse_entitlement_keys(xml, 0, 4);
 
         // Should have 3 entitlement keys + 1 string value
-        let entitlements: Vec<_> = result.iter().filter(|s| s.kind == StringKind::Entitlement).collect();
+        let entitlements: Vec<_> = result
+            .iter()
+            .filter(|s| s.kind == StringKind::Entitlement)
+            .collect();
         assert_eq!(entitlements.len(), 3);
 
-        let appids: Vec<_> = result.iter().filter(|s| s.kind == StringKind::AppId).collect();
+        let appids: Vec<_> = result
+            .iter()
+            .filter(|s| s.kind == StringKind::AppId)
+            .collect();
         assert_eq!(appids.len(), 1);
         assert_eq!(appids[0].value, "/usr/bin");
     }
@@ -2373,7 +2455,9 @@ mod tests {
                     for ent in &entitlements {
                         assert_eq!(ent.section, Some("__LINKEDIT".to_string()));
                         assert_eq!(ent.method, StringMethod::CodeSignature);
-                        assert!(ent.kind == StringKind::Entitlement || ent.kind == StringKind::AppId);
+                        assert!(
+                            ent.kind == StringKind::Entitlement || ent.kind == StringKind::AppId
+                        );
                     }
                     return; // Test passed with at least one binary
                 }
@@ -2400,17 +2484,17 @@ mod tests {
 
         if let Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) = Object::parse(&data) {
             let entitlements = extract_macho_entitlements(&macho, &data, 4);
-            assert!(entitlements.is_empty(), "Should return empty vec for binary without code signature");
+            assert!(
+                entitlements.is_empty(),
+                "Should return empty vec for binary without code signature"
+            );
         }
     }
 
     #[test]
     fn test_entitlements_integrated_extraction() {
         // Test that entitlements are included in full extraction with system binaries
-        let paths = vec![
-            "/usr/bin/codesign",
-            "/usr/bin/security",
-        ];
+        let paths = vec!["/usr/bin/codesign", "/usr/bin/security"];
 
         for path in paths {
             if let Ok(data) = std::fs::read(path) {
@@ -2418,7 +2502,8 @@ mod tests {
                 let strings = extract_strings_with_options(&data, &opts);
 
                 // Filter for entitlements if any exist
-                let entitlements: Vec<_> = strings.iter()
+                let entitlements: Vec<_> = strings
+                    .iter()
                     .filter(|s| s.kind == StringKind::Entitlement || s.kind == StringKind::AppId)
                     .collect();
 
@@ -2446,7 +2531,8 @@ mod tests {
                 let strings = extract_strings_with_options(&data, &opts);
 
                 // Find EntitlementsXml entries
-                let xml_entries: Vec<_> = strings.iter()
+                let xml_entries: Vec<_> = strings
+                    .iter()
                     .filter(|s| s.kind == StringKind::EntitlementsXml)
                     .collect();
 
@@ -2460,7 +2546,8 @@ mod tests {
                     let xml_end = xml_start + xml_entry.value.len() as u64;
 
                     // Check for overlapping strings
-                    let overlaps: Vec<_> = strings.iter()
+                    let overlaps: Vec<_> = strings
+                        .iter()
                         .filter(|s| {
                             if s.kind == StringKind::EntitlementsXml {
                                 return false; // Skip the XML entry itself
