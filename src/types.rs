@@ -6,7 +6,7 @@
 use serde::Serialize;
 
 /// Represents a string structure found in binary (pointer + length pair).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StringStruct {
     /// Offset in the section where this structure was found
     #[allow(dead_code)]
@@ -18,7 +18,7 @@ pub struct StringStruct {
 }
 
 /// An extracted string with metadata.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractedString {
     /// The string value
     pub value: String,
@@ -40,6 +40,7 @@ pub struct ExtractedString {
 ///
 /// Indicates the extraction technique, which affects confidence and context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[non_exhaustive]
 pub enum StringMethod {
     /// Found via pointer+length structure analysis
     Structure,
@@ -65,6 +66,7 @@ pub enum StringMethod {
 ///
 /// Classifies strings by their purpose and security relevance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
+#[non_exhaustive]
 pub enum StringKind {
     /// Generic string constant
     #[default]
@@ -205,7 +207,7 @@ impl StringKind {
 }
 
 /// Binary information needed for string extraction.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BinaryInfo {
     pub is_64bit: bool,
     pub is_little_endian: bool,

@@ -5,6 +5,44 @@
 
 use crate::types::{BinaryInfo, ExtractedString, StringKind, StringMethod, StringStruct};
 
+/// Safely read a u64 in little-endian from a slice at a given offset.
+///
+/// Returns `None` if there aren't enough bytes available.
+#[inline]
+fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
+    data.get(offset..offset + 8)?
+        .try_into()
+        .ok()
+        .map(u64::from_le_bytes)
+}
+
+/// Safely read a u64 in big-endian from a slice at a given offset.
+#[inline]
+fn read_u64_be(data: &[u8], offset: usize) -> Option<u64> {
+    data.get(offset..offset + 8)?
+        .try_into()
+        .ok()
+        .map(u64::from_be_bytes)
+}
+
+/// Safely read a u32 in little-endian from a slice at a given offset.
+#[inline]
+fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
+    data.get(offset..offset + 4)?
+        .try_into()
+        .ok()
+        .map(u32::from_le_bytes)
+}
+
+/// Safely read a u32 in big-endian from a slice at a given offset.
+#[inline]
+fn read_u32_be(data: &[u8], offset: usize) -> Option<u32> {
+    data.get(offset..offset + 4)?
+        .try_into()
+        .ok()
+        .map(u32::from_be_bytes)
+}
+
 /// Find pointer+length structures that point into a data blob.
 ///
 /// This scans section data looking for consecutive pointer+length pairs
@@ -38,7 +76,7 @@ pub fn find_string_structures(
 }
 
 /// Specialized fast path for 64-bit little-endian (no runtime checks in loop)
-#[inline(always)]
+#[inline]
 fn find_string_structures_64le(
     section_data: &[u8],
     section_addr: u64,
@@ -57,17 +95,15 @@ fn find_string_structures_64le(
 
     while i < end {
         // Direct LE reads without runtime endianness checks
-        // SAFETY: We checked i < end where end = section_data.len() - 15, so we have 16 bytes
-        let ptr = u64::from_le_bytes(
-            section_data[i..i + 8]
-                .try_into()
-                .expect("slice bounds checked above"),
-        );
-        let len = u64::from_le_bytes(
-            section_data[i + 8..i + 16]
-                .try_into()
-                .expect("slice bounds checked above"),
-        );
+        // Loop ensures we have 16 bytes available (end = len - 15)
+        let Some(ptr) = read_u64_le(section_data, i) else {
+            i += 8;
+            continue;
+        };
+        let Some(len) = read_u64_le(section_data, i + 8) else {
+            i += 8;
+            continue;
+        };
 
         if ptr >= blob_addr
             && ptr < blob_end
@@ -103,54 +139,22 @@ fn find_string_structures_generic(
     }
 
     for i in (0..=section_data.len() - struct_size).step_by(info.ptr_size) {
-        // SAFETY: Loop ensures we have struct_size bytes available at position i
+        // Loop ensures we have struct_size bytes available at position i
         let (ptr, len) = if info.is_64bit && info.is_little_endian {
-            let ptr = u64::from_le_bytes(
-                section_data[i..i + 8]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            );
-            let len = u64::from_le_bytes(
-                section_data[i + 8..i + 16]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            );
+            let Some(ptr) = read_u64_le(section_data, i) else { continue };
+            let Some(len) = read_u64_le(section_data, i + 8) else { continue };
             (ptr, len)
         } else if info.is_64bit {
-            let ptr = u64::from_be_bytes(
-                section_data[i..i + 8]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            );
-            let len = u64::from_be_bytes(
-                section_data[i + 8..i + 16]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            );
+            let Some(ptr) = read_u64_be(section_data, i) else { continue };
+            let Some(len) = read_u64_be(section_data, i + 8) else { continue };
             (ptr, len)
         } else if info.is_little_endian {
-            let ptr = u64::from(u32::from_le_bytes(
-                section_data[i..i + 4]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            ));
-            let len = u64::from(u32::from_le_bytes(
-                section_data[i + 4..i + 8]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            ));
+            let Some(ptr) = read_u32_le(section_data, i).map(u64::from) else { continue };
+            let Some(len) = read_u32_le(section_data, i + 4).map(u64::from) else { continue };
             (ptr, len)
         } else {
-            let ptr = u64::from(u32::from_be_bytes(
-                section_data[i..i + 4]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            ));
-            let len = u64::from(u32::from_be_bytes(
-                section_data[i + 4..i + 8]
-                    .try_into()
-                    .expect("bounds checked in loop"),
-            ));
+            let Some(ptr) = read_u32_be(section_data, i).map(u64::from) else { continue };
+            let Some(len) = read_u32_be(section_data, i + 4).map(u64::from) else { continue };
             (ptr, len)
         };
 

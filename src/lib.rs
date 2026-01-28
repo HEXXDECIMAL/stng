@@ -176,19 +176,35 @@ impl ExtractOptions {
     }
 }
 
-/// Detect binary type and extract strings using appropriate language-aware extractor.
+/// Extract strings from binary data using multiple techniques.
 ///
-/// This is the main entry point for string extraction. It automatically detects
-/// whether the binary is Go or Rust and uses the appropriate extractor.
+/// This is the primary entry point for language-aware string extraction from
+/// compiled binaries. It automatically detects the binary format and language,
+/// then applies appropriate extraction techniques.
 ///
 /// # Arguments
 ///
-/// * `data` - The raw binary data
-/// * `min_length` - Minimum string length to extract
+/// * `data` - The raw binary data to analyze
+/// * `min_length` - Minimum string length to extract (typically 4-8)
 ///
 /// # Returns
 ///
-/// A vector of extracted strings with metadata about where they were found.
+/// A vector of extracted strings with metadata about where they were found,
+/// how they were extracted, and semantic classification.
+///
+/// # Examples
+///
+/// ```no_run
+/// use stng::extract_strings;
+///
+/// let data = std::fs::read("/bin/ls").unwrap();
+/// let strings = extract_strings(&data, 4);
+///
+/// for s in strings.iter().take(10) {
+///     println!("{:?}: {}", s.kind, s.value);
+/// }
+/// ```
+#[must_use]
 pub fn extract_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
     extract_strings_with_options(data, &ExtractOptions::new(min_length))
 }
@@ -205,23 +221,45 @@ fn deduplicate_by_offset(strings: Vec<ExtractedString>) -> Vec<ExtractedString> 
     }
 
     // At each offset, keep only the longest string
-    let mut result = Vec::new();
-    for mut strings_at_offset in offset_map.into_values() {
-        if strings_at_offset.len() == 1 {
-            result.push(strings_at_offset.pop().unwrap());
-        } else {
-            // Multiple strings at same offset - keep the longest
-            strings_at_offset.sort_by_key(|s| std::cmp::Reverse(s.value.len()));
-            result.push(strings_at_offset.into_iter().next().unwrap());
-        }
-    }
+    let result: Vec<ExtractedString> = offset_map
+        .into_values()
+        .filter_map(|mut strings_at_offset| {
+            if strings_at_offset.is_empty() {
+                None
+            } else if strings_at_offset.len() == 1 {
+                strings_at_offset.pop()
+            } else {
+                // Multiple strings at same offset - keep the longest
+                strings_at_offset.sort_by_key(|s| std::cmp::Reverse(s.value.len()));
+                strings_at_offset.into_iter().next()
+            }
+        })
+        .collect();
 
     result
 }
 
 /// Extract strings with additional options.
 ///
-/// This allows specifying whether to use radare2 for extraction.
+/// Provides fine-grained control over the extraction process through the
+/// `ExtractOptions` builder pattern.
+///
+/// # Arguments
+///
+/// * `data` - The raw binary data to analyze
+/// * `opts` - Extraction options (min length, filters, external tool integration)
+///
+/// # Examples
+///
+/// ```
+/// use stng::{extract_strings_with_options, ExtractOptions};
+///
+/// let data = std::fs::read("/bin/ls").unwrap();
+/// let opts = ExtractOptions::new(4)
+///     .with_garbage_filter(true);
+/// let strings = extract_strings_with_options(&data, &opts);
+/// ```
+#[must_use]
 pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
     if let Ok(object) = Object::parse(data) {
         deduplicate_by_offset(extract_from_object(&object, data, opts))

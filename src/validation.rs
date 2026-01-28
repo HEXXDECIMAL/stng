@@ -228,7 +228,7 @@ pub fn is_garbage(s: &str) -> bool {
             // Count dots
             let dot_count = trimmed.chars().filter(|&c| c == '.').count();
             // If it's ONLY dots as special chars, it might be a filename or section name
-            if dot_count == special as usize {
+            if dot_count == special {
                 // Single dot in the middle (filename: "d.exe", "a.out")
                 // OR starts with dot (section name: ".text", ".data", ".bss")
                 let is_filename_pattern = (dot_count == 1
@@ -330,17 +330,14 @@ pub fn is_valid_string(bytes: &[u8], min_length: usize) -> bool {
         return false;
     }
 
-    match std::str::from_utf8(bytes) {
-        Ok(s) => {
-            // Check printability
-            let printable = s
-                .chars()
-                .filter(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
-                .count();
-            printable * 2 >= s.len()
-        }
-        Err(_) => false,
-    }
+    std::str::from_utf8(bytes).map_or(false, |s| {
+        // Check printability
+        let printable = s
+            .chars()
+            .filter(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
+            .count();
+        printable * 2 >= s.len()
+    })
 }
 
 #[cfg(test)]
