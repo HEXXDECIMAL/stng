@@ -431,9 +431,9 @@ fn print_string_line(s: &strangs::ExtractedString, use_color: bool) {
 
             if use_color {
                 let colorized = colorize_xml_line(line);
-                println!("  {}{}{} {}{:<12}{} {}", DIM, offset, RESET, kind_color, "entitlements", RESET, colorized);
+                println!("  {}{}{} {}{:<12}{} {}", DIM, offset, RESET, kind_color, "entitlement", RESET, colorized);
             } else {
-                println!("  {} {:<12} {}", offset, "entitlements", line);
+                println!("  {} {:<12} {}", offset, "entitlement", line);
             }
 
             // Update offset for next line (line length + newline)

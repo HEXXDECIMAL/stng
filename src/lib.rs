@@ -467,7 +467,7 @@ pub fn extract_from_object(
                 .collect();
             for s in strings.iter_mut() {
                 if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-                    s.kind = kind.clone();
+                    s.kind = *kind;
                     s.library = lib.map(|l| l.to_string());
                 }
             }
@@ -479,7 +479,24 @@ pub fn extract_from_object(
             strings.extend(new_imports);
 
             // Extract entitlements as raw XML for inline display
-            strings.extend(extract_macho_entitlements(macho, data, min_length));
+            let entitlements = extract_macho_entitlements(macho, data, min_length);
+
+            // Remove strings that overlap with entitlement XML ranges
+            for ent in &entitlements {
+                if ent.kind == StringKind::EntitlementsXml {
+                    let ent_start = ent.data_offset;
+                    let ent_end = ent_start + ent.value.len() as u64;
+                    strings.retain(|s| {
+                        // Keep strings that don't overlap with the entitlement range
+                        let s_start = s.data_offset;
+                        let s_end = s_start + s.value.len() as u64;
+                        // No overlap if string ends before entitlement starts or starts after entitlement ends
+                        s_end <= ent_start || s_start >= ent_end
+                    });
+                }
+            }
+
+            strings.extend(entitlements);
         }
         Object::Mach(goblin::mach::Mach::Fat(fat)) => {
             // Fat binary - check for Go/Rust first
@@ -523,7 +540,7 @@ pub fn extract_from_object(
                 // Update existing strings that are actually imports
                 for s in strings.iter_mut() {
                     if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-                        s.kind = kind.clone();
+                        s.kind = *kind;
                         s.library = lib.map(|l| l.to_string());
                     }
                 }
@@ -536,7 +553,24 @@ pub fn extract_from_object(
                 strings.extend(new_imports);
 
                 // Extract entitlements as raw XML for inline display
-                strings.extend(extract_macho_entitlements(macho, data, min_length));
+                let entitlements = extract_macho_entitlements(macho, data, min_length);
+
+                // Remove strings that overlap with entitlement XML ranges
+                for ent in &entitlements {
+                    if ent.kind == StringKind::EntitlementsXml {
+                        let ent_start = ent.data_offset;
+                        let ent_end = ent_start + ent.value.len() as u64;
+                        strings.retain(|s| {
+                            // Keep strings that don't overlap with the entitlement range
+                            let s_start = s.data_offset;
+                            let s_end = s_start + s.value.len() as u64;
+                            // No overlap if string ends before entitlement starts or starts after entitlement ends
+                            s_end <= ent_start || s_start >= ent_end
+                        });
+                    }
+                }
+
+                strings.extend(entitlements);
             }
         }
         Object::Elf(elf) => {
@@ -582,7 +616,7 @@ pub fn extract_from_object(
                 .collect();
             for s in strings.iter_mut() {
                 if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-                    s.kind = kind.clone();
+                    s.kind = *kind;
                     s.library = lib.map(|l| l.to_string());
                 }
             }
@@ -699,7 +733,7 @@ pub fn extract_from_macho(
         .collect();
     for s in strings.iter_mut() {
         if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-            s.kind = kind.clone();
+            s.kind = *kind;
             s.library = lib.map(|l| l.to_string());
         }
     }
@@ -711,7 +745,24 @@ pub fn extract_from_macho(
     strings.extend(new_imports);
 
     // Extract entitlements as raw XML for inline display
-    strings.extend(extract_macho_entitlements(macho, data, min_length));
+    let entitlements = extract_macho_entitlements(macho, data, min_length);
+
+    // Remove strings that overlap with entitlement XML ranges
+    for ent in &entitlements {
+        if ent.kind == StringKind::EntitlementsXml {
+            let ent_start = ent.data_offset;
+            let ent_end = ent_start + ent.value.len() as u64;
+            strings.retain(|s| {
+                // Keep strings that don't overlap with the entitlement range
+                let s_start = s.data_offset;
+                let s_end = s_start + s.value.len() as u64;
+                // No overlap if string ends before entitlement starts or starts after entitlement ends
+                s_end <= ent_start || s_start >= ent_end
+            });
+        }
+    }
+
+    strings.extend(entitlements);
 
     // Apply garbage filter if enabled (but never filter entitlements XML)
     if opts.filter_garbage {
@@ -932,7 +983,7 @@ pub fn extract_from_elf(
         .collect();
     for s in strings.iter_mut() {
         if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-            s.kind = kind.clone();
+            s.kind = *kind;
             s.library = lib.map(|l| l.to_string());
         }
     }
@@ -2345,7 +2396,6 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, // reserved
         ];
 
-        use goblin::mach::MachO;
         use goblin::Object;
 
         if let Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) = Object::parse(&data) {
@@ -2377,6 +2427,60 @@ mod tests {
                     assert_eq!(ent.kind.severity(), Severity::High);
                 }
                 return; // Test completed successfully
+            }
+        }
+        // If no system binaries found, skip test
+    }
+
+    #[test]
+    fn test_entitlements_no_duplicate_strings() {
+        // Verify that entitlement XML content doesn't create duplicate strings
+        let paths = vec![
+            "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+            "/usr/bin/codesign",
+        ];
+
+        for path in paths {
+            if let Ok(data) = std::fs::read(path) {
+                let opts = ExtractOptions::new(4);
+                let strings = extract_strings_with_options(&data, &opts);
+
+                // Find EntitlementsXml entries
+                let xml_entries: Vec<_> = strings.iter()
+                    .filter(|s| s.kind == StringKind::EntitlementsXml)
+                    .collect();
+
+                if xml_entries.is_empty() {
+                    continue; // No entitlements in this binary, try next
+                }
+
+                // For each EntitlementsXml entry, verify no other strings overlap its byte range
+                for xml_entry in &xml_entries {
+                    let xml_start = xml_entry.data_offset;
+                    let xml_end = xml_start + xml_entry.value.len() as u64;
+
+                    // Check for overlapping strings
+                    let overlaps: Vec<_> = strings.iter()
+                        .filter(|s| {
+                            if s.kind == StringKind::EntitlementsXml {
+                                return false; // Skip the XML entry itself
+                            }
+                            let s_start = s.data_offset;
+                            let s_end = s_start + s.value.len() as u64;
+                            // Check if ranges overlap
+                            !(s_end <= xml_start || s_start >= xml_end)
+                        })
+                        .collect();
+
+                    assert!(
+                        overlaps.is_empty(),
+                        "Found {} strings overlapping with entitlement XML at offset 0x{:x}",
+                        overlaps.len(),
+                        xml_start
+                    );
+                }
+
+                return; // Test passed with at least one binary
             }
         }
         // If no system binaries found, skip test

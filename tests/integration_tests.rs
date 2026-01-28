@@ -2149,7 +2149,7 @@ mod extract_from_tests {
         // Garbage filter should remove noise
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
         assert!(
-            !values.iter().any(|v| *v == "@@##$$"),
+            !values.contains(&"@@##$$"),
             "Garbage should be filtered"
         );
     }
@@ -2171,7 +2171,7 @@ mod extract_from_tests {
 
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
         assert!(
-            !values.iter().any(|v| *v == "@@##$$"),
+            !values.contains(&"@@##$$"),
             "Garbage should be filtered"
         );
     }
@@ -2222,7 +2222,7 @@ mod testdata_binary_tests {
         let strings = extract_from_elf(&elf, &data, &opts);
 
         // Should have some imports
-        let imports: Vec<_> = strings
+        let _imports: Vec<_> = strings
             .iter()
             .filter(|s| s.kind == StringKind::Import)
             .collect();
@@ -2588,6 +2588,7 @@ mod xor_detection_tests {
     }
 
     /// Create a minimal AMD64 Windows PE that looks like a Go binary with XOR'd data
+    #[allow(dead_code)]
     fn minimal_go_pe_amd64_with_xor(plaintext: &[u8], key: u8) -> Vec<u8> {
         let fill_byte = 0x01 ^ key;
         let mut binary = vec![fill_byte; 2048];

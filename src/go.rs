@@ -800,6 +800,16 @@ fn is_base64(s: &str) -> bool {
         return false;
     }
 
+    // Must be properly padded (length must be multiple of 4)
+    if !s.len().is_multiple_of(4) {
+        return false;
+    }
+
+    // Exclude sequential patterns (alphabet lookups, test data)
+    if s.contains("ABCDE") || s.contains("012345") {
+        return false;
+    }
+
     // Must not contain spaces or common text patterns
     if s.contains(' ') || s.contains("the ") || s.contains("and ") {
         return false;
