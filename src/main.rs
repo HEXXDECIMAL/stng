@@ -107,8 +107,9 @@ const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m"; // Dark red text
-const YELLOW: &str = "\x1b[33m";
+const CYAN: &str = "\x1b[36m"; // For medium severity items
 const GREEN: &str = "\x1b[32m";
+const BRIGHT_YELLOW: &str = "\x1b[93m"; // For XOR-decoded/decrypted content (stands out)
 
 /// Parse XOR key from command line (hex bytes or plain string)
 fn parse_xor_key(input: &str) -> Result<Vec<u8>> {
@@ -461,7 +462,7 @@ fn colorize_xml_line(line: &str) -> String {
             let before = &output[..str_start + 8];
             let content = &output[str_start + 8..str_end];
             let after = &output[str_end..];
-            output = format!("{}{}{}{}{}", before, YELLOW, content, RESET, after);
+            output = format!("{}{}{}{}{}", before, CYAN, content, RESET, after);
         }
     }
 
@@ -524,7 +525,7 @@ fn print_colorized_entitlements(xml: &str, use_color: bool) {
             let content_end = content_start + end_pos;
             result.push_str(&format!(
                 "{}{}{}",
-                YELLOW,
+                CYAN,
                 &output[content_start..content_end],
                 RESET
             ));
@@ -543,7 +544,7 @@ fn print_colorized_entitlements(xml: &str, use_color: bool) {
 fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     // Special handling for multi-line entitlements XML
     if s.kind == stng::StringKind::EntitlementsXml {
-        let kind_color = if use_color { YELLOW } else { "" };
+        let kind_color = if use_color { CYAN } else { "" };
         let mut byte_offset = s.data_offset;
 
         // Print each line with its calculated offset
@@ -558,6 +559,38 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
                 );
             } else {
                 println!("  {} {:<12} {}", offset, "entitlement", line);
+            }
+
+            // Update offset for next line (line length + newline)
+            byte_offset += line.len() as u64 + 1;
+        }
+        return;
+    }
+
+    // Special handling for multi-line XOR-decoded strings
+    if s.method == stng::StringMethod::XorDecode && s.value.contains('\n') {
+        let kind = format!("xor/{}", s.kind.short_name());
+        // XOR-decoded content always uses bright yellow to stand out
+        let (color, kind_color) = if use_color {
+            (BRIGHT_YELLOW, BRIGHT_YELLOW)
+        } else {
+            ("", "")
+        };
+
+        let mut byte_offset = s.data_offset;
+
+        // Print each line with its calculated offset
+        for line in s.value.lines() {
+            let offset = format!("{:>8x}", byte_offset);
+            let clean_line = line.trim_end_matches(|c: char| c.is_control());
+
+            if use_color {
+                println!(
+                    "  {}{}{} {}{:<12}{} {}{}{}",
+                    DIM, offset, RESET, kind_color, kind, RESET, color, clean_line, RESET
+                );
+            } else {
+                println!("  {} {:<12} {}", offset, kind, clean_line);
             }
 
             // Update offset for next line (line length + newline)
@@ -581,15 +614,18 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         s.kind.short_name().to_string()
     };
 
-    // Get color based on severity
+    // Get color based on method and severity
     let (color, kind_color) = if use_color {
-        // Section names are rarely interesting - show in dim grey
-        if s.kind == stng::StringKind::Section {
+        // XOR-decoded content always uses bright yellow to stand out
+        if s.method == stng::StringMethod::XorDecode {
+            (BRIGHT_YELLOW, BRIGHT_YELLOW)
+        } else if s.kind == stng::StringKind::Section {
+            // Section names are rarely interesting - show in dim grey
             (DIM, DIM)
         } else {
             match s.kind.severity() {
                 Severity::High => (RED, RED),
-                Severity::Medium => (YELLOW, YELLOW),
+                Severity::Medium => (CYAN, CYAN),
                 Severity::Low => (GREEN, GREEN),
                 Severity::Info => ("", DIM),
             }

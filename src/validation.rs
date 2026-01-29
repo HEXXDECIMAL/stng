@@ -12,6 +12,25 @@
 /// - Strings that are mostly whitespace padding
 /// - Strings with embedded null or control characters
 pub fn is_garbage(s: &str) -> bool {
+    // Normalize: trim whitespace first
+    let trimmed = s.trim();
+
+    // Special case: Shell command patterns (check before control char rejection)
+    // These often have garbage bytes before/after but are still valuable
+    // Examples: "osascript", "bash", "sh ", "/bin/", "2>&1", "<<EOD"
+    if trimmed.contains("osascript")
+        || trimmed.contains("bash")
+        || trimmed.contains("/bin/sh")
+        || trimmed.contains("/bin/bash")
+        || trimmed.contains("2>&1")
+        || trimmed.contains("<<")  // heredocs: <<EOD, <<EOF, <<END, etc.
+        || trimmed.contains("2>/dev/null")
+        || trimmed.contains("2>")
+        || (trimmed.contains(" sh ") || trimmed.starts_with("sh ") || trimmed.ends_with(" sh"))
+    {
+        return false; // Shell commands are NOT garbage
+    }
+
     // Check for control characters in non-trailing-newline portion
     let check_control = s.trim_end_matches('\n');
     for c in check_control.chars() {
@@ -19,9 +38,6 @@ pub fn is_garbage(s: &str) -> bool {
             return true;
         }
     }
-
-    // Normalize: trim whitespace
-    let trimmed = s.trim();
     let len = trimmed.len();
 
     // Empty or whitespace-only
@@ -32,6 +48,53 @@ pub fn is_garbage(s: &str) -> bool {
     // Single characters are almost always garbage from raw scans
     if len == 1 {
         return true;
+    }
+
+    // Special case: locale strings (en_US, zh_CN, etc.)
+    // Format: 2-3 lowercase letters + underscore + 2-3 uppercase letters
+    if len == 5 || len == 6 {
+        let chars: Vec<char> = trimmed.chars().collect();
+        if chars.len() >= 5 {
+            let has_locale_pattern = (chars[0].is_ascii_lowercase()
+                && chars[1].is_ascii_lowercase()
+                && chars[2] == '_'
+                && chars[3].is_ascii_uppercase()
+                && chars[4].is_ascii_uppercase())
+                || (chars.len() == 6
+                    && chars[0].is_ascii_lowercase()
+                    && chars[1].is_ascii_lowercase()
+                    && chars[2].is_ascii_lowercase()
+                    && chars[3] == '_'
+                    && chars[4].is_ascii_uppercase()
+                    && chars[5].is_ascii_uppercase());
+            if has_locale_pattern {
+                return false; // Locale strings are NOT garbage
+            }
+        }
+    }
+
+    // Special case: XML/plist tags (<array>, <dict>, <key>, etc.)
+    if trimmed.starts_with('<') && trimmed.ends_with('>') && len >= 3 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        // Valid XML tag if inner content is alphanumeric (possibly with / for closing tags)
+        let is_valid_tag = inner.chars().all(|c| c.is_alphanumeric() || c == '/');
+        if is_valid_tag && !inner.is_empty() {
+            return false; // XML tags are NOT garbage
+        }
+    }
+
+    // Special case: Shell command patterns with redirections and heredocs
+    // Examples: "osascript 2>&1 <<EOD", "command 2>/dev/null", "cmd > output.txt"
+    if trimmed.contains("2>&1")  // stderr redirect to stdout
+        || trimmed.contains("2>")  // stderr redirect to file
+        || trimmed.contains("<<")  // heredoc
+        || (trimmed.contains('>') && trimmed.split_whitespace().count() >= 2)  // redirect with spaces
+    {
+        // Check if it looks like a command (has alphanumeric content)
+        let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
+        if alnum_count >= 3 {
+            return false; // Shell commands with redirections are NOT garbage
+        }
     }
 
     // Single-pass character counting

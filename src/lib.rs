@@ -274,11 +274,19 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                     key_string.kind = StringKind::XorKey;
                 }
 
-                strings.extend(xor::extract_custom_xor_strings(
-                    data,
-                    key,
-                    opts.xor_min_length,
-                ));
+                if opts.filter_garbage {
+                    strings.extend(xor::extract_custom_xor_strings(
+                        data,
+                        key,
+                        opts.xor_min_length,
+                    ));
+                } else {
+                    strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                        data,
+                        key,
+                        opts.xor_min_length,
+                    ));
+                }
             } else if opts.xor_scan {
                 // Try auto-detecting XOR key from extracted strings (small files only)
                 let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
@@ -296,11 +304,19 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                         key_string.kind = StringKind::XorKey;
                     }
 
-                    strings.extend(xor::extract_custom_xor_strings(
-                        data,
-                        &key,
-                        opts.xor_min_length,
-                    ));
+                    if opts.filter_garbage {
+                        strings.extend(xor::extract_custom_xor_strings(
+                            data,
+                            &key,
+                            opts.xor_min_length,
+                        ));
+                    } else {
+                        strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                            data,
+                            &key,
+                            opts.xor_min_length,
+                        ));
+                    }
                 } else {
                     // Fallback to single-byte XOR scan
                     strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
@@ -602,7 +618,7 @@ pub fn extract_from_object(
     if !data.is_empty() {
         // Custom XOR key takes precedence over auto-detection
         if let Some(ref key) = opts.xor_key {
-            tracing::debug!("Custom XOR: using {} byte key", key.len());
+            tracing::info!("Custom XOR: using {} byte key", key.len());
 
             // Check if the XOR key exists in the already-extracted strings
             let key_str = String::from_utf8_lossy(key).to_string();
@@ -612,11 +628,19 @@ pub fn extract_from_object(
                 key_string.kind = StringKind::XorKey;
             }
 
-            strings.extend(xor::extract_custom_xor_strings(
-                data,
-                key,
-                opts.xor_min_length,
-            ));
+            if opts.filter_garbage {
+                strings.extend(xor::extract_custom_xor_strings(
+                    data,
+                    key,
+                    opts.xor_min_length,
+                ));
+            } else {
+                strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                    data,
+                    key,
+                    opts.xor_min_length,
+                ));
+            }
         } else if opts.xor_scan {
             // Try auto-detecting XOR key from extracted strings (small files only)
             let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
@@ -634,11 +658,19 @@ pub fn extract_from_object(
                     key_string.kind = StringKind::XorKey;
                 }
 
-                strings.extend(xor::extract_custom_xor_strings(
-                    data,
-                    &key,
-                    opts.xor_min_length,
-                ));
+                if opts.filter_garbage {
+                    strings.extend(xor::extract_custom_xor_strings(
+                        data,
+                        &key,
+                        opts.xor_min_length,
+                    ));
+                } else {
+                    strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                        data,
+                        &key,
+                        opts.xor_min_length,
+                    ));
+                }
             } else {
                 // Fallback to single-byte XOR scan
                 let is_pe = matches!(object, Object::PE(_));

@@ -213,10 +213,45 @@ pub fn extract_custom_xor_strings(
     key: &[u8],
     min_length: usize,
 ) -> Vec<ExtractedString> {
+    extract_custom_xor_strings_filtered(data, key, min_length, true)
+}
+
+pub fn extract_custom_xor_strings_unfiltered(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+) -> Vec<ExtractedString> {
+    extract_custom_xor_strings_filtered(data, key, min_length, false)
+}
+
+fn extract_custom_xor_strings_filtered(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+    apply_filters: bool,
+) -> Vec<ExtractedString> {
     if key.is_empty() || data.is_empty() {
         return Vec::new();
     }
 
+    // For multi-byte keys, try both approaches and merge results
+    // 1. Pattern-based: each string XOR'd independently from key[0]
+    // 2. File-level cycling: entire file XOR'd at all key offsets
+    if key.len() > 1 {
+        let mut all_results = extract_custom_xor_strings_pattern_based(data, key, min_length, apply_filters);
+
+        // Also try file-level cycling (like single-byte XOR but at all key offsets)
+        // This catches strings embedded in continuous XOR'd blocks
+        all_results.extend(extract_custom_xor_strings_file_level_cycling(data, key, min_length, apply_filters));
+
+        // Deduplicate by (offset, value)
+        let mut seen: HashSet<(u64, String)> = HashSet::new();
+        all_results.retain(|s| seen.insert((s.data_offset, s.value.clone())));
+
+        return all_results;
+    }
+
+    // Single-byte key: use file-level XOR (simpler, same result either way)
     let mut results = Vec::new();
     let mut seen: HashSet<(u64, String)> = HashSet::new();
 
@@ -248,25 +283,30 @@ pub fn extract_custom_xor_strings(
         // Extract and validate the string
         if end - start >= min_length {
             if let Ok(s) = String::from_utf8(decoded[start..end].to_vec()) {
-                if is_meaningful_string(&s) {
-                    if let Some(kind) = classify_xor_string(&s) {
-                        let offset = start as u64;
-                        if seen.insert((offset, s.clone())) {
-                            let key_preview = if key.len() > 8 {
-                                format!("{}...", String::from_utf8_lossy(&key[..8]))
-                            } else {
-                                String::from_utf8_lossy(key).to_string()
-                            };
+                // Use same filtering as multi-byte XOR: classify + validation::is_garbage() in lib.rs
+                let kind_opt = if apply_filters {
+                    classify_xor_string(&s)
+                } else {
+                    Some(StringKind::Const)
+                };
 
-                            results.push(ExtractedString {
-                                value: s,
-                                data_offset: offset,
-                                section: None,
-                                method: StringMethod::XorDecode,
-                                kind,
-                                library: Some(format!("key:{}", key_preview)),
-                            });
-                        }
+                if let Some(kind) = kind_opt {
+                    let offset = start as u64;
+                    if seen.insert((offset, s.clone())) {
+                        let key_preview = if key.len() > 8 {
+                            format!("{}...", String::from_utf8_lossy(&key[..8]))
+                        } else {
+                            String::from_utf8_lossy(key).to_string()
+                        };
+
+                        results.push(ExtractedString {
+                            value: s,
+                            data_offset: offset,
+                            section: None,
+                            method: StringMethod::XorDecode,
+                            kind,
+                            library: Some(format!("key:{}", key_preview)),
+                        });
                     }
                 }
             }
@@ -278,6 +318,225 @@ pub fn extract_custom_xor_strings(
     results
 }
 
+/// Extract strings XOR'd with a multi-byte key using brute-force position scanning.
+/// Each string is XOR'd independently starting from key[0], not cycling from file offset 0.
+/// This is the most common approach in malware (e.g., DPRK samples).
+/// Extract strings using file-level cycling XOR (exhaustive key offset search).
+/// Tries XORing the entire file with the key starting at each possible offset (0..key.len()).
+fn extract_custom_xor_strings_file_level_cycling(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+    apply_filters: bool,
+) -> Vec<ExtractedString> {
+    tracing::info!(
+        "File-level cycling XOR: {} bytes with {} byte key ({} offsets)",
+        data.len(),
+        key.len(),
+        key.len()
+    );
+
+    let mut all_results = Vec::new();
+    let mut seen: HashSet<(u64, String)> = HashSet::new();
+
+    // Try each possible key offset
+    for key_offset in 0..key.len() {
+        // Decode entire file with key starting at this offset
+        let mut decoded: Vec<u8> = Vec::with_capacity(data.len());
+        for (i, &byte) in data.iter().enumerate() {
+            decoded.push(byte ^ key[(i + key_offset) % key.len()]);
+        }
+
+        // Extract printable strings from decoded data
+        let mut start = 0;
+        while start < decoded.len() {
+            // Skip non-printable
+            while start < decoded.len() && !is_printable_byte_for_file_xor(decoded[start]) {
+                start += 1;
+            }
+
+            if start >= decoded.len() {
+                break;
+            }
+
+            // Collect printable run
+            let mut end = start;
+            while end < decoded.len() && is_printable_byte_for_file_xor(decoded[end]) {
+                end += 1;
+            }
+
+            // Check length
+            if end - start >= min_length {
+                if let Ok(s) = String::from_utf8(decoded[start..end].to_vec()) {
+                    let offset = start as u64;
+                    if seen.insert((offset, s.clone())) {
+                        // Classify the string
+                        let kind_opt = if apply_filters {
+                            classify_xor_string(&s)
+                        } else {
+                            Some(StringKind::Const)
+                        };
+
+                        if let Some(kind) = kind_opt {
+                            let key_preview = if key.len() > 8 {
+                                format!("{}...", String::from_utf8_lossy(&key[..8]))
+                            } else {
+                                String::from_utf8_lossy(key).to_string()
+                            };
+
+                            all_results.push(ExtractedString {
+                                value: s,
+                                data_offset: offset,
+                                section: None,
+                                method: StringMethod::XorDecode,
+                                kind,
+                                library: Some(format!("key:{}@{}", key_preview, key_offset)),
+                            });
+                        }
+                    }
+                }
+            }
+
+            start = end;
+        }
+    }
+
+    tracing::info!(
+        "File-level cycling complete: found {} strings across {} offsets",
+        all_results.len(),
+        key.len()
+    );
+
+    all_results
+}
+
+/// Check if a byte is printable for file-level XOR extraction
+fn is_printable_byte_for_file_xor(b: u8) -> bool {
+    b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n'
+}
+
+///
+/// Scans every position in the file as a potential string start, XOR-decodes forward,
+/// and keeps strings that pass filtering.
+fn extract_custom_xor_strings_pattern_based(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+    apply_filters: bool,
+) -> Vec<ExtractedString> {
+    tracing::info!(
+        "Multi-byte XOR brute-force scan: {} bytes with {} byte key",
+        data.len(),
+        key.len()
+    );
+
+    let mut results = Vec::new();
+    let mut seen: HashSet<(u64, String)> = HashSet::new();
+
+    // Brute-force scan: try every position as a potential string start
+    // For small files, scan every byte; for larger files, step by 4 for performance
+    let step = if data.len() < 10000 { 1 } else { 4 };
+    let mut checked = 0;
+
+    for pos in (0..data.len()).step_by(step) {
+        checked += 1;
+        if checked % 10000 == 0 {
+            tracing::debug!("  Scanned {} positions, found {} strings", checked, results.len());
+        }
+
+        // Try to decode a string starting at this position
+        if let Some((decoded, start, _end)) = try_decode_xor_string_at(data, pos, key, min_length) {
+            // Classify the string (or use Const if filtering disabled)
+            let kind_opt = if apply_filters {
+                classify_xor_string(&decoded)
+            } else {
+                Some(StringKind::Const)
+            };
+
+            if let Some(kind) = kind_opt {
+                let offset = start as u64;
+                if seen.insert((offset, decoded.clone())) {
+                        let key_preview = if key.len() > 8 {
+                            format!("{}...", String::from_utf8_lossy(&key[..8]))
+                        } else {
+                            String::from_utf8_lossy(key).to_string()
+                        };
+
+                        results.push(ExtractedString {
+                            value: decoded,
+                            data_offset: offset,
+                            section: None,
+                            method: StringMethod::XorDecode,
+                            kind,
+                            library: Some(format!("key:{}", key_preview)),
+                        });
+                    }
+                }
+            }
+        }
+
+    tracing::info!(
+        "Multi-byte XOR scan complete: checked {} positions, found {} unique strings",
+        checked,
+        results.len()
+    );
+
+    results
+}
+
+/// Try to decode an XOR'd string starting at a specific position.
+/// Returns the decoded string if it looks valid.
+fn try_decode_xor_string_at(
+    data: &[u8],
+    pos: usize,
+    key: &[u8],
+    min_length: usize,
+) -> Option<(String, usize, usize)> {
+    let max_len = 200;
+    let mut end = pos;
+    let mut decoded_bytes = Vec::new();
+
+    // Try to decode forward from this position
+    while end < data.len() && (end - pos) < max_len {
+        let key_idx = (end - pos) % key.len();
+        let decoded_byte = data[end] ^ key[key_idx];
+
+        // For multi-byte XOR, allow newlines and common whitespace in addition to printable chars
+        // Note: \r (carriage return) terminates the string, only \n (newline) is allowed for multi-line strings
+        let is_valid = decoded_byte.is_ascii_graphic()
+            || decoded_byte == b' '
+            || decoded_byte == b'\t'
+            || decoded_byte == b'\n';
+
+        if is_valid {
+            decoded_bytes.push(decoded_byte);
+            end += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Must have minimum length
+    if decoded_bytes.len() < min_length {
+        return None;
+    }
+
+    // Try to convert to UTF-8
+    let decoded_str = String::from_utf8(decoded_bytes).ok()?;
+
+    // Quick sanity check: must have some meaningful content
+    // (at least 3 alphanumeric chars total, not necessarily consecutive)
+    let alnum_count = decoded_str.chars().filter(|c| c.is_ascii_alphanumeric()).count();
+
+    if alnum_count < 3 {
+        return None;
+    }
+
+    Some((decoded_str, pos, end))
+}
+
+/// Expand a multi-byte XOR'd string from a match position.
+/// The key cycles from key[0] at the start of the string, not from file offset 0.
 /// Auto-detect XOR key by trying candidate strings from the binary.
 ///
 /// For small files (<512KB), tries the last 5 strings (excluding those with _ or starting with "cstr.")
@@ -1309,12 +1568,18 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         StringKind::Registry => Some(kind),
         StringKind::Base64 => Some(kind),
         _ => {
-            // Generic fallback: longer strings with spaces that look like natural text
-            // This catches user agents, error messages, config values, etc.
+            // Generic fallback: anything else that passed is_meaningful_xor_string()
+            // should be classified as Const. This includes:
+            // - Short strings like locale codes (ru_RU, en_US)
+            // - Single words (Ethereum, keystore, Wallet)
+            // - XML/plist tags (<array>, <dict>)
+            // - Longer strings with spaces that look like natural text
             if s.len() >= 30 && s.contains(' ') && looks_like_text(s) {
                 Some(StringKind::Const)
             } else {
-                None
+                // Return Const for short strings that passed is_meaningful_xor_string
+                // Don't return None - that would filter out legitimate strings
+                Some(StringKind::Const)
             }
         }
     }
