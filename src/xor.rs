@@ -359,15 +359,46 @@ fn extract_custom_xor_strings_file_level_cycling(
                 break;
             }
 
+            // Skip if we're in a null byte region in the original data
+            // (these just produce the key)
+            if start < data.len() {
+                let mut null_count = 0;
+                for i in start..data.len().min(start + key.len()) {
+                    if data[i] == 0x00 {
+                        null_count += 1;
+                    }
+                }
+                if null_count >= key.len() / 2 {
+                    start += key.len();
+                    continue;
+                }
+            }
+
             // Collect printable run
             let mut end = start;
+            let mut consecutive_nulls = 0;
             while end < decoded.len() && is_printable_byte_for_file_xor(decoded[end]) {
+                // Stop if we hit many consecutive nulls in the source data
+                if end < data.len() && data[end] == 0x00 {
+                    consecutive_nulls += 1;
+                    if consecutive_nulls >= 4 {
+                        break;
+                    }
+                } else {
+                    consecutive_nulls = 0;
+                }
                 end += 1;
             }
 
             // Check length
             if end - start >= min_length {
                 if let Ok(s) = String::from_utf8(decoded[start..end].to_vec()) {
+                    // Skip XOR key artifacts (key fragments from XORing null bytes)
+                    if apply_filters && is_xor_key_artifact(&s, key) {
+                        start = end;
+                        continue;
+                    }
+
                     let offset = start as u64;
                     if seen.insert((offset, s.clone())) {
                         // Classify the string
@@ -415,6 +446,53 @@ fn is_printable_byte_for_file_xor(b: u8) -> bool {
     b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n'
 }
 
+/// Check if a decoded string is likely just the XOR key itself (or fragments).
+/// This happens when XORing null bytes with the key.
+fn is_xor_key_artifact(s: &str, key: &[u8]) -> bool {
+    // Convert key to string for comparison
+    let key_str = String::from_utf8_lossy(key);
+
+    // Exact match or substring of key
+    if key_str.contains(s) || s.contains(key_str.as_ref()) {
+        return true;
+    }
+
+    // Check if string is mostly composed of repeating key pattern
+    // (happens when XORing the key with itself or null bytes)
+    if s.len() >= key.len() {
+        // Count how many characters match the key pattern
+        let mut matches = 0;
+        for (i, c) in s.chars().enumerate() {
+            let key_char = key[i % key.len()] as char;
+            if c == key_char {
+                matches += 1;
+            }
+        }
+
+        // If >70% of the string matches the key pattern, it's likely an artifact
+        if matches * 100 / s.len() > 70 {
+            return true;
+        }
+    }
+
+    // Check for key fragments (at least 8 consecutive chars from the key)
+    if key.len() >= 8 {
+        for window_size in (8..=key.len().min(s.len())).rev() {
+            let key_str_bytes = key_str.as_bytes();
+            for key_start in 0..=(key.len().saturating_sub(window_size)) {
+                let key_fragment = &key_str_bytes[key_start..key_start + window_size];
+                if let Ok(fragment_str) = std::str::from_utf8(key_fragment) {
+                    if s.contains(fragment_str) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
 ///
 /// Scans every position in the file as a potential string start, XOR-decodes forward,
 /// and keeps strings that pass filtering.
@@ -446,6 +524,11 @@ fn extract_custom_xor_strings_pattern_based(
 
         // Try to decode a string starting at this position
         if let Some((decoded, start, _end)) = try_decode_xor_string_at(data, pos, key, min_length) {
+            // Skip XOR key artifacts (key fragments from XORing null bytes)
+            if apply_filters && is_xor_key_artifact(&decoded, key) {
+                continue;
+            }
+
             // Classify the string (or use Const if filtering disabled)
             let kind_opt = if apply_filters {
                 classify_xor_string(&decoded)
@@ -492,14 +575,41 @@ fn try_decode_xor_string_at(
     key: &[u8],
     min_length: usize,
 ) -> Option<(String, usize, usize)> {
+    // Skip if we're starting in a region of null bytes (these decode to the key itself)
+    if data[pos] == 0x00 {
+        // Count consecutive nulls
+        let mut null_count = 0;
+        let mut check_pos = pos;
+        while check_pos < data.len() && data[check_pos] == 0x00 {
+            null_count += 1;
+            check_pos += 1;
+        }
+        // If we have many consecutive nulls (>= key length), skip this region
+        if null_count >= key.len() {
+            return None;
+        }
+    }
+
     let max_len = 200;
     let mut end = pos;
     let mut decoded_bytes = Vec::new();
+    let mut consecutive_nulls = 0;
 
     // Try to decode forward from this position
     while end < data.len() && (end - pos) < max_len {
         let key_idx = (end - pos) % key.len();
         let decoded_byte = data[end] ^ key[key_idx];
+
+        // Track consecutive null bytes in the encoded data
+        if data[end] == 0x00 {
+            consecutive_nulls += 1;
+            // If we hit many consecutive nulls, stop (they just produce the key)
+            if consecutive_nulls >= 4 {
+                break;
+            }
+        } else {
+            consecutive_nulls = 0;
+        }
 
         // For multi-byte XOR, allow newlines and common whitespace in addition to printable chars
         // Note: \r (carriage return) terminates the string, only \n (newline) is allowed for multi-line strings
