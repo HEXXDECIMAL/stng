@@ -76,6 +76,70 @@ use binary::{collect_elf_segments, collect_macho_segments, macho_has_go_sections
 use entitlements::extract_macho_entitlements;
 use imports::{extract_elf_imports, extract_macho_imports};
 use raw::{extract_raw_strings, extract_wide_strings};
+
+/// Enrich strings with section information based on their file offsets (ELF)
+fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf) {
+    for s in strings {
+        if s.section.is_none() {
+            // Find which section this offset belongs to
+            for sh in &elf.section_headers {
+                if s.data_offset >= sh.sh_offset
+                    && s.data_offset < sh.sh_offset + sh.sh_size
+                {
+                    if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
+                        if !name.is_empty() {
+                            s.section = Some(name.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Enrich strings with section information based on their file offsets (Mach-O)
+fn enrich_macho_sections(strings: &mut [ExtractedString], macho: &goblin::mach::MachO) {
+    for s in strings {
+        if s.section.is_none() {
+            // Find which section this offset belongs to
+            for segment in &macho.segments {
+                for section_result in segment {
+                    if let Ok((section, _data)) = section_result {
+                        let section_start = section.offset as u64;
+                        let section_end = section_start + section.size;
+                        if s.data_offset >= section_start && s.data_offset < section_end {
+                            s.section = Some(section.name().unwrap_or("(unknown)").to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Enrich strings with section information based on their file offsets (PE)
+fn enrich_pe_sections(strings: &mut [ExtractedString], pe: &goblin::pe::PE) {
+    for s in strings {
+        if s.section.is_none() {
+            // Find which section this offset belongs to
+            for section in &pe.sections {
+                let section_start = section.pointer_to_raw_data as u64;
+                let section_end = section_start + section.size_of_raw_data as u64;
+                if s.data_offset >= section_start && s.data_offset < section_end {
+                    let name = String::from_utf8_lossy(&section.name)
+                        .trim_end_matches('\0')
+                        .to_string();
+                    if !name.is_empty() {
+                        s.section = Some(name);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
 use stack_strings::extract_stack_strings;
 
 #[derive(Debug, Clone, Default)]
@@ -789,6 +853,21 @@ pub fn extract_from_object(
                 strings.extend(connect_addrs);
             }
         }
+    }
+
+    // Enrich all strings with section information based on file offsets
+    // This happens AFTER all extraction (including XOR) is complete
+    match object {
+        Object::Elf(elf) => enrich_elf_sections(&mut strings, elf),
+        Object::Mach(goblin::mach::Mach::Binary(macho)) => enrich_macho_sections(&mut strings, macho),
+        Object::Mach(goblin::mach::Mach::Fat(fat)) => {
+            // Use first architecture for section mapping
+            if let Some(Ok(goblin::mach::SingleArch::MachO(macho))) = fat.into_iter().next() {
+                enrich_macho_sections(&mut strings, &macho);
+            }
+        }
+        Object::PE(pe) => enrich_pe_sections(&mut strings, pe),
+        _ => {}
     }
 
     // Apply garbage filter if enabled (but never filter entitlements XML or section names)

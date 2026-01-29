@@ -398,7 +398,7 @@ fn main() -> Result<()> {
                 if current_section.is_some() {
                     println!();
                 }
-                let section_name = section.unwrap_or("(unknown)");
+                let section_name = section.unwrap_or("(analysis)");
                 if use_color {
                     println!("{}── {} ──{}", DIM, section_name, RESET);
                 } else {

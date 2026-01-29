@@ -146,6 +146,7 @@ impl RustStringExtractor {
                         method: StringMethod::Heuristic,
                         kind: s.kind,
                         library: None,
+                    fragments: None,
                     });
                 }
             }
@@ -370,7 +371,8 @@ impl RustStringExtractor {
                                 method: StringMethod::RawScan,
                                 kind: classify_string(trimmed),
                                 library: None,
-                            });
+                    fragments: None,
+                    });
                         }
                     }
                 }
@@ -563,6 +565,7 @@ impl RustStringExtractor {
             method: StringMethod::Heuristic,
             kind: classify_string(trimmed),
             library: None,
+            fragments: None,
         });
     }
 }

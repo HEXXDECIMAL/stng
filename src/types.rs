@@ -17,6 +17,15 @@ pub struct StringStruct {
     pub len: u64,
 }
 
+/// Represents a fragment of a multi-part string (e.g., stack strings from multiple instructions)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StringFragment {
+    /// File offset where this fragment's data is located
+    pub offset: u64,
+    /// Length of this fragment in bytes
+    pub length: usize,
+}
+
 /// An extracted string with metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractedString {
@@ -34,6 +43,25 @@ pub struct ExtractedString {
     /// Source library for imports (e.g., "libSystem.B.dylib")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub library: Option<String>,
+    /// For multi-part strings (StackString), tracks all source fragments
+    /// Example: ["https://", "paxo", "sfut"] from 3 separate mov instructions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub fragments: Option<Vec<StringFragment>>,
+}
+
+impl Default for ExtractedString {
+    fn default() -> Self {
+        ExtractedString {
+            value: String::new(),
+            data_offset: 0,
+            section: None,
+            method: StringMethod::RawScan,
+            kind: StringKind::Const,
+            library: None,
+            fragments: None,
+        }
+    }
 }
 
 /// Method used to extract the string.

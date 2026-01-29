@@ -64,7 +64,8 @@ pub(crate) fn extract_raw_strings(
                     method: StringMethod::RawScan,
                     kind,
                     library: None,
-                });
+                    fragments: None,
+                    });
             }
         }
     }
@@ -123,7 +124,8 @@ pub(crate) fn extract_printable_runs(
                             method: StringMethod::RawScan,
                             kind,
                             library: None,
-                        });
+                    fragments: None,
+                    });
                     }
                 }
             }
@@ -152,6 +154,7 @@ pub(crate) fn extract_printable_runs(
                         method: StringMethod::RawScan,
                         kind,
                         library: None,
+                    fragments: None,
                     });
                 }
             }
@@ -231,6 +234,7 @@ pub(crate) fn extract_wide_strings(
                         method: StringMethod::WideString,
                         kind,
                         library: None,
+                    fragments: None,
                     });
                 }
             }

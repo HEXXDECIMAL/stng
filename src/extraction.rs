@@ -207,7 +207,8 @@ where
                 method: StringMethod::Structure,
                 kind: classify_fn(trimmed),
                 library: None,
-            });
+                    fragments: None,
+                    });
         }
     }
 

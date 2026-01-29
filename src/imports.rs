@@ -25,7 +25,8 @@ pub(crate) fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<Ext
                     method: StringMethod::Structure,
                     kind: StringKind::Import,
                     library: Some(lib.to_string()),
-                });
+                    fragments: None,
+                    });
             }
         }
     }
@@ -44,7 +45,8 @@ pub(crate) fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<Ext
                     method: StringMethod::Structure,
                     kind: StringKind::Export,
                     library: None,
-                });
+                    fragments: None,
+                    });
             }
         }
     }
@@ -108,6 +110,7 @@ pub(crate) fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> 
             method: StringMethod::Structure,
             kind,
             library,
+            fragments: None,
         });
     }
 

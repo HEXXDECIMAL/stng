@@ -346,6 +346,7 @@ impl GoStringExtractor {
                         method: StringMethod::Structure,
                         kind: super::classifier::classify_gopclntab_string(&current),
                         library: None,
+                    fragments: None,
                     });
                 }
                 current.clear();
@@ -367,7 +368,8 @@ impl GoStringExtractor {
                 method: StringMethod::Structure,
                 kind: StringKind::FuncName,
                 library: None,
-            });
+                    fragments: None,
+                    });
         }
 
         strings

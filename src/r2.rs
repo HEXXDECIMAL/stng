@@ -138,7 +138,8 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         section: Some(s.section),
                         method: StringMethod::R2String,
                         library: None,
-                        kind,
+                    fragments: None,
+                    kind,
                     });
                 } else if s.string.contains("fYzt") {
                     tracing::debug!("r2::extract_strings: XOR KEY FILTERED: len={} < min_length={}, or already seen",
@@ -168,6 +169,7 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         method: StringMethod::R2Symbol,
                         kind: classify_r2_symbol(&s.r#type, &s.bind),
                         library: None,
+                    fragments: None,
                     });
                 }
             }
@@ -861,6 +863,7 @@ pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
                     StringKind::IP
                 },
                 library: Some("connect()".to_string()),
+                fragments: None,
             });
         }
     } else {
@@ -890,6 +893,7 @@ pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
                         StringKind::IP
                     },
                     library: Some("connect()".to_string()),
+                    fragments: None,
                 });
             }
         }

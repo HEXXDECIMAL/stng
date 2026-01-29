@@ -333,7 +333,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
 
         for result in all_results {
             let start = result.data_offset as usize;
-            let end = start + result.value.len();
+            let _end = start + result.value.len();
 
             // Trim both leading and trailing garbage for overlap checking
             let trimmed_leading = trim_leading_garbage(&result.value);
@@ -425,6 +425,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                             method: StringMethod::XorDecode,
                             kind,
                             library: Some(format!("key:{}", key_preview)),
+                        fragments: None,
                         });
                     }
                 }
@@ -558,6 +559,7 @@ fn extract_custom_xor_strings_file_level_cycling(
                                 method: StringMethod::XorDecode,
                                 kind,
                                 library: Some(format!("key:{}@{}", key_preview, key_offset)),
+                        fragments: None,
                             });
                         }
                     }
@@ -596,7 +598,7 @@ fn extract_custom_xor_strings_file_level_cycling(
 
     for result in all_candidates {
         let start = result.data_offset as usize;
-        let end = start + result.value.len();
+        let _end = start + result.value.len();
 
         // Trim both leading and trailing garbage for overlap checking
         let trimmed_leading = trim_leading_garbage(&result.value);
@@ -717,6 +719,7 @@ fn extract_xor_strings_from_hints(
                             method: StringMethod::XorDecode,
                             kind,
                             library: Some(format!("key:{}@hint", key_preview)),
+                        fragments: None,
                         });
                     }
                 }
@@ -935,6 +938,7 @@ fn extract_custom_xor_strings_pattern_based(
                             method: StringMethod::XorDecode,
                             kind,
                             library: Some(format!("key:{}", key_preview)),
+                        fragments: None,
                         });
                     }
                 }
@@ -1225,6 +1229,7 @@ pub fn extract_xor_strings(
                             method: StringMethod::XorDecode,
                             kind,
                             library: Some(format!("0x{:02X}:16LE", info.key)),
+                        fragments: None,
                         });
                     }
                 }
@@ -1242,6 +1247,7 @@ pub fn extract_xor_strings(
                         method: StringMethod::XorDecode,
                         kind,
                         library: Some(format!("0x{:02X}", info.key)),
+                        fragments: None,
                     });
                 }
             }
@@ -1310,6 +1316,7 @@ pub fn extract_multikey_xor_strings(
                                 method: StringMethod::XorDecode,
                                 kind,
                                 library: Some(format!("key:{}", key_preview)),
+                        fragments: None,
                             });
                         }
                     }
@@ -1375,6 +1382,7 @@ fn scan_dotted_patterns(
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IP,
                                 library: Some(format!("0x{:02X}", key)),
+                        fragments: None,
                             });
                         }
                     }
@@ -1391,6 +1399,7 @@ fn scan_dotted_patterns(
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IPPort,
                                 library: Some(format!("0x{:02X}", key)),
+                        fragments: None,
                             });
                         }
                     }
@@ -1410,6 +1419,7 @@ fn scan_dotted_patterns(
                             method: StringMethod::XorDecode,
                             kind: StringKind::Hostname,
                             library: Some(format!("0x{:02X}", key)),
+                        fragments: None,
                         });
                     }
                 }
@@ -2052,6 +2062,27 @@ fn trim_trailing_garbage(s: &str) -> &str {
 /// Trim leading garbage from extracted strings.
 /// This removes characters at the beginning that don't look like legitimate content.
 fn trim_leading_garbage(s: &str) -> &str {
+    if s.is_empty() {
+        return s;
+    }
+
+    // Strip leading single-byte XOR key artifacts (from null bytes in original data)
+    // These appear as random single characters before legitimate content
+    // Common pattern: null bytes XOR key_byte = key_byte character
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() >= 2 {
+        let first = chars[0];
+        let second = chars[1];
+
+        // If first char is not a legitimate prefix character, and second char starts legitimate content
+        let is_legitimate_prefix = matches!(first, '$' | '@' | '~' | '%' | '"' | '\'' | '(' | '[' | '{' | '<');
+
+        if !is_legitimate_prefix && (second.is_ascii_alphabetic() || second == '/') {
+            // Skip the first character and recurse to handle multiple garbage bytes
+            return trim_leading_garbage(&s[first.len_utf8()..]);
+        }
+    }
+
     // Check for URLs - they should start with http:// or https://
     if let Some(pos) = s.find("http://") {
         return &s[pos..];
@@ -3004,7 +3035,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-            },
+                        fragments: None,
+                    },
             ExtractedString {
                 value: "cstr.SomeString".to_string(),
                 data_offset: 100,
@@ -3012,7 +3044,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-            },
+                        fragments: None,
+                    },
             ExtractedString {
                 value: "ShortKey".to_string(),
                 data_offset: 200,
@@ -3020,7 +3053,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-            },
+                        fragments: None,
+                    },
             ExtractedString {
                 value: key_string.to_string(), // The actual key
                 data_offset: 300,
@@ -3028,7 +3062,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-            },
+                        fragments: None,
+                    },
         ];
 
         // Auto-detect should find the right key
@@ -3089,7 +3124,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-            },
+                        fragments: None,
+                    },
             ExtractedString {
                 value: key_string.to_string(),
                 data_offset: 100,
@@ -3097,7 +3133,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-            },
+                        fragments: None,
+                    },
         ];
 
         // Auto-detect should find the correct key

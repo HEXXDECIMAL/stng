@@ -193,7 +193,8 @@ fn extract_arm64_string_pattern(
                     method: StringMethod::InstructionPattern,
                     kind: final_kind,
                     library: None,
-                });
+                    fragments: None,
+                    });
             }
         }
 
@@ -520,6 +521,7 @@ fn extract_amd64_first_arg_string(
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
                         library: None,
+                    fragments: None,
                     });
                 }
             }
@@ -614,6 +616,7 @@ fn extract_amd64_key_string(
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
                         library: None,
+                    fragments: None,
                     });
                 }
             }
@@ -707,6 +710,7 @@ fn extract_amd64_value_string(
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
                         library: None,
+                    fragments: None,
                     });
                 }
             }
