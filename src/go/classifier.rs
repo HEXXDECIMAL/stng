@@ -300,7 +300,7 @@ fn is_shell_command(s: &str) -> bool {
     ];
 
     for prefix in cmd_prefixes {
-        if s.starts_with(prefix) || s.contains(&format!(" {}", prefix)) {
+        if s.starts_with(prefix) || s.contains(&format!(" {prefix}")) {
             return true;
         }
     }

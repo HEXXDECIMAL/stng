@@ -8,7 +8,7 @@
 //! instruction pattern analysis to extract strings that don't have stored structures.
 
 mod extractor;
-pub(crate) mod classifier;
+pub mod classifier;
 
 // Re-export the main extractor
 pub use extractor::GoStringExtractor;

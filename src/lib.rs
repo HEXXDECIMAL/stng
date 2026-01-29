@@ -64,6 +64,7 @@ pub use entitlements::extract_macho_entitlements_xml;
 pub use go::GoStringExtractor;
 pub use overlay::{detect_elf_overlay, extract_overlay_strings};
 pub use rust::RustStringExtractor;
+pub use stack_strings::extract_stack_strings;
 
 // Re-export goblin so library clients can parse binaries themselves
 pub use goblin;
@@ -104,14 +105,12 @@ fn enrich_macho_sections(strings: &mut [ExtractedString], macho: &goblin::mach::
         if s.section.is_none() {
             // Find which section this offset belongs to
             for segment in &macho.segments {
-                for section_result in segment {
-                    if let Ok((section, _data)) = section_result {
-                        let section_start = section.offset as u64;
-                        let section_end = section_start + section.size;
-                        if s.data_offset >= section_start && s.data_offset < section_end {
-                            s.section = Some(section.name().unwrap_or("(unknown)").to_string());
-                            break;
-                        }
+                for (section, _data) in segment.into_iter().flatten() {
+                    let section_start = u64::from(section.offset);
+                    let section_end = section_start + section.size;
+                    if s.data_offset >= section_start && s.data_offset < section_end {
+                        s.section = Some(section.name().unwrap_or("(unknown)").to_string());
+                        break;
                     }
                 }
             }
@@ -125,8 +124,8 @@ fn enrich_pe_sections(strings: &mut [ExtractedString], pe: &goblin::pe::PE) {
         if s.section.is_none() {
             // Find which section this offset belongs to
             for section in &pe.sections {
-                let section_start = section.pointer_to_raw_data as u64;
-                let section_end = section_start + section.size_of_raw_data as u64;
+                let section_start = u64::from(section.pointer_to_raw_data);
+                let section_end = section_start + u64::from(section.size_of_raw_data);
                 if s.data_offset >= section_start && s.data_offset < section_end {
                     let name = String::from_utf8_lossy(&section.name)
                         .trim_end_matches('\0')
@@ -140,7 +139,7 @@ fn enrich_pe_sections(strings: &mut [ExtractedString], pe: &goblin::pe::PE) {
         }
     }
 }
-use stack_strings::extract_stack_strings;
+// use stack_strings::extract_stack_strings; // Already exported
 
 #[derive(Debug, Clone, Default)]
 pub struct ExtractOptions {
@@ -515,7 +514,7 @@ pub fn extract_from_object(
             for s in &mut strings {
                 if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
                     s.kind = *kind;
-                    s.library = lib.map(|l| l.to_string());
+                    s.library = lib.map(std::string::ToString::to_string);
                 }
             }
             let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
@@ -589,7 +588,7 @@ pub fn extract_from_object(
                 for s in &mut strings {
                     if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
                         s.kind = *kind;
-                        s.library = lib.map(|l| l.to_string());
+                        s.library = lib.map(std::string::ToString::to_string);
                     }
                 }
                 // Add new imports that weren't found before
@@ -924,7 +923,7 @@ pub fn extract_from_macho(
     for s in &mut strings {
         if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
             s.kind = *kind;
-            s.library = lib.map(|l| l.to_string());
+            s.library = lib.map(std::string::ToString::to_string);
         }
     }
     let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();

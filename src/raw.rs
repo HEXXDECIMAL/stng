@@ -5,7 +5,7 @@ use crate::types::{ExtractedString, StringKind, StringMethod};
 use memchr::memchr_iter;
 use std::collections::HashSet;
 
-pub(crate) fn extract_raw_strings(
+pub fn extract_raw_strings(
     data: &[u8],
     min_length: usize,
     section: Option<String>,
@@ -86,7 +86,7 @@ pub(crate) fn extract_raw_strings(
 
 /// Extract strings by scanning for runs of printable ASCII characters.
 /// This mimics the behavior of the traditional `strings` command.
-pub(crate) fn extract_printable_runs(
+pub fn extract_printable_runs(
     data: &[u8],
     min_length: usize,
     section: &Option<String>,
@@ -167,7 +167,7 @@ pub(crate) fn extract_printable_runs(
 /// Windows binaries commonly use UTF-16LE for strings (file paths, registry keys,
 /// .NET strings, resource data). This scans for the characteristic pattern of
 /// ASCII bytes alternating with null bytes.
-pub(crate) fn extract_wide_strings(
+pub fn extract_wide_strings(
     data: &[u8],
     min_length: usize,
     section: Option<String>,

@@ -131,7 +131,7 @@ fn parse_xor_key(input: &str) -> Result<Vec<u8>> {
         }
         let hex_str = std::str::from_utf8(chunk)?;
         let byte = u8::from_str_radix(hex_str, 16)
-            .map_err(|e| anyhow::anyhow!("Invalid hex byte '{}': {}", hex_str, e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid hex byte '{hex_str}': {e}"))?;
         bytes.push(byte);
     }
 
@@ -160,7 +160,7 @@ fn get_binary_format(data: &[u8]) -> String {
                 stng::goblin::elf::header::EM_S390 => "s390x",
                 _ => "unknown",
             };
-            format!("ELF {}", arch)
+            format!("ELF {arch}")
         }
         Ok(Object::PE(pe)) => {
             let arch = match pe.header.coff_header.machine {
@@ -170,7 +170,7 @@ fn get_binary_format(data: &[u8]) -> String {
                 stng::goblin::pe::header::COFF_MACHINE_ARMNT => "arm32",
                 _ => "unknown",
             };
-            format!("PE {}", arch)
+            format!("PE {arch}")
         }
         Ok(Object::Mach(stng::goblin::mach::Mach::Binary(macho))) => {
             let arch = match macho.header.cputype() {
@@ -182,7 +182,7 @@ fn get_binary_format(data: &[u8]) -> String {
                 stng::goblin::mach::cputype::CPU_TYPE_POWERPC64 => "ppc64",
                 _ => "unknown",
             };
-            format!("Mach-O {}", arch)
+            format!("Mach-O {arch}")
         }
         Ok(Object::Mach(stng::goblin::mach::Mach::Fat(_))) => "Mach-O fat".to_string(),
         _ => "unknown".to_string(),
@@ -215,14 +215,14 @@ fn main() -> Result<()> {
     // Handle --detect flag
     if cli.detect {
         let lang = stng::detect_language(&data);
-        println!("{}", lang);
+        println!("{lang}");
         return Ok(());
     }
 
     // Handle text files like cat
     if stng::is_text_file(&data) {
         let content = String::from_utf8_lossy(&data);
-        print!("{}", content);
+        print!("{content}");
         return Ok(());
     }
 
@@ -400,9 +400,9 @@ fn main() -> Result<()> {
                 }
                 let section_name = section.unwrap_or("(analysis)");
                 if use_color {
-                    println!("{}── {} ──{}", DIM, section_name, RESET);
+                    println!("{DIM}── {section_name} ──{RESET}");
                 } else {
-                    println!("── {} ──", section_name);
+                    println!("── {section_name} ──");
                 }
                 current_section = section;
             }
@@ -427,7 +427,7 @@ fn main() -> Result<()> {
                     println!();
                 }
                 if use_color {
-                    println!("{}── overlay ──{}", DIM, RESET);
+                    println!("{DIM}── overlay ──{RESET}");
                     println!("  {}{:>8x}{} {}{:<12}{} {}{} bytes (unprintable){}",
                         DIM, overlay.start_offset, RESET,
                         DIM, "-", RESET,
@@ -455,7 +455,7 @@ fn main() -> Result<()> {
         if !notable.is_empty() {
             println!();
             if use_color {
-                println!("{}{}▌ Notable{}", RED, BOLD, RESET);
+                println!("{RED}{BOLD}▌ Notable{RESET}");
             } else {
                 println!("── Notable ──");
             }
@@ -479,7 +479,7 @@ fn colorize_xml_line(line: &str) -> String {
             let before = &output[..key_start + 5];
             let content = &output[key_start + 5..key_end];
             let after = &output[key_end..];
-            output = format!("{}{}{}{}{}", before, RED, content, RESET, after);
+            output = format!("{before}{RED}{content}{RESET}{after}");
         }
     }
 
@@ -489,7 +489,7 @@ fn colorize_xml_line(line: &str) -> String {
             let before = &output[..str_start + 8];
             let content = &output[str_start + 8..str_end];
             let after = &output[str_end..];
-            output = format!("{}{}{}{}{}", before, CYAN, content, RESET, after);
+            output = format!("{before}{CYAN}{content}{RESET}{after}");
         }
     }
 
@@ -499,7 +499,7 @@ fn colorize_xml_line(line: &str) -> String {
 #[allow(dead_code)]
 fn print_colorized_entitlements(xml: &str, use_color: bool) {
     if !use_color {
-        println!("{}", xml);
+        println!("{xml}");
         return;
     }
 
@@ -565,7 +565,7 @@ fn print_colorized_entitlements(xml: &str, use_color: bool) {
     }
     result.push_str(&output[last_end..]);
 
-    println!("{}", result);
+    println!("{result}");
 }
 
 fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
@@ -576,7 +576,7 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
         // Print each line with its calculated offset
         for line in s.value.lines() {
-            let offset = format!("{:>8x}", byte_offset);
+            let offset = format!("{byte_offset:>8x}");
 
             if use_color {
                 let colorized = colorize_xml_line(line);
@@ -608,16 +608,15 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
         // Print each line with its calculated offset
         for line in s.value.lines() {
-            let offset = format!("{:>8x}", byte_offset);
+            let offset = format!("{byte_offset:>8x}");
             let clean_line = line.trim_end_matches(|c: char| c.is_control());
 
             if use_color {
                 println!(
-                    "  {}{}{} {}{:<12}{} {}{}{}",
-                    DIM, offset, RESET, kind_color, kind, RESET, color, clean_line, RESET
+                    "  {DIM}{offset}{RESET} {kind_color}{kind:<12}{RESET} {color}{clean_line}{RESET}"
                 );
             } else {
-                println!("  {} {:<12} {}", offset, kind, clean_line);
+                println!("  {offset} {kind:<12} {clean_line}");
             }
 
             // Update offset for next line (line length + newline)
@@ -665,7 +664,7 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     let clean_value = s.value.trim_end_matches(|c: char| c.is_control());
     let mut value = if clean_value.chars().count() > 120 {
         let truncated: String = clean_value.chars().take(117).collect();
-        format!("{}...", truncated)
+        format!("{truncated}...")
     } else {
         clean_value.to_string()
     };
@@ -686,23 +685,23 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
                         let text = text.trim();
                         if !text.is_empty() {
                             if use_color {
-                                value = format!("{} {}[{}]{}", value, DIM, text, RESET);
+                                value = format!("{value} {DIM}[{text}]{RESET}");
                             } else {
-                                value = format!("{} [{}]", value, text);
+                                value = format!("{value} [{text}]");
                             }
                         }
                     }
                 } else {
                     // Binary data - show as hex (especially useful for XOR-decoded base64)
                     let hex_preview = if decoded.len() <= 16 {
-                        decoded.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                        decoded.iter().map(|b| format!("{b:02x}")).collect::<String>()
                     } else {
-                        format!("{}...", decoded[..16].iter().map(|b| format!("{:02x}", b)).collect::<String>())
+                        format!("{}...", decoded[..16].iter().map(|b| format!("{b:02x}")).collect::<String>())
                     };
                     if use_color {
-                        value = format!("{} {}[0x{}]{}", value, DIM, hex_preview, RESET);
+                        value = format!("{value} {DIM}[0x{hex_preview}]{RESET}");
                     } else {
-                        value = format!("{} [0x{}]", value, hex_preview);
+                        value = format!("{value} [0x{hex_preview}]");
                     }
                 }
             }
@@ -721,17 +720,17 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
             } else {
                 // Auto-detected XOR key - show it
                 if use_color {
-                    format!("{} {}[{}]{}", value, DIM, lib, RESET)
+                    format!("{value} {DIM}[{lib}]{RESET}")
                 } else {
-                    format!("{} [{}]", value, lib)
+                    format!("{value} [{lib}]")
                 }
             }
         } else {
             // For imports, show with arrow
             if use_color {
-                format!("{} {}<- {}{}", value, DIM, lib, RESET)
+                format!("{value} {DIM}<- {lib}{RESET}")
             } else {
-                format!("{} <- {}", value, lib)
+                format!("{value} <- {lib}")
             }
         }
     } else {
@@ -740,10 +739,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
     if use_color {
         println!(
-            "  {}{}{} {}{:<12}{} {}{}{}",
-            DIM, offset, RESET, kind_color, kind, RESET, color, display_value, RESET
+            "  {DIM}{offset}{RESET} {kind_color}{kind:<12}{RESET} {color}{display_value}{RESET}"
         );
     } else {
-        println!("  {} {:<12} {}", offset, kind, display_value);
+        println!("  {offset} {kind:<12} {display_value}");
     }
 }

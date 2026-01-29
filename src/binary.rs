@@ -3,7 +3,7 @@
 use goblin::mach::MachO;
 
 /// Collect segment and section names from a Mach-O binary.
-pub(crate) fn collect_macho_segments(macho: &MachO) -> Vec<String> {
+pub fn collect_macho_segments(macho: &MachO) -> Vec<String> {
     let mut segments = Vec::new();
     for seg in &macho.segments {
         if let Ok(name) = seg.name() {
@@ -21,7 +21,7 @@ pub(crate) fn collect_macho_segments(macho: &MachO) -> Vec<String> {
 }
 
 /// Collect section names from an ELF binary.
-pub(crate) fn collect_elf_segments(elf: &goblin::elf::Elf) -> Vec<String> {
+pub fn collect_elf_segments(elf: &goblin::elf::Elf) -> Vec<String> {
     elf.section_headers
         .iter()
         .filter_map(|sh| elf.shdr_strtab.get_at(sh.sh_name).map(std::string::ToString::to_string))
@@ -29,7 +29,7 @@ pub(crate) fn collect_elf_segments(elf: &goblin::elf::Elf) -> Vec<String> {
 }
 
 /// Helper to check if a Mach-O binary has Go sections.
-pub(crate) fn macho_has_go_sections(macho: &MachO) -> bool {
+pub fn macho_has_go_sections(macho: &MachO) -> bool {
     macho.segments.iter().any(|seg| {
         seg.sections().is_ok_and(|secs| {
             secs.iter().any(|(sec, _)| {
@@ -69,7 +69,7 @@ pub fn is_rust_binary(data: &[u8]) -> bool {
 }
 
 /// Check if a Mach-O binary appears to be a Rust binary.
-pub(crate) fn macho_is_rust(macho: &MachO) -> bool {
+pub fn macho_is_rust(macho: &MachO) -> bool {
     macho.segments.iter().any(|seg| {
         seg.sections().is_ok_and(|secs| {
             secs.iter().any(|(sec, _)| {
@@ -81,7 +81,7 @@ pub(crate) fn macho_is_rust(macho: &MachO) -> bool {
 }
 
 /// Find the section name containing an address in a Mach-O binary.
-pub(crate) fn find_macho_section(macho: &MachO, addr: u64) -> Option<String> {
+pub fn find_macho_section(macho: &MachO, addr: u64) -> Option<String> {
     for seg in &macho.segments {
         for (sec, _) in &seg.sections().ok()? {
             let start = sec.addr;
@@ -95,7 +95,7 @@ pub(crate) fn find_macho_section(macho: &MachO, addr: u64) -> Option<String> {
 }
 
 /// Convert virtual address to file offset for Mach-O binaries.
-pub(crate) fn macho_vaddr_to_file_offset(macho: &MachO, vaddr: u64) -> u64 {
+pub fn macho_vaddr_to_file_offset(macho: &MachO, vaddr: u64) -> u64 {
     for seg in &macho.segments {
         let vm_start = seg.vmaddr;
         let vm_end = vm_start + seg.vmsize;

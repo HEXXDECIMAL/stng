@@ -24,6 +24,9 @@ pub struct StringFragment {
     pub offset: u64,
     /// Length of this fragment in bytes
     pub length: usize,
+    /// The specific instruction flavor (e.g., "movabs", "`stack_array`")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flavor: Option<String>,
 }
 
 /// An extracted string with metadata.
@@ -43,8 +46,7 @@ pub struct ExtractedString {
     /// Source library for imports (e.g., "libSystem.B.dylib")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub library: Option<String>,
-    /// For multi-part strings (StackString), tracks all source fragments
-    /// Example: ["https://", "paxo", "sfut"] from 3 separate mov instructions
+    /// For multi-part strings (`StackString`), tracks all source fragments
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub fragments: Option<Vec<StringFragment>>,
@@ -422,6 +424,7 @@ mod tests {
             method: StringMethod::Structure,
             kind: StringKind::Const,
             library: Some("lib".to_string()),
+            fragments: None,
         };
 
         let cloned = s.clone();

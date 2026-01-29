@@ -354,7 +354,12 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
             // Only add if it doesn't overlap (higher quality strings are checked first)
             if !overlaps {
                 trimmed_ranges.push((trimmed_start, trimmed_end));
-                final_results.push(result);
+
+                // Store the trimmed string with adjusted offset
+                let mut trimmed_result = result.clone();
+                trimmed_result.value = trimmed_both.to_string();
+                trimmed_result.data_offset = trimmed_start as u64;
+                final_results.push(trimmed_result);
             }
         }
         eprintln!("[PERF] Final overlap checking took {:.2}s, kept {} of {} strings",
@@ -424,7 +429,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                             section: None,
                             method: StringMethod::XorDecode,
                             kind,
-                            library: Some(format!("key:{}", key_preview)),
+                            library: Some(format!("key:{key_preview}")),
                         fragments: None,
                         });
                     }
@@ -442,7 +447,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
 /// Each string is XOR'd independently starting from key[0], not cycling from file offset 0.
 /// This is the most common approach in malware (e.g., DPRK samples).
 /// Extract strings using file-level cycling XOR (exhaustive key offset search).
-/// Tries XORing the entire file with the key starting at each possible offset (0..key.len()).
+/// Tries `XORing` the entire file with the key starting at each possible offset (`0..key.len()`).
 fn extract_custom_xor_strings_file_level_cycling(
     data: &[u8],
     key: &[u8],
@@ -558,7 +563,7 @@ fn extract_custom_xor_strings_file_level_cycling(
                                 section: None,
                                 method: StringMethod::XorDecode,
                                 kind,
-                                library: Some(format!("key:{}@{}", key_preview, key_offset)),
+                                library: Some(format!("key:{key_preview}@{key_offset}")),
                         fragments: None,
                             });
                         }
@@ -620,7 +625,12 @@ fn extract_custom_xor_strings_file_level_cycling(
         // Only add if it doesn't overlap (higher quality strings are checked first)
         if !overlaps {
             trimmed_ranges.push((trimmed_start, trimmed_end));
-            final_results.push(result);
+
+            // Store the trimmed string with adjusted offset
+            let mut trimmed_result = result.clone();
+            trimmed_result.value = trimmed_both.to_string();
+            trimmed_result.data_offset = trimmed_start as u64;
+            final_results.push(trimmed_result);
         }
     }
 
@@ -718,7 +728,7 @@ fn extract_xor_strings_from_hints(
                             section: None,
                             method: StringMethod::XorDecode,
                             kind,
-                            library: Some(format!("key:{}@hint", key_preview)),
+                            library: Some(format!("key:{key_preview}@hint")),
                         fragments: None,
                         });
                     }
@@ -784,7 +794,7 @@ fn string_quality_score(s: &ExtractedString) -> i32 {
         // Check if it looks like an IP address (4 segments with dots)
         let segments: Vec<&str> = s.value.split('.').collect();
         if segments.len() == 4 && segments.iter().all(|seg| {
-            seg.chars().take_while(|c| c.is_ascii_digit()).count() > 0
+            seg.chars().take_while(char::is_ascii_digit).count() > 0
         }) {
             score += 35; // Likely an IP address
         }
@@ -792,7 +802,7 @@ fn string_quality_score(s: &ExtractedString) -> i32 {
 
     // Penalty for strings that look like garbage
     let special_count = s.value.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
-    if s.value.len() > 0 && special_count * 100 / s.value.len() > 40 {
+    if !s.value.is_empty() && special_count * 100 / s.value.len() > 40 {
         score -= 20; // Too many special characters
     }
 
@@ -800,7 +810,7 @@ fn string_quality_score(s: &ExtractedString) -> i32 {
 }
 
 /// Check if a decoded string is likely just the XOR key itself (or fragments).
-/// This happens when XORing null bytes with the key.
+/// This happens when `XORing` null bytes with the key.
 fn is_xor_key_artifact(s: &str, key: &[u8]) -> bool {
     // Convert key to string for comparison
     let key_str = String::from_utf8_lossy(key);
@@ -937,7 +947,7 @@ fn extract_custom_xor_strings_pattern_based(
                             section: None,
                             method: StringMethod::XorDecode,
                             kind,
-                            library: Some(format!("key:{}", key_preview)),
+                            library: Some(format!("key:{key_preview}")),
                         fragments: None,
                         });
                     }
@@ -1028,7 +1038,7 @@ fn try_decode_xor_string_at(
 
     // Quick sanity check: must have some meaningful content
     // (at least 3 alphanumeric chars total, not necessarily consecutive)
-    let alnum_count = decoded_str.chars().filter(|c| c.is_ascii_alphanumeric()).count();
+    let alnum_count = decoded_str.chars().filter(char::is_ascii_alphanumeric).count();
 
     if alnum_count < 3 {
         return None;
@@ -1315,7 +1325,7 @@ pub fn extract_multikey_xor_strings(
                                 section: None,
                                 method: StringMethod::XorDecode,
                                 kind,
-                                library: Some(format!("key:{}", key_preview)),
+                                library: Some(format!("key:{key_preview}")),
                         fragments: None,
                             });
                         }
@@ -1381,7 +1391,7 @@ fn scan_dotted_patterns(
                                 section: None,
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IP,
-                                library: Some(format!("0x{:02X}", key)),
+                                library: Some(format!("0x{key:02X}")),
                         fragments: None,
                             });
                         }
@@ -1398,7 +1408,7 @@ fn scan_dotted_patterns(
                                 section: None,
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IPPort,
-                                library: Some(format!("0x{:02X}", key)),
+                                library: Some(format!("0x{key:02X}")),
                         fragments: None,
                             });
                         }
@@ -1418,7 +1428,7 @@ fn scan_dotted_patterns(
                             section: None,
                             method: StringMethod::XorDecode,
                             kind: StringKind::Hostname,
-                            library: Some(format!("0x{:02X}", key)),
+                            library: Some(format!("0x{key:02X}")),
                         fragments: None,
                         });
                     }
@@ -2037,7 +2047,7 @@ fn trim_trailing_garbage(s: &str) -> &str {
 
         // Stop at clear delimiters
         if c == '"' || c == '\'' || c == ')' || c == ']' || c == '}' || c == '>' {
-            return s.char_indices().nth(i + 1).map(|(pos, _)| &s[..pos]).unwrap_or(s);
+            return s.char_indices().nth(i + 1).map_or(s, |(pos, _)| &s[..pos]);
         }
 
         // Stop at alphanumeric followed by whitespace or punctuation that suggests a boundary
@@ -2047,7 +2057,7 @@ fn trim_trailing_garbage(s: &str) -> &str {
                 let next = chars[i + 1];
                 // If followed by unusual characters, this might be the real end
                 if !next.is_ascii_alphanumeric() && next != '/' && next != '.' && next != '-' && next != '_' {
-                    return s.char_indices().nth(i + 1).map(|(pos, _)| &s[..pos]).unwrap_or(s);
+                    return s.char_indices().nth(i + 1).map_or(s, |(pos, _)| &s[..pos]);
                 }
             } else {
                 // Last character is alphanumeric - keep whole string
@@ -2067,19 +2077,38 @@ fn trim_leading_garbage(s: &str) -> &str {
     }
 
     // Strip leading single-byte XOR key artifacts (from null bytes in original data)
-    // These appear as random single characters before legitimate content
-    // Common pattern: null bytes XOR key_byte = key_byte character
+    // Check if removing the first character reveals a known command or pattern
+    if s.len() >= 2 {
+        let without_first = &s[1..];
+
+        // Known commands that might have a garbage prefix
+        let known_starts = [
+            "launchctl", "screencapture", "osascript", "open ", "curl ", "wget ",
+            "/bin/", "/usr/", "/Library/", "/etc/", "/var/", "~/",
+        ];
+
+        for pattern in &known_starts {
+            if without_first.starts_with(pattern) {
+                return without_first;
+            }
+        }
+    }
+
+    // Strip single non-alphanumeric, non-whitespace garbage bytes
+    // ONLY if they're truly garbage (not legitimate content)
     let chars: Vec<char> = s.chars().collect();
     if chars.len() >= 2 {
         let first = chars[0];
         let second = chars[1];
 
-        // If first char is not a legitimate prefix character, and second char starts legitimate content
-        let is_legitimate_prefix = matches!(first, '$' | '@' | '~' | '%' | '"' | '\'' | '(' | '[' | '{' | '<');
+        // If first char is not alphanumeric and not a legitimate prefix character
+        // and second char starts a legitimate word, then it's likely garbage
+        let is_legitimate_prefix = matches!(first, '$' | '@' | '~' | '%' | '"' | '\'' | '(' | '[' | '{' | '<' | '/' | '\\' | '.');
 
-        if !is_legitimate_prefix && (second.is_ascii_alphabetic() || second == '/') {
-            // Skip the first character and recurse to handle multiple garbage bytes
-            return trim_leading_garbage(&s[first.len_utf8()..]);
+        if !first.is_alphanumeric() && !is_legitimate_prefix && !first.is_whitespace()
+           && second.is_ascii_alphabetic() {
+            // Only strip one byte
+            return &s[first.len_utf8()..];
         }
     }
 
@@ -2119,8 +2148,20 @@ fn trim_leading_garbage(s: &str) -> &str {
 
     // Check for absolute Unix paths (but not /Library which we already handled)
     // Look for patterns like /bin/, /usr/, /etc/, /var/, /opt/, /home/
+    // BUT: only trim if there's actual garbage before the path, not legitimate commands
     for path_prefix in &["/bin/", "/usr/", "/etc/", "/var/", "/opt/", "/home/"] {
         if let Some(pos) = s.find(path_prefix) {
+            if pos > 0 {
+                let prefix = &s[..pos];
+                // Check if prefix looks like a legitimate command (starts with alphanumeric or whitespace)
+                // If so, keep it rather than trimming to just the path
+                let first_char = prefix.chars().next().unwrap_or('\0');
+                if first_char.is_ascii_alphabetic() || first_char.is_whitespace() {
+                    // Prefix looks legitimate, keep the whole string
+                    continue;
+                }
+                // Otherwise, prefix is garbage - trim it
+            }
             return &s[pos..];
         }
     }
@@ -2345,8 +2386,8 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
                 // Multi-level paths should have reasonable component names
                 for part in &parts {
                     // Each component should be mostly alphanumeric
-                    let alnum = part.chars().filter(|c| c.is_ascii_alphanumeric()).count();
-                    if part.len() > 0 && alnum * 100 / part.len() < 60 {
+                    let alnum = part.chars().filter(char::is_ascii_alphanumeric).count();
+                    if !part.is_empty() && alnum * 100 / part.len() < 60 {
                         return None;
                     }
                 }
@@ -2424,8 +2465,7 @@ fn has_known_path_prefix(path: &str) -> bool {
     // Also check for relative paths
     // ./ with any name (common for malware: ./malware, ./payload, etc.)
     // ../ needs at least 2 levels
-    if path.starts_with("./") {
-        let after_dot_slash = &path[2..];
+    if let Some(after_dot_slash) = path.strip_prefix("./") {
         // Must have some content after ./
         return !after_dot_slash.is_empty() && after_dot_slash.chars().next().unwrap().is_ascii_alphanumeric();
     }

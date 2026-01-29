@@ -46,7 +46,7 @@ pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
 /// Extract entitlements from Mach-O code signature as raw XML.
 ///
 /// Returns the full XML plist as a single string for inline display.
-pub(crate) fn extract_macho_entitlements(
+pub fn extract_macho_entitlements(
     macho: &MachO,
     data: &[u8],
     _min_length: usize,

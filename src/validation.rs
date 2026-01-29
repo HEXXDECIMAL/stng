@@ -430,22 +430,22 @@ pub fn is_garbage(s: &str) -> bool {
         let mut current_run_length = 1;
 
         for i in 1..char_classes.len() {
-            if char_classes[i] != char_classes[i - 1] {
+            if char_classes[i] == char_classes[i - 1] {
+                current_run_length += 1;
+            } else {
                 transitions += 1;
                 run_lengths.push(current_run_length);
                 current_run_length = 1;
-            } else {
-                current_run_length += 1;
             }
         }
         run_lengths.push(current_run_length); // Don't forget the last run
 
         // Calculate average run length
         let total_run_chars: usize = run_lengths.iter().sum();
-        let avg_run_length = if !run_lengths.is_empty() {
-            total_run_chars as f32 / run_lengths.len() as f32
-        } else {
+        let avg_run_length = if run_lengths.is_empty() {
             0.0
+        } else {
+            total_run_chars as f32 / run_lengths.len() as f32
         };
 
         // Check if string is dominated by one character class (>70%)
@@ -553,7 +553,7 @@ pub fn is_valid_string(bytes: &[u8], min_length: usize) -> bool {
         return false;
     }
 
-    std::str::from_utf8(bytes).map_or(false, |s| {
+    std::str::from_utf8(bytes).is_ok_and(|s| {
         // Check printability
         let printable = s
             .chars()

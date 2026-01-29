@@ -248,7 +248,7 @@ impl GoStringExtractor {
                 let size = section.size_of_raw_data as usize;
                 let end = start.saturating_add(size);
                 if end <= data.len() && size > 0 {
-                    Some((section.virtual_address as u64, &data[start..end]))
+                    Some((u64::from(section.virtual_address), &data[start..end]))
                 } else {
                     None
                 }
@@ -315,7 +315,7 @@ impl GoStringExtractor {
                 let end = start.saturating_add(size);
 
                 if end <= data.len() && size > 0 {
-                    return Some((section.virtual_address as u64, &data[start..end]));
+                    return Some((u64::from(section.virtual_address), &data[start..end]));
                 }
             }
         }

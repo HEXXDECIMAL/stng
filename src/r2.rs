@@ -312,8 +312,8 @@ fn analyze_candidates_by_patterns(
         }
         let func_addr = parts[0];
         func_addrs.push(func_addr.to_string());
-        cmd_parts.push(format!("pdf @ {}", func_addr));
-        cmd_parts.push(format!("echo ===FUNC_SEPARATOR_{}===", func_addr));
+        cmd_parts.push(format!("pdf @ {func_addr}"));
+        cmd_parts.push(format!("echo ===FUNC_SEPARATOR_{func_addr}==="));
     }
 
     let compound_cmd = cmd_parts.join("; ");
@@ -496,7 +496,7 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
         }
 
         let vaddr = candidate.data_offset;
-        let xrefs_cmd = format!("axt 0x{:x}", vaddr);
+        let xrefs_cmd = format!("axt 0x{vaddr:x}");
         let xrefs = match run_tool_command(tool, path, &xrefs_cmd) {
             Some(x) => x,
             None => continue,
@@ -550,7 +550,7 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
             let func_name = parts[0];
 
             // Disassemble the function
-            let pdf_cmd = format!("pdf @ {}", func_name);
+            let pdf_cmd = format!("pdf @ {func_name}");
             let disasm = match run_tool_command(tool, path, &pdf_cmd) {
                 Some(d) => d,
                 None => continue,
@@ -614,7 +614,7 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
                     let func_name = parts[0];
 
                     // Disassemble the function
-                    let pdf_cmd = format!("aaa; pdf @ {}", func_name);
+                    let pdf_cmd = format!("aaa; pdf @ {func_name}");
                     let disasm = match run_tool_command(tool, path, &pdf_cmd) {
                         Some(d) => d,
                         None => continue,
