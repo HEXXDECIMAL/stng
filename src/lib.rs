@@ -41,6 +41,7 @@ mod validation;
 mod binary;
 mod imports;
 mod raw;
+mod stack_strings;
 mod entitlements;
 mod overlay;
 mod detect;
@@ -75,7 +76,7 @@ use binary::{collect_elf_segments, collect_macho_segments, macho_has_go_sections
 use entitlements::extract_macho_entitlements;
 use imports::{extract_elf_imports, extract_macho_imports};
 use raw::{extract_raw_strings, extract_wide_strings};
-
+use stack_strings::extract_stack_strings;
 
 #[derive(Debug, Clone, Default)]
 pub struct ExtractOptions {
@@ -195,6 +196,21 @@ pub fn extract_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
     extract_strings_with_options(data, &ExtractOptions::new(min_length))
 }
 
+fn method_priority(m: StringMethod) -> u8 {
+    match m {
+        StringMethod::Structure
+        | StringMethod::StackString
+        | StringMethod::InstructionPattern => 3,
+        StringMethod::R2String
+        | StringMethod::R2Symbol
+        | StringMethod::WideString
+        | StringMethod::XorDecode
+        | StringMethod::CodeSignature => 2,
+        StringMethod::Heuristic => 1,
+        StringMethod::RawScan => 0,
+    }
+}
+
 /// Deduplicate strings by keeping only the longest string at each offset.
 /// This handles cases where overlapping strings exist at the same offset.
 fn deduplicate_by_offset(strings: Vec<ExtractedString>) -> Vec<ExtractedString> {
@@ -209,7 +225,18 @@ fn deduplicate_by_offset(strings: Vec<ExtractedString>) -> Vec<ExtractedString> 
         .into_values()
         .map(|mut strings_at_offset| {
             if strings_at_offset.len() > 1 {
-                strings_at_offset.sort_by_key(|s| std::cmp::Reverse(s.value.len()));
+                strings_at_offset.sort_by(|a, b| {
+                    // First compare by method priority (higher is better)
+                    let pa = method_priority(a.method);
+                    let pb = method_priority(b.method);
+                    match pb.cmp(&pa) {
+                        std::cmp::Ordering::Equal => {
+                            // Then by length (longer is better)
+                            b.value.len().cmp(&a.value.len())
+                        }
+                        other => other,
+                    }
+                });
             }
             strings_at_offset.into_iter().next().unwrap()
         })
@@ -262,6 +289,17 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 
         // XOR string detection
         if !data.is_empty() {
+            // Get radare2 string boundaries for XOR hints (if r2 is enabled)
+            let r2_boundaries = if opts.use_r2 {
+                if let Some(path) = &opts.path {
+                    r2::extract_string_boundaries(path)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             // Custom XOR key takes precedence over auto-detection
             if let Some(ref key) = opts.xor_key {
                 tracing::debug!("Custom XOR: using {} byte key", key.len());
@@ -275,16 +313,20 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 }
 
                 if opts.filter_garbage {
-                    strings.extend(xor::extract_custom_xor_strings(
+                    strings.extend(xor::extract_custom_xor_strings_with_hints(
                         data,
                         key,
                         opts.xor_min_length,
+                        r2_boundaries.as_deref(),
+                        true,
                     ));
                 } else {
-                    strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                    strings.extend(xor::extract_custom_xor_strings_with_hints(
                         data,
                         key,
                         opts.xor_min_length,
+                        r2_boundaries.as_deref(),
+                        false,
                     ));
                 }
             } else if opts.xor_scan {
@@ -305,16 +347,20 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                     }
 
                     if opts.filter_garbage {
-                        strings.extend(xor::extract_custom_xor_strings(
+                        strings.extend(xor::extract_custom_xor_strings_with_hints(
                             data,
                             &key,
                             opts.xor_min_length,
+                            r2_boundaries.as_deref(),
+                            true,
                         ));
                     } else {
-                        strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                        strings.extend(xor::extract_custom_xor_strings_with_hints(
                             data,
                             &key,
                             opts.xor_min_length,
+                            r2_boundaries.as_deref(),
+                            false,
                         ));
                     }
                 } else {
@@ -395,6 +441,7 @@ pub fn extract_from_object(
                     strings.extend(rust_strings);
                 }
             }
+            strings.extend(extract_stack_strings(data, min_length));
             // Add imports/exports, upgrading existing strings
             let imports = extract_macho_imports(macho, min_length);
             let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
@@ -464,6 +511,7 @@ pub fn extract_from_object(
                 // Also do raw scan to catch anything r2 missed
                 strings.extend(extract_raw_strings(data, min_length, None, &segments));
             }
+            strings.extend(extract_stack_strings(data, min_length));
             // Add imports/exports from first architecture, upgrading existing strings
             if let Some(ref macho) = first_macho {
                 let imports = extract_macho_imports(macho, min_length);
@@ -544,6 +592,7 @@ pub fn extract_from_object(
                     strings.extend(rust_strings);
                 }
             }
+            strings.extend(extract_stack_strings(data, min_length));
             // Add imports/exports from dynamic symbols, upgrading existing strings
             let imports = extract_elf_imports(elf, min_length);
             let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
@@ -600,6 +649,8 @@ pub fn extract_from_object(
             // Raw scan for PE (catches strings missed by structure extraction)
             strings.extend(extract_raw_strings(data, min_length, None, &segments));
 
+            strings.extend(extract_stack_strings(data, min_length));
+
             // Extract overlay/appended data (common malware technique)
             strings.extend(extract_overlay_strings(data, min_length));
         }
@@ -611,11 +662,23 @@ pub fn extract_from_object(
             if strings.is_empty() && !data.is_empty() {
                 strings.extend(extract_raw_strings(data, min_length, None, &[]));
             }
+            strings.extend(extract_stack_strings(data, min_length));
         }
     }
 
     // XOR string detection
     if !data.is_empty() {
+        // Get radare2 string boundaries for XOR hints (if r2 is enabled)
+        let r2_boundaries = if opts.use_r2 {
+            if let Some(path) = &opts.path {
+                r2::extract_string_boundaries(path)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Custom XOR key takes precedence over auto-detection
         if let Some(ref key) = opts.xor_key {
             tracing::info!("Custom XOR: using {} byte key", key.len());
@@ -629,16 +692,20 @@ pub fn extract_from_object(
             }
 
             if opts.filter_garbage {
-                strings.extend(xor::extract_custom_xor_strings(
+                strings.extend(xor::extract_custom_xor_strings_with_hints(
                     data,
                     key,
                     opts.xor_min_length,
+                    r2_boundaries.as_deref(),
+                    true,
                 ));
             } else {
-                strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                strings.extend(xor::extract_custom_xor_strings_with_hints(
                     data,
                     key,
                     opts.xor_min_length,
+                    r2_boundaries.as_deref(),
+                    false,
                 ));
             }
         } else if opts.xor_scan {
@@ -659,16 +726,20 @@ pub fn extract_from_object(
                 }
 
                 if opts.filter_garbage {
-                    strings.extend(xor::extract_custom_xor_strings(
+                    strings.extend(xor::extract_custom_xor_strings_with_hints(
                         data,
                         &key,
                         opts.xor_min_length,
+                        r2_boundaries.as_deref(),
+                        true,
                     ));
                 } else {
-                    strings.extend(xor::extract_custom_xor_strings_unfiltered(
+                    strings.extend(xor::extract_custom_xor_strings_with_hints(
                         data,
                         &key,
                         opts.xor_min_length,
+                        r2_boundaries.as_deref(),
+                        false,
                     ));
                 }
             } else {

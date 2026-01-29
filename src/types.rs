@@ -58,6 +58,8 @@ pub enum StringMethod {
     WideString,
     /// Found via XOR decoding (single-byte key)
     XorDecode,
+    /// Found via stack string construction analysis (immediate values)
+    StackString,
     /// Found in Mach-O code signature (entitlements)
     CodeSignature,
 }
@@ -116,6 +118,8 @@ pub enum StringKind {
     Overlay,
     /// Overlay data in UTF-16LE encoding (common in malware configs)
     OverlayWide,
+    /// Stack-constructed string (common in malware)
+    StackString,
     /// macOS entitlement from code signature
     Entitlement,
     /// Application/service identifier from entitlements
@@ -154,6 +158,7 @@ impl StringKind {
             | StringKind::Base64
             | StringKind::Overlay
             | StringKind::OverlayWide
+            | StringKind::StackString
             | StringKind::Entitlement
             | StringKind::AppId
             | StringKind::XorKey => Severity::High,
@@ -198,6 +203,7 @@ impl StringKind {
             StringKind::Base64 => "base64",
             StringKind::Overlay => "overlay",
             StringKind::OverlayWide => "overlay:16LE",
+            StringKind::StackString => "stack",
             StringKind::Entitlement => "entitlement",
             StringKind::AppId => "appid",
             StringKind::EntitlementsXml => "entitlements",

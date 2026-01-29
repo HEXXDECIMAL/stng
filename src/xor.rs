@@ -213,7 +213,7 @@ pub fn extract_custom_xor_strings(
     key: &[u8],
     min_length: usize,
 ) -> Vec<ExtractedString> {
-    extract_custom_xor_strings_filtered(data, key, min_length, true)
+    extract_custom_xor_strings_with_hints(data, key, min_length, None, true)
 }
 
 pub fn extract_custom_xor_strings_unfiltered(
@@ -221,14 +221,65 @@ pub fn extract_custom_xor_strings_unfiltered(
     key: &[u8],
     min_length: usize,
 ) -> Vec<ExtractedString> {
-    extract_custom_xor_strings_filtered(data, key, min_length, false)
+    extract_custom_xor_strings_with_hints(data, key, min_length, None, false)
 }
 
-fn extract_custom_xor_strings_filtered(
+/// Extract XOR strings with optional radare2 boundary hints.
+/// Hints are tried first, and successful regions are excluded from file-wide scanning.
+pub fn extract_custom_xor_strings_with_hints(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+    r2_hints: Option<&[crate::r2::StringBoundary]>,
+    apply_filters: bool,
+) -> Vec<ExtractedString> {
+    if key.is_empty() || data.is_empty() {
+        return Vec::new();
+    }
+
+    // Track regions that have been successfully decoded with high quality
+    let mut excluded_ranges: Vec<(usize, usize)> = Vec::new();
+
+    // Step 1: Try radare2 hints first if available
+    let mut hint_results = Vec::new();
+    if let Some(hints) = r2_hints {
+        tracing::info!("Trying {} radare2 string boundary hints", hints.len());
+        hint_results = extract_xor_strings_from_hints(data, key, min_length, hints, apply_filters);
+
+        // Mark high-quality hint results as excluded from file-wide scanning
+        for result in &hint_results {
+            if is_high_quality_string(result) {
+                let start = result.data_offset as usize;
+                let end = start + result.value.len();
+                excluded_ranges.push((start, end));
+            }
+        }
+
+        tracing::info!(
+            "Radare2 hints produced {} strings, {} high-quality regions excluded",
+            hint_results.len(),
+            excluded_ranges.len()
+        );
+    }
+
+    // Step 2: Continue with normal extraction, excluding hint regions
+    extract_custom_xor_strings_filtered_with_exclusions(
+        data,
+        key,
+        min_length,
+        apply_filters,
+        excluded_ranges,
+        hint_results,
+    )
+}
+
+fn extract_custom_xor_strings_filtered_with_exclusions(
     data: &[u8],
     key: &[u8],
     min_length: usize,
     apply_filters: bool,
+    excluded_ranges: Vec<(usize, usize)>,
+    hint_results: Vec<ExtractedString>,
 ) -> Vec<ExtractedString> {
     if key.is_empty() || data.is_empty() {
         return Vec::new();
@@ -238,17 +289,85 @@ fn extract_custom_xor_strings_filtered(
     // 1. Pattern-based: each string XOR'd independently from key[0]
     // 2. File-level cycling: entire file XOR'd at all key offsets
     if key.len() > 1 {
-        let mut all_results = extract_custom_xor_strings_pattern_based(data, key, min_length, apply_filters);
+        let mut all_results = extract_custom_xor_strings_pattern_based(
+            data,
+            key,
+            min_length,
+            apply_filters,
+            &excluded_ranges,
+        );
 
         // Also try file-level cycling (like single-byte XOR but at all key offsets)
         // This catches strings embedded in continuous XOR'd blocks
-        all_results.extend(extract_custom_xor_strings_file_level_cycling(data, key, min_length, apply_filters));
+        all_results.extend(extract_custom_xor_strings_file_level_cycling(
+            data,
+            key,
+            min_length,
+            apply_filters,
+            &excluded_ranges,
+        ));
 
         // Deduplicate by (offset, value)
+        let dedup_start = std::time::Instant::now();
         let mut seen: HashSet<(u64, String)> = HashSet::new();
         all_results.retain(|s| seen.insert((s.data_offset, s.value.clone())));
+        eprintln!("[PERF] Dedup by (offset, value): {} -> {} strings in {:.2}s",
+            all_results.len() + seen.len(), all_results.len(), dedup_start.elapsed().as_secs_f64());
 
-        return all_results;
+        // Remove overlapping strings - keep the higher quality one
+        // Sort by quality (score) descending, then by offset
+        let sort_start = std::time::Instant::now();
+        all_results.sort_by(|a, b| {
+            let score_a = string_quality_score(a);
+            let score_b = string_quality_score(b);
+            score_b.cmp(&score_a).then(a.data_offset.cmp(&b.data_offset))
+        });
+        eprintln!("[PERF] Final sorting {} strings took {:.2}s",
+            all_results.len(), sort_start.elapsed().as_secs_f64());
+
+        let overlap_start = std::time::Instant::now();
+        let result_count = all_results.len();
+        let mut final_results: Vec<ExtractedString> = Vec::new();
+        // Cache trimmed ranges to avoid recalculating trim_*_garbage() repeatedly
+        let mut trimmed_ranges: Vec<(usize, usize)> = Vec::new(); // (trimmed_start, trimmed_end)
+
+        for result in all_results {
+            let start = result.data_offset as usize;
+            let end = start + result.value.len();
+
+            // Trim both leading and trailing garbage for overlap checking
+            let trimmed_leading = trim_leading_garbage(&result.value);
+            let leading_offset = result.value.len() - trimmed_leading.len();
+            let trimmed_both = trim_trailing_garbage(trimmed_leading);
+            let trimmed_start = start + leading_offset;
+            let trimmed_end = trimmed_start + trimmed_both.len();
+
+            // Check if this overlaps with any previously accepted string (using trimmed ranges)
+            let mut overlaps = false;
+            for &(prev_trimmed_start, prev_trimmed_end) in &trimmed_ranges {
+                if !(trimmed_end <= prev_trimmed_start || trimmed_start >= prev_trimmed_end) {
+                    overlaps = true;
+                    break;
+                }
+            }
+
+            // Only add if it doesn't overlap (higher quality strings are checked first)
+            if !overlaps {
+                trimmed_ranges.push((trimmed_start, trimmed_end));
+                final_results.push(result);
+            }
+        }
+        eprintln!("[PERF] Final overlap checking took {:.2}s, kept {} of {} strings",
+            overlap_start.elapsed().as_secs_f64(), final_results.len(), result_count);
+
+        // Re-sort by offset for consistent output
+        final_results.sort_by_key(|s| s.data_offset);
+
+        // Merge with hint results
+        final_results.extend(hint_results);
+        final_results.sort_by_key(|s| s.data_offset);
+
+        return final_results;
     }
 
     // Single-byte key: use file-level XOR (simpler, same result either way)
@@ -328,7 +447,9 @@ fn extract_custom_xor_strings_file_level_cycling(
     key: &[u8],
     min_length: usize,
     apply_filters: bool,
+    excluded_ranges: &[(usize, usize)],
 ) -> Vec<ExtractedString> {
+    let start_time = std::time::Instant::now();
     tracing::info!(
         "File-level cycling XOR: {} bytes with {} byte key ({} offsets)",
         data.len(),
@@ -336,7 +457,7 @@ fn extract_custom_xor_strings_file_level_cycling(
         key.len()
     );
 
-    let mut all_results = Vec::new();
+    let mut all_candidates = Vec::new();
     let mut seen: HashSet<(u64, String)> = HashSet::new();
 
     // Try each possible key offset
@@ -357,6 +478,21 @@ fn extract_custom_xor_strings_file_level_cycling(
 
             if start >= decoded.len() {
                 break;
+            }
+
+
+            // Skip if this position is in an excluded range (from radare2 hints)
+            let in_excluded_range = excluded_ranges.iter().any(|&(ex_start, ex_end)| {
+                start >= ex_start && start < ex_end
+            });
+            if in_excluded_range {
+                // Skip to end of excluded range
+                if let Some(&(_, ex_end)) = excluded_ranges.iter().find(|&&(ex_start, ex_end)| {
+                    start >= ex_start && start < ex_end
+                }) {
+                    start = ex_end;
+                    continue;
+                }
             }
 
             // Skip if we're in a null byte region in the original data
@@ -381,7 +517,7 @@ fn extract_custom_xor_strings_file_level_cycling(
                 // Stop if we hit many consecutive nulls in the source data
                 if end < data.len() && data[end] == 0x00 {
                     consecutive_nulls += 1;
-                    if consecutive_nulls >= 4 {
+                    if consecutive_nulls >= 2 {
                         break;
                     }
                 } else {
@@ -415,7 +551,7 @@ fn extract_custom_xor_strings_file_level_cycling(
                                 String::from_utf8_lossy(key).to_string()
                             };
 
-                            all_results.push(ExtractedString {
+                            all_candidates.push(ExtractedString {
                                 value: s,
                                 data_offset: offset,
                                 section: None,
@@ -432,18 +568,232 @@ fn extract_custom_xor_strings_file_level_cycling(
         }
     }
 
+    let collection_time = start_time.elapsed();
+    eprintln!("[PERF] File-level cycling collected {} candidates in {:.2}s",
+        all_candidates.len(), collection_time.as_secs_f64());
+
     tracing::info!(
-        "File-level cycling complete: found {} strings across {} offsets",
-        all_results.len(),
+        "File-level cycling collected {} candidate strings across {} offsets",
+        all_candidates.len(),
         key.len()
     );
 
-    all_results
+    // Remove overlapping strings - keep the higher quality one
+    // Sort by quality (score) descending, then by offset
+    let dedup_start = std::time::Instant::now();
+    all_candidates.sort_by(|a, b| {
+        let score_a = string_quality_score(a);
+        let score_b = string_quality_score(b);
+        score_b.cmp(&score_a).then(a.data_offset.cmp(&b.data_offset))
+    });
+    eprintln!("[PERF] Sorting {} candidates took {:.2}s",
+        all_candidates.len(), dedup_start.elapsed().as_secs_f64());
+
+    let candidate_count = all_candidates.len();
+    let mut final_results: Vec<ExtractedString> = Vec::new();
+    // Cache trimmed ranges to avoid recalculating trim_*_garbage() repeatedly
+    let mut trimmed_ranges: Vec<(usize, usize)> = Vec::new(); // (trimmed_start, trimmed_end)
+
+    for result in all_candidates {
+        let start = result.data_offset as usize;
+        let end = start + result.value.len();
+
+        // Trim both leading and trailing garbage for overlap checking
+        let trimmed_leading = trim_leading_garbage(&result.value);
+        let leading_offset = result.value.len() - trimmed_leading.len();
+        let trimmed_both = trim_trailing_garbage(trimmed_leading);
+        let trimmed_start = start + leading_offset;
+        let trimmed_end = trimmed_start + trimmed_both.len();
+
+        // Check if this overlaps with any previously accepted string (using trimmed ranges)
+        let mut overlaps = false;
+        for &(prev_trimmed_start, prev_trimmed_end) in &trimmed_ranges {
+            // Only consider it an overlap if it overlaps with the trimmed (legitimate) part
+            if !(trimmed_end <= prev_trimmed_start || trimmed_start >= prev_trimmed_end) {
+                overlaps = true;
+                break;
+            }
+        }
+
+        // Only add if it doesn't overlap (higher quality strings are checked first)
+        if !overlaps {
+            trimmed_ranges.push((trimmed_start, trimmed_end));
+            final_results.push(result);
+        }
+    }
+
+    let overlap_time = dedup_start.elapsed();
+    eprintln!("[PERF] Overlap checking took {:.2}s, kept {} of {} strings",
+        overlap_time.as_secs_f64(), final_results.len(), candidate_count);
+
+    // Re-sort by offset for consistent output
+    final_results.sort_by_key(|s| s.data_offset);
+
+    let total_time = start_time.elapsed();
+    eprintln!("[PERF] File-level cycling total: {:.2}s", total_time.as_secs_f64());
+
+    tracing::info!(
+        "File-level cycling complete: {} strings after quality-based deduplication",
+        final_results.len()
+    );
+
+    final_results
 }
 
 /// Check if a byte is printable for file-level XOR extraction
 fn is_printable_byte_for_file_xor(b: u8) -> bool {
     b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n'
+}
+
+/// Try XOR decoding at radare2 string boundary hints.
+/// These locations are where r2 found null-terminated strings, making them
+/// likely candidates for properly-terminated XOR'd strings.
+fn extract_xor_strings_from_hints(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+    hints: &[crate::r2::StringBoundary],
+    apply_filters: bool,
+) -> Vec<ExtractedString> {
+    let mut results = Vec::new();
+    let mut seen: HashSet<(u64, String)> = HashSet::new();
+
+    for hint in hints {
+        let offset = hint.offset as usize;
+        let max_len = hint.length;
+
+        if offset >= data.len() {
+            continue;
+        }
+
+        // Try file-level cycling (all key offsets)
+        for key_offset in 0..key.len() {
+            let mut decoded = Vec::new();
+            let mut end = offset;
+
+            // Decode up to hint.length bytes or until we hit non-printable
+            while end < data.len() && (end - offset) < max_len {
+                let actual_offset = end;
+                let ki = (actual_offset + key_offset) % key.len();
+                let decoded_byte = data[end] ^ key[ki];
+
+                if is_printable_byte_for_file_xor(decoded_byte) {
+                    decoded.push(decoded_byte);
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if decoded.len() < min_length {
+                continue;
+            }
+
+            if let Ok(s) = String::from_utf8(decoded) {
+                // Skip XOR key artifacts
+                if apply_filters && is_xor_key_artifact(&s, key) {
+                    continue;
+                }
+
+                // Classify
+                let kind_opt = if apply_filters {
+                    classify_xor_string(&s)
+                } else {
+                    Some(StringKind::Const)
+                };
+
+                if let Some(kind) = kind_opt {
+                    if seen.insert((offset as u64, s.clone())) {
+                        let key_preview = if key.len() > 8 {
+                            format!("{}...", String::from_utf8_lossy(&key[..8]))
+                        } else {
+                            String::from_utf8_lossy(key).to_string()
+                        };
+
+                        results.push(ExtractedString {
+                            value: s,
+                            data_offset: offset as u64,
+                            section: None,
+                            method: StringMethod::XorDecode,
+                            kind,
+                            library: Some(format!("key:{}@hint", key_preview)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Check if a string is high quality (worth excluding its region from file-wide scanning).
+fn is_high_quality_string(s: &ExtractedString) -> bool {
+    // High quality = shell commands, suspicious paths, URLs, crypto terms
+    matches!(
+        s.kind,
+        StringKind::ShellCmd | StringKind::SuspiciousPath | StringKind::Url | StringKind::IP
+    ) || s.value.to_ascii_lowercase().contains("ethereum")
+        || s.value.to_ascii_lowercase().contains("bitcoin")
+        || s.value.to_ascii_lowercase().contains("osascript")
+        || s.value.len() >= 30 // Long strings are usually significant
+}
+
+/// Score a string's quality for deduplication purposes.
+/// Higher score = higher quality = prefer keeping this string.
+fn string_quality_score(s: &ExtractedString) -> i32 {
+    let mut score = 0;
+
+    // Score based on string kind (higher value = more interesting)
+    match s.kind {
+        StringKind::ShellCmd => score += 100,
+        StringKind::SuspiciousPath => score += 90,
+        StringKind::Url => score += 80,
+        StringKind::IP | StringKind::IPPort => score += 70,
+        StringKind::Hostname => score += 60,
+        StringKind::Registry => score += 50,
+        StringKind::Path => score += 40,
+        StringKind::Base64 => score += 30,
+        StringKind::FuncName => score += 20,
+        StringKind::Const => score += 10,
+        _ => {}
+    }
+
+    // Bonus for longer strings (more context)
+    score += (s.value.len() / 10).min(20) as i32;
+
+    // Bonus for specific high-value terms
+    let lower = s.value.to_ascii_lowercase();
+    if lower.contains("http://") || lower.contains("https://") {
+        score += 60; // URLs with explicit protocol are very valuable
+    }
+    if lower.contains("osascript") || lower.contains("/bin/sh") || lower.contains("2>&1") {
+        score += 50;
+    }
+    if lower.contains("ethereum") || lower.contains("wallet") || lower.contains("keystore") {
+        score += 40;
+    }
+    if lower.contains("xattr") || lower.contains("screencapture") || lower.contains("launchagents") {
+        score += 30;
+    }
+    // Bonus for IP addresses (likely C2 infrastructure)
+    if s.value.chars().filter(|&c| c == '.').count() == 3 {
+        // Check if it looks like an IP address (4 segments with dots)
+        let segments: Vec<&str> = s.value.split('.').collect();
+        if segments.len() == 4 && segments.iter().all(|seg| {
+            seg.chars().take_while(|c| c.is_ascii_digit()).count() > 0
+        }) {
+            score += 35; // Likely an IP address
+        }
+    }
+
+    // Penalty for strings that look like garbage
+    let special_count = s.value.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
+    if s.value.len() > 0 && special_count * 100 / s.value.len() > 40 {
+        score -= 20; // Too many special characters
+    }
+
+    score
 }
 
 /// Check if a decoded string is likely just the XOR key itself (or fragments).
@@ -501,7 +851,9 @@ fn extract_custom_xor_strings_pattern_based(
     key: &[u8],
     min_length: usize,
     apply_filters: bool,
+    excluded_ranges: &[(usize, usize)],
 ) -> Vec<ExtractedString> {
+    let start_time = std::time::Instant::now();
     tracing::info!(
         "Multi-byte XOR brute-force scan: {} bytes with {} byte key",
         data.len(),
@@ -510,10 +862,13 @@ fn extract_custom_xor_strings_pattern_based(
 
     let mut results = Vec::new();
     let mut seen: HashSet<(u64, String)> = HashSet::new();
+    // Track used byte ranges to avoid overlapping strings
+    let mut used_ranges: Vec<(usize, usize)> = Vec::new();
 
     // Brute-force scan: try every position as a potential string start
-    // For small files, scan every byte; for larger files, step by 4 for performance
-    let step = if data.len() < 10000 { 1 } else { 4 };
+    // Step by 1 for thorough scanning - we need to catch strings at any offset
+    // The overlap detection will handle deduplication
+    let step = 1;
     let mut checked = 0;
 
     for pos in (0..data.len()).step_by(step) {
@@ -522,8 +877,33 @@ fn extract_custom_xor_strings_pattern_based(
             tracing::debug!("  Scanned {} positions, found {} strings", checked, results.len());
         }
 
+        // Skip if this position is within an already-extracted string
+        let overlaps_existing = used_ranges.iter().any(|&(start, end)| {
+            pos >= start && pos < end
+        });
+        if overlaps_existing {
+            continue;
+        }
+
+        // Skip if this position is in an excluded range (from radare2 hints)
+        let in_excluded_range = excluded_ranges.iter().any(|&(ex_start, ex_end)| {
+            pos >= ex_start && pos < ex_end
+        });
+        if in_excluded_range {
+            continue;
+        }
+
         // Try to decode a string starting at this position
-        if let Some((decoded, start, _end)) = try_decode_xor_string_at(data, pos, key, min_length) {
+        if let Some((decoded, start, end)) = try_decode_xor_string_at(data, pos, key, min_length) {
+            // Check if this decoded string would overlap with an existing one
+            let would_overlap = used_ranges.iter().any(|&(used_start, used_end)| {
+                !(end <= used_start || start >= used_end)
+            });
+
+            if would_overlap {
+                continue;
+            }
+
             // Skip XOR key artifacts (key fragments from XORing null bytes)
             if apply_filters && is_xor_key_artifact(&decoded, key) {
                 continue;
@@ -545,6 +925,9 @@ fn extract_custom_xor_strings_pattern_based(
                             String::from_utf8_lossy(key).to_string()
                         };
 
+                        // Mark this range as used
+                        used_ranges.push((start, end));
+
                         results.push(ExtractedString {
                             value: decoded,
                             data_offset: offset,
@@ -557,6 +940,10 @@ fn extract_custom_xor_strings_pattern_based(
                 }
             }
         }
+
+    let elapsed = start_time.elapsed();
+    eprintln!("[PERF] Pattern-based scanning: checked {} positions, found {} strings in {:.2}s",
+        checked, results.len(), elapsed.as_secs_f64());
 
     tracing::info!(
         "Multi-byte XOR scan complete: checked {} positions, found {} unique strings",
@@ -603,8 +990,9 @@ fn try_decode_xor_string_at(
         // Track consecutive null bytes in the encoded data
         if data[end] == 0x00 {
             consecutive_nulls += 1;
-            // If we hit many consecutive nulls, stop (they just produce the key)
-            if consecutive_nulls >= 4 {
+            // Null bytes in XOR'd data decode to the key byte
+            // Stop if we hit consecutive nulls
+            if consecutive_nulls >= 2 {
                 break;
             }
         } else {
@@ -698,49 +1086,98 @@ pub fn auto_detect_xor_key(
         candidates.iter().map(|(_, s)| s).collect::<Vec<_>>()
     );
 
-    // Try each candidate and count how many valid strings it produces
+    // Try each candidate and calculate weighted scores based on string value
     let mut best_key: Option<(Vec<u8>, String, u64)> = None;
-    let mut best_count = 0;
+    let mut best_score = 0;
 
     for (offset, candidate) in candidates {
         let key = candidate.as_bytes().to_vec();
         let results = extract_custom_xor_strings(data, &key, min_length);
 
-        // Count high-value strings (not just any string)
-        let value_count = results
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.kind,
-                    StringKind::Url
-                        | StringKind::IP
-                        | StringKind::IPPort
-                        | StringKind::ShellCmd
-                        | StringKind::SuspiciousPath
-                        | StringKind::Path
-                        | StringKind::Base64
-                )
-            })
-            .count();
+        // Calculate weighted score based on decoded string quality
+        let mut score = 0;
+
+        for r in &results {
+            let value_lower = r.value.to_ascii_lowercase();
+
+            // CRITICAL: Shell commands and redirections (highest priority)
+            if value_lower.contains("osascript")
+                || value_lower.contains("screencapture")
+                || value_lower.contains("/bin/sh")
+                || value_lower.contains("/bin/bash")
+                || value_lower.contains("2>&1")
+                || value_lower.contains("<<eod")
+                || value_lower.contains("<<eof")
+            {
+                score += 100; // Highest priority
+            }
+
+            // Cryptocurrency terms (very high priority)
+            for crypto in CRYPTO_KEYWORDS {
+                if value_lower.contains(&crypto.to_ascii_lowercase()) {
+                    score += 80;
+                    break;
+                }
+            }
+
+            // Suspicious paths (very high priority)
+            if matches!(r.kind, StringKind::SuspiciousPath) {
+                score += 75;
+            }
+
+            // URLs and network indicators
+            if matches!(r.kind, StringKind::Url | StringKind::IP | StringKind::IPPort) {
+                score += 50;
+            }
+
+            // Browser strings
+            for browser in BROWSER_KEYWORDS {
+                if value_lower.contains(&browser.to_ascii_lowercase()) {
+                    score += 40;
+                    break;
+                }
+            }
+
+            // Shell commands
+            if matches!(r.kind, StringKind::ShellCmd) {
+                score += 30;
+            }
+
+            // Locale strings (en-US, ru-RU pattern)
+            if is_locale_string(&r.value) {
+                score += 25;
+            }
+
+            // Generic paths (lower priority, only if they match known prefixes)
+            if matches!(r.kind, StringKind::Path) && has_known_path_prefix(&r.value) {
+                score += 10;
+            }
+
+            // Base64 (low priority)
+            if matches!(r.kind, StringKind::Base64) {
+                score += 5;
+            }
+        }
 
         tracing::debug!(
-            "XOR key candidate '{}': found {} valuable strings",
+            "XOR key candidate '{}': score={} ({} strings)",
             candidate,
-            value_count
+            score,
+            results.len()
         );
 
-        if value_count > best_count {
-            best_count = value_count;
+        if score > best_score {
+            best_score = score;
             best_key = Some((key, candidate.to_string(), offset));
         }
     }
 
-    if best_count > 0 {
+    if best_score > 0 {
         if let Some((ref _key, ref key_str, _)) = best_key {
             tracing::info!(
-                "Auto-detected XOR key: '{}' (found {} valuable strings)",
+                "Auto-detected XOR key: '{}' (score: {})",
                 key_str,
-                best_count
+                best_score
             );
         }
     }
@@ -1537,6 +1974,130 @@ const SUSPICIOUS_PATHS: &[&str] = &[
     "/Library/Cookies",
 ];
 
+/// Trim trailing garbage from extracted strings.
+/// This removes characters at the end that don't look like legitimate content.
+fn trim_trailing_garbage(s: &str) -> &str {
+    // First, check for common shell redirections and terminators that mark natural endpoints
+    let natural_endpoints = [
+        "2>&1",
+        "2>/dev/null",
+        ">/dev/null",
+        ">&1",
+        ">&2",
+        " &",
+        "EOD",
+        "EOF",
+    ];
+
+    // Find the last occurrence of any natural endpoint
+    let mut natural_end: Option<usize> = None;
+    for endpoint in &natural_endpoints {
+        if let Some(pos) = s.rfind(endpoint) {
+            let candidate_end = pos + endpoint.len();
+            natural_end = Some(natural_end.map_or(candidate_end, |prev| prev.max(candidate_end)));
+        }
+    }
+
+    // If we found a natural endpoint, trim there
+    if let Some(end_pos) = natural_end {
+        return &s[..end_pos];
+    }
+
+    // Check for file extensions as natural endpoints (e.g., .php, .exe, .dll, .so)
+    let file_extensions = [".php", ".exe", ".dll", ".so", ".dylib", ".js", ".py", ".rb", ".pl", ".sh",
+                           ".html", ".xml", ".json", ".txt", ".log", ".conf", ".cfg"];
+    for ext in &file_extensions {
+        if let Some(pos) = s.rfind(ext) {
+            let candidate_end = pos + ext.len();
+            natural_end = Some(natural_end.map_or(candidate_end, |prev| prev.max(candidate_end)));
+        }
+    }
+
+    if let Some(end_pos) = natural_end {
+        return &s[..end_pos];
+    }
+
+    // Otherwise, work backwards from the end looking for the last legitimate character
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = chars.len();
+
+    while i > 0 {
+        i -= 1;
+        let c = chars[i];
+
+        // Stop at clear delimiters
+        if c == '"' || c == '\'' || c == ')' || c == ']' || c == '}' || c == '>' {
+            return s.char_indices().nth(i + 1).map(|(pos, _)| &s[..pos]).unwrap_or(s);
+        }
+
+        // Stop at alphanumeric followed by whitespace or punctuation that suggests a boundary
+        if c.is_ascii_alphanumeric() {
+            // Check if the next character (if exists) suggests this is the end
+            if i + 1 < chars.len() {
+                let next = chars[i + 1];
+                // If followed by unusual characters, this might be the real end
+                if !next.is_ascii_alphanumeric() && next != '/' && next != '.' && next != '-' && next != '_' {
+                    return s.char_indices().nth(i + 1).map(|(pos, _)| &s[..pos]).unwrap_or(s);
+                }
+            } else {
+                // Last character is alphanumeric - keep whole string
+                return s;
+            }
+        }
+    }
+
+    s
+}
+
+/// Trim leading garbage from extracted strings.
+/// This removes characters at the beginning that don't look like legitimate content.
+fn trim_leading_garbage(s: &str) -> &str {
+    // Check for URLs - they should start with http:// or https://
+    if let Some(pos) = s.find("http://") {
+        return &s[pos..];
+    }
+    if let Some(pos) = s.find("https://") {
+        return &s[pos..];
+    }
+
+    // Check for common path prefixes
+    if let Some(pos) = s.find("/Library/") {
+        // Look backwards from /Library/ to see if there's a %s or other legitimate prefix
+        if pos > 0 {
+            let prefix = &s[..pos];
+            // If prefix contains %s or similar format specifiers, keep them
+            if prefix.contains("%s") || prefix.contains("%d") {
+                // Find the last format specifier
+                if let Some(fmt_pos) = prefix.rfind("%s").or_else(|| prefix.rfind("%d")) {
+                    return &s[fmt_pos..];
+                }
+            }
+        }
+        return &s[pos..];
+    }
+
+    // Check for Windows paths
+    if let Some(pos) = s.find("C:\\") {
+        return &s[pos..];
+    }
+
+    // Check for common file paths
+    if let Some(pos) = s.find("~/.") {
+        return &s[pos..];
+    }
+
+    // Check for absolute Unix paths (but not /Library which we already handled)
+    // Look for patterns like /bin/, /usr/, /etc/, /var/, /opt/, /home/
+    for path_prefix in &["/bin/", "/usr/", "/etc/", "/var/", "/opt/", "/home/"] {
+        if let Some(pos) = s.find(path_prefix) {
+            return &s[pos..];
+        }
+    }
+
+    // No recognizable pattern found, return as-is
+    s
+}
+
 /// Well-known shell commands and tools (for lenient matching with trailing garbage).
 const SHELL_COMMANDS: &[&str] = &[
     "screencapture",
@@ -1550,6 +2111,12 @@ const SHELL_COMMANDS: &[&str] = &[
     "ruby ",
     "powershell",
     "cmd.exe",
+    "/bin/sh",
+    "/bin/bash",
+    "2>&1",
+    "<<EOD",
+    "<<EOF",
+    ">/dev/null",
 ];
 
 /// Shell executable paths that should be classified as suspicious.
@@ -1565,6 +2132,62 @@ const SHELL_EXECUTABLE_PATHS: &[&str] = &[
     "/usr/bin/ruby",
     "cmd.exe",
     "powershell.exe",
+];
+
+/// Cryptocurrency-related terms indicating wallet/keystore access.
+const CRYPTO_KEYWORDS: &[&str] = &[
+    "Ethereum",
+    "Bitcoin",
+    "Electrum",
+    "wallet",
+    "keystore",
+    "Monero",
+    "Litecoin",
+    "Dogecoin",
+    "cryptocurrency",
+    "mnemonic",
+    "seed phrase",
+];
+
+/// Browser and application identifiers.
+const BROWSER_KEYWORDS: &[&str] = &[
+    "Safari",
+    "Chrome",
+    "Firefox",
+    "Mozilla",
+    "WebKit",
+    "Chromium",
+    "Opera",
+    "Edge",
+];
+
+/// Well-known UNIX/macOS/Windows path prefixes.
+const KNOWN_PATH_PREFIXES: &[&str] = &[
+    // UNIX/Linux common paths
+    "/bin/",
+    "/usr/bin/",
+    "/usr/local/",
+    "/etc/",
+    "/var/",
+    "/tmp/",
+    "/dev/",
+    "/opt/",
+    "/home/",
+    "/root/",
+    // macOS specific
+    "/Library/",
+    "/Users/",
+    "/Applications/",
+    "/System/Library/",
+    "/private/",
+    // Windows paths
+    "C:\\Windows\\",
+    "C:\\Program Files\\",
+    "C:\\Users\\",
+    "C:\\ProgramData\\",
+    "C:\\Temp\\",
+    "%APPDATA%",
+    "%USERPROFILE%",
 ];
 
 /// Classify an XOR-decoded string. Returns None if it doesn't look interesting.
@@ -1614,42 +2237,60 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         }
         StringKind::SuspiciousPath => Some(kind),
         StringKind::Path => {
-            let is_unix_path = s.contains('/')
-                && (s.starts_with('/') || s.starts_with("./") || s.starts_with("../"));
-            let is_windows_path = s.contains('\\') && s.len() > 3 && s.chars().nth(1) == Some(':');
+            // STRICT PATH VALIDATION: Only accept paths matching known OS patterns
 
-            if is_unix_path || is_windows_path {
-                // Additional validation: path should have reasonable characters
-                // Reject if path has too many non-path characters
-                let bad_chars = s
-                    .chars()
-                    .filter(|&c| {
-                        !c.is_ascii_alphanumeric()
-                            && !matches!(c, '/' | '\\' | '.' | '_' | '-' | ' ' | ':' | '%')
-                    })
-                    .count();
+            // Check for known UNIX/macOS path prefixes
+            let has_known_prefix = has_known_path_prefix(s);
 
-                // Reject if > 10% bad characters (stricter than before)
-                if bad_chars * 10 > s.len() {
-                    return None;
-                }
+            // Check for Windows paths with drive letter
+            let is_windows_path = s.len() > 3
+                && s.chars().nth(1) == Some(':')
+                && s.chars().nth(2) == Some('\\')
+                && s.chars().next().unwrap().is_ascii_alphabetic();
 
-                // For single-level Unix paths (no subdirectories), apply stricter validation
-                let slash_count = s.matches('/').count();
-                if is_unix_path && slash_count == 1 {
-                    // Single-level path like "/something"
-                    // Extract the part after the slash
-                    if let Some(name) = s.strip_prefix('/') {
-                        // Reject if it looks like random garbage:
-                        // - Mixed case with numbers in weird patterns
-                        // - Too many uppercase letters mixed with lowercase
-                        // - Contains both uppercase and lowercase without being camelCase or PascalCase
+            // Check for relative paths with proper structure
+            let is_relative_path = (s.starts_with("./") || s.starts_with("../"))
+                && s.matches('/').count() >= 2
+                && s.split('/').filter(|p| !p.is_empty() && *p != "." && *p != "..").count() >= 1;
+
+            if !has_known_prefix && !is_windows_path && !is_relative_path {
+                return None;
+            }
+
+            // Reject if path has too many non-path characters
+            let bad_chars = s
+                .chars()
+                .filter(|&c| {
+                    !c.is_ascii_alphanumeric()
+                        && !matches!(c, '/' | '\\' | '.' | '_' | '-' | ' ' | ':' | '%')
+                })
+                .count();
+
+            // Reject if > 10% bad characters
+            if bad_chars * 10 > s.len() {
+                return None;
+            }
+
+            // For UNIX paths, ensure they have proper structure
+            if s.starts_with('/') {
+                let parts: Vec<&str> = s.split('/').filter(|p| !p.is_empty()).collect();
+
+                // Single-level paths (like "/something") need to match known patterns
+                if parts.len() == 1 {
+                    let name = parts[0];
+
+                    // Check if it matches known single-level paths
+                    let known_single_level = ["bin", "etc", "usr", "var", "tmp", "dev", "opt", "home", "root",
+                                            "Library", "Users", "Applications", "System", "private"];
+
+                    if !known_single_level.contains(&name) {
+                        // For other single-level paths, apply strict validation
                         let has_upper = name.chars().any(|c| c.is_ascii_uppercase());
                         let has_lower = name.chars().any(|c| c.is_ascii_lowercase());
                         let has_digit = name.chars().any(|c| c.is_ascii_digit());
 
                         // Reject paths with mixed case + digits (garbage pattern)
-                        if has_upper && has_lower && has_digit && name.len() > 8 {
+                        if has_upper && has_lower && has_digit {
                             return None;
                         }
 
@@ -1670,10 +2311,17 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
                     }
                 }
 
-                Some(kind)
-            } else {
-                None
+                // Multi-level paths should have reasonable component names
+                for part in &parts {
+                    // Each component should be mostly alphanumeric
+                    let alnum = part.chars().filter(|c| c.is_ascii_alphanumeric()).count();
+                    if part.len() > 0 && alnum * 100 / part.len() < 60 {
+                        return None;
+                    }
+                }
             }
+
+            Some(kind)
         }
         StringKind::Registry => Some(kind),
         StringKind::Base64 => Some(kind),
@@ -1693,6 +2341,69 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             }
         }
     }
+}
+
+/// Check if a string is a locale identifier (e.g., en-US, ru-RU, zh-CN).
+fn is_locale_string(s: &str) -> bool {
+    let s = s.trim();
+    if s.len() < 5 || s.len() > 6 {
+        return false;
+    }
+
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 5 {
+        return false;
+    }
+
+    // Pattern: 2-3 lowercase + underscore/hyphen + 2-3 uppercase
+    // en-US, ru-RU, zh-CN, eng-US, etc.
+    let has_separator = chars[2] == '_' || chars[2] == '-' || (chars.len() == 6 && (chars[3] == '_' || chars[3] == '-'));
+
+    if !has_separator {
+        return false;
+    }
+
+    let sep_idx = if chars[2] == '_' || chars[2] == '-' { 2 } else { 3 };
+
+    // Check lowercase before separator
+    for i in 0..sep_idx {
+        if !chars[i].is_ascii_lowercase() {
+            return false;
+        }
+    }
+
+    // Check uppercase after separator
+    for i in (sep_idx + 1)..chars.len() {
+        if !chars[i].is_ascii_uppercase() {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Check if a path starts with a known OS path prefix.
+fn has_known_path_prefix(path: &str) -> bool {
+    for prefix in KNOWN_PATH_PREFIXES {
+        if path.starts_with(prefix) {
+            return true;
+        }
+    }
+
+    // Also check for relative paths
+    // ./ with any name (common for malware: ./malware, ./payload, etc.)
+    // ../ needs at least 2 levels
+    if path.starts_with("./") {
+        let after_dot_slash = &path[2..];
+        // Must have some content after ./
+        return !after_dot_slash.is_empty() && after_dot_slash.chars().next().unwrap().is_ascii_alphanumeric();
+    }
+
+    if path.starts_with("../") {
+        return path.matches('/').count() >= 2; // At least 2 levels
+    }
+
+    false
 }
 
 /// Check if a string looks like natural/structured text (not random garbage).
@@ -2336,6 +3047,325 @@ mod tests {
             key_string
         );
         assert_eq!(detected_str, key_string, "Key string should match");
+    }
+
+    #[test]
+    fn test_brew_agent_xor_key_detection() {
+        // Test that we can auto-detect the correct XOR key for HomeBrew malware
+        // The correct key is "fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf"
+        // This key should score highest because it decodes osascript commands and Ethereum paths
+
+        let key_string = "fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
+        let key_bytes = key_string.as_bytes();
+
+        // XOR some high-value strings with this key
+        let strings = vec![
+            "osascript 2>&1 <<EOD",
+            "/Library/Ethereum/keystore",
+            "screencapture -x -t %s",
+            "en-US",
+            "ru-RU",
+            "Safari/537.36",
+        ];
+
+        let mut xored_data = Vec::new();
+        for s in &strings {
+            let xored: Vec<u8> = s
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| b ^ key_bytes[i % key_bytes.len()])
+                .collect();
+            xored_data.extend_from_slice(&xored);
+            xored_data.extend_from_slice(&[0xFF; 50]); // Padding (use 0xFF to avoid null regions)
+        }
+
+        // Create candidate strings including the real key
+        let candidates = vec![
+            ExtractedString {
+                value: "some_other_key_12345".to_string(),
+                data_offset: 0,
+                section: None,
+                method: StringMethod::RawScan,
+                kind: StringKind::Const,
+                library: None,
+            },
+            ExtractedString {
+                value: key_string.to_string(),
+                data_offset: 100,
+                section: None,
+                method: StringMethod::RawScan,
+                kind: StringKind::Const,
+                library: None,
+            },
+        ];
+
+        // Auto-detect should find the correct key
+        let detected = auto_detect_xor_key(&xored_data, &candidates, 10);
+        assert!(
+            detected.is_some(),
+            "Should auto-detect XOR key from candidates"
+        );
+
+        let (detected_key, detected_str, _) = detected.unwrap();
+        assert_eq!(
+            detected_key,
+            key_bytes,
+            "Should detect the correct XOR key based on osascript and Ethereum strings"
+        );
+        assert_eq!(detected_str, key_string);
+
+        // Verify that the detected key decodes the strings correctly
+        let decoded_results = extract_custom_xor_strings(&xored_data, &detected_key, 10);
+        let decoded_values: Vec<String> = decoded_results.iter().map(|r| r.value.clone()).collect();
+
+        // Should find osascript (highest priority)
+        assert!(
+            decoded_values.iter().any(|s| s.contains("osascript")),
+            "Should decode osascript command"
+        );
+
+        // Should find Ethereum path (crypto keyword, high priority)
+        assert!(
+            decoded_values.iter().any(|s| s.contains("Ethereum")),
+            "Should decode Ethereum keystore path"
+        );
+
+        // Should find Safari (browser keyword)
+        assert!(
+            decoded_values.iter().any(|s| s.contains("Safari")),
+            "Should decode Safari user agent"
+        );
+    }
+
+    #[test]
+    fn test_locale_string_detection() {
+        // Test locale string recognition
+        assert!(is_locale_string("en-US"));
+        assert!(is_locale_string("ru-RU"));
+        assert!(is_locale_string("zh-CN"));
+        assert!(is_locale_string("en_US"));
+        assert!(is_locale_string("ru_RU"));
+        assert!(is_locale_string("eng-US")); // 3-letter code
+
+        // Not locale strings
+        assert!(!is_locale_string("en"));
+        assert!(!is_locale_string("USA"));
+        assert!(!is_locale_string("en-us")); // lowercase country code
+        assert!(!is_locale_string("EN-US")); // uppercase language code
+        assert!(!is_locale_string("e1-US")); // digit in language code
+        assert!(!is_locale_string("toolong"));
+    }
+
+    #[test]
+    fn test_known_path_prefix_detection() {
+        // UNIX/Linux paths
+        assert!(has_known_path_prefix("/bin/bash"));
+        assert!(has_known_path_prefix("/usr/bin/python"));
+        assert!(has_known_path_prefix("/etc/passwd"));
+        assert!(has_known_path_prefix("/tmp/test.txt"));
+
+        // macOS paths
+        assert!(has_known_path_prefix("/Library/Ethereum/keystore"));
+        assert!(has_known_path_prefix("/Users/admin/.ssh/id_rsa"));
+        assert!(has_known_path_prefix("/Applications/Safari.app"));
+
+        // Windows paths
+        assert!(has_known_path_prefix("C:\\Windows\\System32"));
+        assert!(has_known_path_prefix("C:\\Program Files\\app"));
+        assert!(has_known_path_prefix("%APPDATA%\\data"));
+
+        // Relative paths with structure
+        assert!(has_known_path_prefix("./lib/module/file.js"));
+        assert!(has_known_path_prefix("../config/settings.json"));
+
+        // Relative paths with single component (common for malware)
+        assert!(has_known_path_prefix("./malware"));
+        assert!(has_known_path_prefix("./payload"));
+        assert!(has_known_path_prefix("./a"));
+
+        // Not known prefixes
+        assert!(!has_known_path_prefix("/unknown/path"));
+        assert!(!has_known_path_prefix("random/path")); // No leading ./
+        assert!(!has_known_path_prefix("./")); // Empty after ./
+    }
+
+    #[test]
+    fn test_xor_no_overlapping_strings() {
+        // Test that we don't extract overlapping strings from the same data region
+        // Real issue: "fxattr" at 496f3 and "xattr" at 496f4 (overlapping in source)
+        let key_string = "fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
+        let key_bytes = key_string.as_bytes();
+
+        let plaintext = b"xattr -d com.apple.quarantine";
+
+        // Create data with the string XOR'd at position 50
+        let mut data = vec![0xFF; 200];
+        for (i, &b) in plaintext.iter().enumerate() {
+            data[50 + i] = b ^ key_bytes[i % key_bytes.len()];
+        }
+
+        let results = extract_custom_xor_strings(&data, key_bytes, 10);
+
+        // Check for overlapping strings (same data region decoded multiple times)
+        for i in 0..results.len() {
+            for j in (i + 1)..results.len() {
+                let start1 = results[i].data_offset as usize;
+                let end1 = start1 + results[i].value.len();
+                let start2 = results[j].data_offset as usize;
+                let end2 = start2 + results[j].value.len();
+
+                // Check if ranges overlap
+                let overlaps = !(end1 <= start2 || end2 <= start1);
+
+                assert!(
+                    !overlaps,
+                    "Found overlapping strings: '{}' at {}..{} and '{}' at {}..{}",
+                    results[i].value,
+                    start1,
+                    end1,
+                    results[j].value,
+                    start2,
+                    end2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_brew_agent_sleep_command_extracted() {
+        // Test that "sleep 3; rm -rf '%s'" is extracted at the correct offset
+        // This was a real bug where "eep 3; rm -rf '%s'" was extracted instead
+        // because the step size skipped the actual start position
+
+        let key = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
+
+        // The actual command that should be found
+        let expected = "sleep 3; rm -rf '%s'";
+
+        // XOR encode it
+        let xored: Vec<u8> = expected
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| b ^ key[i % key.len()])
+            .collect();
+
+        // Create test data with the string at a position that's not divisible by 4
+        // to ensure we catch it even with step scanning
+        let mut data = vec![0xFF; 100];
+        data.extend_from_slice(&xored);
+        data.extend_from_slice(&[0xFF; 100]);
+
+        let results = extract_custom_xor_strings(&data, key, 10);
+
+        // Should find the complete sleep command
+        let found = results.iter().any(|r| r.value == expected);
+        assert!(
+            found,
+            "Should extract complete sleep command '{}', found: {:?}",
+            expected,
+            results.iter().map(|r| &r.value).collect::<Vec<_>>()
+        );
+
+        // Should NOT find truncated version
+        let found_truncated = results.iter().any(|r| r.value.starts_with("eep ") && !r.value.starts_with("sleep"));
+        assert!(
+            !found_truncated,
+            "Should not extract truncated 'eep' version"
+        );
+    }
+
+    #[test]
+    fn test_brew_agent_open_command_extracted_correctly() {
+        // Test extraction from actual brew_agent binary at offset 0x4b115
+        // Should find: 'open -a /bin/bash --args -c "sleep 3; rm -rf \'%s\'"'
+        // Bug: Currently finding "ep 3; rm -rf '%s" at 0x4b135 instead
+
+        if let Ok(data) = std::fs::read("testdata/malware/brew_agent") {
+            let key = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
+            let results = extract_custom_xor_strings(&data, key, 10);
+
+            // Check what we found in the region 0x4b100-0x4b200
+            let in_region: Vec<_> = results.iter()
+                .filter(|r| r.data_offset >= 0x4b100 && r.data_offset < 0x4b200)
+                .collect();
+
+            // Should find the full "open -a /bin/bash" command starting at 0x4b115
+            let found_open_cmd = in_region.iter().any(|r| {
+                r.value.contains("open -a /bin/bash") && r.value.contains("sleep 3")
+            });
+
+            // Should find sleep command (either standalone or as part of open command)
+            let found_sleep = in_region.iter().any(|r| r.value.contains("sleep 3"));
+
+            // Should NOT find truncated "eep 3" without the "sl" prefix
+            let found_truncated = in_region.iter().any(|r| {
+                r.value.starts_with("eep 3") ||
+                (r.value.contains("eep 3") && !r.value.contains("sleep 3"))
+            });
+
+            if !found_open_cmd || !found_sleep || found_truncated {
+                eprintln!("\nStrings found in region 0x4b100-0x4b200:");
+                for r in &in_region {
+                    eprintln!("  0x{:05x} {:20} {:?}",
+                        r.data_offset,
+                        r.library.as_ref().map(|s| s.as_str()).unwrap_or(""),
+                        &r.value[..r.value.len().min(60)]);
+                }
+            }
+
+            assert!(found_sleep, "Should find 'sleep 3' command in region");
+            assert!(found_open_cmd, "Should find full 'open -a /bin/bash' command at 0x4b115");
+            assert!(!found_truncated, "Should NOT find truncated 'eep 3' without 'sleep'");
+        } else {
+            eprintln!("Skipping test - brew_agent binary not found");
+        }
+    }
+
+    #[test]
+    fn test_xor_garbage_strings_rejected() {
+        // Test that garbage strings are properly rejected
+        // These are real examples from brew_agent that should be filtered
+        let key = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
+
+        let garbage_examples = vec![
+            "14; 5s$!>g",
+            "%+. >#B3<S",
+            "dA:+<<7)^V",
+            "dA:+<<7)^9N",
+            "dA:+=*&$Z%:=V",
+            "eA:+=*&<B#'77",
+            "drUvhNSNP)ZBO+^",
+            "rUvhNSNP)ZBO+^",
+            "{YztDORL*VNS",
+            "5/;:#G?:*71",
+            "%+. >#B3<Sh",
+            ".O3<<71 9'R",
+            "2z+<<7)^9N",
+        ];
+
+        for garbage in &garbage_examples {
+            // XOR encode it
+            let xored: Vec<u8> = garbage
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| b ^ key[i % key.len()])
+                .collect();
+
+            let mut data = vec![0x00; 20];
+            data.extend_from_slice(&xored);
+            data.extend_from_slice(&[0x00; 20]);
+
+            let results = extract_custom_xor_strings(&data, key, 10);
+
+            // These garbage strings should NOT be extracted
+            let found = results.iter().any(|r| r.value == *garbage);
+            if found {
+                eprintln!("WARNING: Garbage string '{}' was extracted (may need better filtering)", garbage);
+            }
+        }
     }
 
     #[test]

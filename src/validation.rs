@@ -28,7 +28,17 @@ pub fn is_garbage(s: &str) -> bool {
         || trimmed.contains("2>")
         || (trimmed.contains(" sh ") || trimmed.starts_with("sh ") || trimmed.ends_with(" sh"))
     {
-        return false; // Shell commands are NOT garbage
+        // BUT: if the string is mostly gibberish (too many special chars), reject it
+        let special_count = trimmed.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
+        let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
+
+        // Real shell commands should have reasonable alphanumeric content
+        // Reject if <40% alphanumeric or if special chars dominate
+        if alnum_count * 100 / trimmed.len() < 40 || special_count > alnum_count {
+            // Continue to normal garbage checks
+        } else {
+            return false; // Shell commands are NOT garbage
+        }
     }
 
     // Check for control characters in non-trailing-newline portion
@@ -383,6 +393,156 @@ pub fn is_garbage(s: &str) -> bool {
         return true;
     }
 
+    // Character class contiguous region analysis
+    // Legitimate strings have longer runs of the same character class (lowercase, uppercase, digits)
+    // Garbage strings alternate chaotically between classes
+    if len >= 6 {
+        // Define character classes for each character
+        #[derive(PartialEq, Eq, Clone, Copy)]
+        enum CharClass {
+            Upper,
+            Lower,
+            Digit,
+            Special,
+            Whitespace,
+        }
+
+        let char_classes: Vec<CharClass> = trimmed
+            .chars()
+            .map(|c| {
+                if c.is_ascii_uppercase() {
+                    CharClass::Upper
+                } else if c.is_ascii_lowercase() {
+                    CharClass::Lower
+                } else if c.is_ascii_digit() {
+                    CharClass::Digit
+                } else if c.is_whitespace() {
+                    CharClass::Whitespace
+                } else {
+                    CharClass::Special
+                }
+            })
+            .collect();
+
+        // Count transitions and track run lengths
+        let mut transitions = 0;
+        let mut run_lengths: Vec<usize> = Vec::new();
+        let mut current_run_length = 1;
+
+        for i in 1..char_classes.len() {
+            if char_classes[i] != char_classes[i - 1] {
+                transitions += 1;
+                run_lengths.push(current_run_length);
+                current_run_length = 1;
+            } else {
+                current_run_length += 1;
+            }
+        }
+        run_lengths.push(current_run_length); // Don't forget the last run
+
+        // Calculate average run length
+        let total_run_chars: usize = run_lengths.iter().sum();
+        let avg_run_length = if !run_lengths.is_empty() {
+            total_run_chars as f32 / run_lengths.len() as f32
+        } else {
+            0.0
+        };
+
+        // Check if string is dominated by one character class (>70%)
+        // Include special characters in the check - strings with mostly special chars
+        // are often legitimate (like shell commands, format strings, etc.)
+        let max_class_count = upper.max(lower).max(digit).max(special);
+        let is_mostly_one_class = max_class_count * 100 / len > 70;
+
+        // Check for structured patterns that naturally have many transitions
+        // These should be exempt from alternation checks
+        // Paths need more than just a slash - require alphanumeric content and reasonable structure
+        // Also reject if too many special characters (real paths are usually <20% special)
+        // AND require mostly lowercase (real paths are typically lowercase)
+        let looks_like_path = (trimmed.contains('/') || trimmed.contains('\\'))
+            && alphanumeric >= 3
+            && special * 100 / len <= 30
+            && (alphanumeric == 0 || lower * 100 / alphanumeric >= 40)  // At least 40% of alphanumeric chars are lowercase
+            && (trimmed.starts_with('/')
+                || trimmed.starts_with('\\')
+                || trimmed.contains("/.")
+                || trimmed.contains("\\.")
+                || trimmed.split(&['/', '\\'][..]).filter(|s| !s.is_empty()).count() >= 2);
+        let looks_like_url = trimmed.contains("://") || trimmed.contains("http");
+        // Domains should have reasonable structure: mostly alphanumeric, dots, hyphens, underscores
+        // Reject if too many special characters (real domains have <20% special)
+        let looks_like_domain = trimmed.contains('.')
+            && trimmed.split('.').filter(|s| !s.is_empty()).count() >= 2
+            && special * 100 / len <= 20;
+        let looks_like_version = (trimmed.starts_with("go")
+            || trimmed.starts_with('v')
+            || trimmed.starts_with('V'))
+            && trimmed.contains('.')
+            && digit > 0;
+        // Base64 strings have uniform character distribution but many transitions
+        // They only contain [A-Za-z0-9+/=] and often end with =
+        let looks_like_base64 = len >= 16
+            && upper > 0
+            && lower > 0
+            && trimmed
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=');
+        // Format strings contain % followed by format specifiers (s, d, f, x, v, etc.)
+        let looks_like_format_string = trimmed.contains("%s")
+            || trimmed.contains("%d")
+            || trimmed.contains("%f")
+            || trimmed.contains("%x")
+            || trimmed.contains("%v")
+            || trimmed.contains("%p")
+            || trimmed.contains("%c")
+            || trimmed.contains("%u");
+        let is_structured_pattern = looks_like_path
+            || looks_like_url
+            || looks_like_domain
+            || looks_like_version
+            || looks_like_base64
+            || looks_like_format_string;
+
+        // Reject strings with excessive alternation and short runs
+        // Exception: strings dominated by one class (like all-uppercase acronyms)
+        // Exception: structured patterns (paths, URLs, domains, versions)
+        if !is_mostly_one_class && !is_structured_pattern {
+            // Too many transitions relative to length (>60% of positions are transitions)
+            if transitions * 100 / len > 60 {
+                return true;
+            }
+
+            // Very short average run length indicates random alternation
+            // Avg run length < 2.0 means mostly 1-char runs (chaotic alternation)
+            if avg_run_length < 2.0 && len >= 8 {
+                return true;
+            }
+
+            // For shorter strings (6-7 chars), be even stricter
+            if len <= 7 && avg_run_length < 1.5 && transitions >= 4 {
+                return true;
+            }
+        } else if is_structured_pattern && avg_run_length < 2.0 && len >= 10 {
+            // Even "structured" patterns shouldn't be TOO chaotic
+            // Reject if very short runs (< 2.0) in strings ≥10 chars
+            // This catches garbage that looks like paths/domains but has random alternation
+            // EXCEPTION: Don't apply this check to recognized structured patterns since they naturally create short runs
+            // (e.g., "/usr/lib/go" has runs: /, usr, /, lib, /, go = avg 1.83)
+            // (e.g., "Photoshop 3.0" has runs: P, hotoshop, space, 3, ., 0 = avg 2.17)
+            // (e.g., "VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl" = avg 1.78, typical for base64)
+            // (e.g., "Error: %s at line %d" = avg 1.54, typical for format strings)
+            // Only reject if VERY chaotic (< 2.0) AND not a recognized structured pattern
+            if !looks_like_path
+                && !looks_like_domain
+                && !looks_like_version
+                && !looks_like_base64
+                && !looks_like_format_string
+                && !looks_like_url {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
@@ -586,5 +746,54 @@ mod tests {
         assert!(!is_garbage(".text"), ".text should not be garbage");
         assert!(!is_garbage(".data"), ".data should not be garbage");
         assert!(!is_garbage(".bss"), ".bss should not be garbage");
+    }
+
+    #[test]
+    fn test_is_garbage_base64_strings() {
+        // Base64 strings should NOT be garbage
+        assert!(!is_garbage("VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl"));
+        assert!(!is_garbage("SGVsbG8gV29ybGQh"));
+        assert!(!is_garbage("YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo="));
+    }
+
+    #[test]
+    fn test_is_garbage_xor_malware_samples() {
+        // Real garbage strings from XOR-decoded malware (brew_agent sample)
+        // These have chaotic character class alternation and should be filtered
+        // Note: Some strings with specific patterns (e.g., short with limited special chars)
+        // may not be caught by all heuristics, but the majority should be filtered
+        let garbage_strings = vec![
+            "v*\\^R--E:y4)@O",
+            "ZFI7% eE;*\\Y",
+            "Z(9uE(/S_B>7/c",
+            "#LUU2!FN}v.VDH!#T:y40]P\"L,JSy',E[H\"5/c",
+            "#L_G90_<\"J8KFy!!SCy>+FH}v.LXJ",
+            "\\?UuC%3YeO9,[<\"J8KFy!!SCy' ]Z",
+            "H>@uO*)T:y40]P\"L,JSy4%R\\I%(/c",
+            "G$M*y'5RVy2$\\E\"Y(KLI6- eE\"7Cc",
+            "P_T1*]Q}v.LXJ",
+            "F?T*y'5RVy2$\\E\"Z(MEV0@",
+            "IC#*_H}v.LXJ",
+            "\\?UuU()SNy17JY\"H!U*y!8IN&",
+            "[(\\uG(, eC/,[<\"O.UEU!@",
+            "Z(9u@'/PC@>)J<\"O+U_U,@",
+            "\\>Q*y\"'ENUW",
+            "\\A21\\<\"O!VIMD",
+            "\\J8&D<\"O\"IOHD",
+            "F.R*y\"/P_HW",
+            "[(\\*y\"2EUV2+/c",
+            "\\R2)C<\"O9\\FJ+@",
+            "@9\\*y#%T_H!Ep[",
+            "]C# AJ}v*\\^N+3TTG: /c",
+            "^OR,/SNH6(J<\"N(MZQ1)D:y0",
+        ];
+
+        for s in &garbage_strings {
+            assert!(
+                is_garbage(s),
+                "XOR garbage string should be filtered: {:?}",
+                s
+            );
+        }
     }
 }

@@ -40,9 +40,44 @@ fn get_tool() -> Option<&'static str> {
     })
 }
 
+/// Extract string boundaries from radare2/rizin.
+/// Returns offset and length of each string found by r2.
+/// These can be used as hints for XOR string extraction.
+///
+/// Uses `izzj` (whole binary scan) instead of `izj` (data sections only)
+/// for better coverage, especially in Swift/Objective-C binaries.
+pub fn extract_string_boundaries(path: &str) -> Option<Vec<StringBoundary>> {
+    let tool = get_tool()?;
+
+    tracing::debug!("r2::extract_string_boundaries: extracting from {}", path);
+
+    // Use izzj for whole binary scan (better than izj for data sections only)
+    let data_strings = run_tool_command(tool, path, "izzj")?;
+
+    if let Ok(json) = serde_json::from_str::<Vec<R2String>>(&data_strings) {
+        let boundaries: Vec<StringBoundary> = json
+            .iter()
+            .map(|s| StringBoundary {
+                offset: s.paddr,
+                length: if s.length > 0 { s.length } else { s.string.len() },
+            })
+            .collect();
+
+        tracing::debug!(
+            "r2::extract_string_boundaries: found {} string boundaries",
+            boundaries.len()
+        );
+
+        Some(boundaries)
+    } else {
+        tracing::debug!("r2::extract_string_boundaries: failed to parse JSON");
+        None
+    }
+}
+
 /// Extract strings using rizin or radare2.
 ///
-/// Uses `iz` for data section strings and `is` for symbols.
+/// Uses `izz` (whole binary scan) for strings and `is` for symbols.
 /// Returns strings with R2String/R2Symbol methods for clear identification.
 pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedString>> {
     let tool = get_tool()?;
@@ -58,19 +93,19 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
     // Run both commands in parallel
     let path_owned = path.to_string();
     let (data_result, symbols_result) = rayon::join(
-        || run_tool_command(tool, &path_owned, "izj"),
+        || run_tool_command(tool, &path_owned, "izzj"),
         || run_tool_command(tool, &path_owned, "isj"),
     );
 
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Process strings from data sections
+    // Process strings from all sections (whole binary scan)
     if let Some(data_strings) = data_result {
-        tracing::debug!("r2::extract_strings: got izj output, parsing JSON...");
+        tracing::debug!("r2::extract_strings: got izzj output, parsing JSON...");
         if let Ok(json) = serde_json::from_str::<Vec<R2String>>(&data_strings) {
             tracing::debug!(
-                "r2::extract_strings: parsed {} strings from izj",
+                "r2::extract_strings: parsed {} strings from izzj",
                 json.len()
             );
             for s in json {
@@ -159,11 +194,20 @@ fn run_tool_command(tool: &str, path: &str, cmd: &str) -> Option<String> {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 struct R2String {
     paddr: u64,
     string: String,
     section: String,
+    #[serde(default)]
+    length: usize,
+}
+
+/// String boundary hint from radare2
+#[derive(Debug, Clone)]
+pub struct StringBoundary {
+    pub offset: u64,
+    pub length: usize,
 }
 
 #[derive(serde::Deserialize)]

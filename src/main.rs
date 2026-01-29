@@ -261,6 +261,9 @@ fn main() -> Result<()> {
 
     let mut strings = stng::extract_strings_with_options(&data, &opts);
 
+    // Detect overlay for display purposes (even if no strings found)
+    let overlay_info = stng::detect_elf_overlay(&data);
+
     // Deduplicate: when multiple strings at same offset, keep only the longest
     use std::collections::HashMap;
     let mut offset_map: HashMap<u64, Vec<usize>> = HashMap::new();
@@ -370,16 +373,16 @@ fn main() -> Result<()> {
         println!();
 
         // Sort by section, then by offset (preserves file order)
-        // When XOR scan is enabled, sort purely by offset to show XOR strings inline
-        if cli.no_xor {
+        // In --flat mode, sort purely by offset for raw file order
+        if cli.flat {
+            strings.sort_by_key(|s| s.data_offset);
+        } else {
             strings.sort_by(|a, b| match (&a.section, &b.section) {
                 (Some(sa), Some(sb)) => sa.cmp(sb).then(a.data_offset.cmp(&b.data_offset)),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => a.data_offset.cmp(&b.data_offset),
             });
-        } else {
-            strings.sort_by_key(|s| s.data_offset);
         }
 
         let mut current_section: Option<&str> = None;
@@ -391,8 +394,7 @@ fn main() -> Result<()> {
             let section = s.section.as_deref();
 
             // Print section header when section changes
-            // Skip section headers when XOR scan is enabled (sorted by offset, not section)
-            if !cli.flat && cli.no_xor && section != current_section {
+            if !cli.flat && section != current_section {
                 if current_section.is_some() {
                     println!();
                 }
@@ -410,6 +412,31 @@ fn main() -> Result<()> {
             // Collect all high-severity items (we'll sort and truncate later)
             if s.kind.severity() == Severity::High {
                 notable.push(s);
+            }
+        }
+
+        // Show overlay section even if no printable strings were found
+        if let Some(ref overlay) = overlay_info {
+            let has_overlay_strings = strings.iter().any(|s| {
+                s.section.as_deref() == Some("overlay")
+            });
+
+            if !has_overlay_strings && !cli.flat {
+                // Overlay exists but no printable strings - show informational message
+                if current_section.is_some() {
+                    println!();
+                }
+                if use_color {
+                    println!("{}── overlay ──{}", DIM, RESET);
+                    println!("  {}{:>8x}{} {}{:<12}{} {}{} bytes (unprintable){}",
+                        DIM, overlay.start_offset, RESET,
+                        DIM, "-", RESET,
+                        DIM, overlay.size, RESET);
+                } else {
+                    println!("── overlay ──");
+                    println!("  {:>8x} {:<12} {} bytes (unprintable)",
+                        overlay.start_offset, "-", overlay.size);
+                }
             }
         }
 
