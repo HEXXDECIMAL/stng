@@ -4,6 +4,7 @@
 //! pointer+length structures.
 
 use crate::types::{BinaryInfo, ExtractedString, StringKind, StringMethod, StringStruct};
+use rayon::prelude::*;
 
 /// Find pointer+length structures that point into a data blob.
 ///
@@ -166,53 +167,54 @@ pub fn extract_from_structures<F>(
     classify_fn: F,
 ) -> Vec<ExtractedString>
 where
-    F: Fn(&str) -> StringKind,
+    F: Fn(&str) -> StringKind + Sync,
 {
-    let mut result = Vec::with_capacity(structs.len() / 2);
-
-    for s in structs {
-        if s.ptr < blob_addr {
-            continue;
-        }
-
-        let offset = (s.ptr - blob_addr) as usize;
-        let end = offset + s.len as usize;
-
-        if end > blob.len() {
-            continue;
-        }
-
-        let bytes = &blob[offset..end];
-
-        // Fast ASCII printability check before UTF-8 validation
-        let printable_count = bytes
-            .iter()
-            .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
-            .count();
-
-        if printable_count * 2 < bytes.len() {
-            continue;
-        }
-
-        // Validate UTF-8
-        if let Ok(string) = std::str::from_utf8(bytes) {
-            let trimmed = string.trim();
-            if trimmed.is_empty() {
-                continue;
+    structs
+        .par_iter()
+        .filter_map(|s| {
+            if s.ptr < blob_addr {
+                return None;
             }
-            result.push(ExtractedString {
-                value: trimmed.to_string(),
-                data_offset: s.ptr,
-                section: section_name.map(std::string::ToString::to_string),
-                method: StringMethod::Structure,
-                kind: classify_fn(trimmed),
-                library: None,
-                    fragments: None,
-                    });
-        }
-    }
 
-    result
+            let offset = (s.ptr - blob_addr) as usize;
+            let end = offset + s.len as usize;
+
+            if end > blob.len() {
+                return None;
+            }
+
+            let bytes = &blob[offset..end];
+
+            // Fast ASCII printability check before UTF-8 validation
+            let printable_count = bytes
+                .iter()
+                .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+                .count();
+
+            if printable_count * 2 < bytes.len() {
+                return None;
+            }
+
+            // Validate UTF-8
+            if let Ok(string) = std::str::from_utf8(bytes) {
+                let trimmed = string.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                Some(ExtractedString {
+                    value: trimmed.to_string(),
+                    data_offset: s.ptr,
+                    section: section_name.map(std::string::ToString::to_string),
+                    method: StringMethod::Structure,
+                    kind: classify_fn(trimmed),
+                    library: None,
+                    fragments: None,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -480,11 +480,14 @@ pub fn extract_from_object(
 ) -> Vec<ExtractedString> {
     let min_length = opts.min_length;
     let mut strings = Vec::new();
+    // Track if this is a Go binary - skip XOR scanning for Go (rarely obfuscated)
+    let mut is_go_binary = false;
 
     match object {
         Object::Mach(goblin::mach::Mach::Binary(macho)) => {
             let segments = collect_macho_segments(macho);
             if macho_has_go_sections(macho) {
+                is_go_binary = true;
                 let extractor = GoStringExtractor::new(min_length);
                 strings.extend(extractor.extract_macho(macho, data));
             } else if binary::macho_is_rust(macho) {
@@ -504,7 +507,10 @@ pub fn extract_from_object(
                     strings.extend(rust_strings);
                 }
             }
-            strings.extend(extract_stack_strings(data, min_length));
+            // Skip stack string extraction for Go binaries
+            if !is_go_binary {
+                strings.extend(extract_stack_strings(data, min_length));
+            }
             // Add imports/exports, upgrading existing strings
             let imports = extract_macho_imports(macho, min_length);
             let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
@@ -555,6 +561,7 @@ pub fn extract_from_object(
                     segments = collect_macho_segments(&macho);
                     if macho_has_go_sections(&macho) {
                         is_go = true;
+                        is_go_binary = true;
                         let extractor = GoStringExtractor::new(min_length);
                         strings.extend(extractor.extract_macho(&macho, data));
                     } else if binary::macho_is_rust(&macho) {
@@ -574,7 +581,10 @@ pub fn extract_from_object(
                 // Also do raw scan to catch anything r2 missed
                 strings.extend(extract_raw_strings(data, min_length, None, &segments));
             }
-            strings.extend(extract_stack_strings(data, min_length));
+            // Skip stack string extraction for Go binaries
+            if !is_go_binary {
+                strings.extend(extract_stack_strings(data, min_length));
+            }
             // Add imports/exports from first architecture, upgrading existing strings
             if let Some(ref macho) = first_macho {
                 let imports = extract_macho_imports(macho, min_length);
@@ -636,6 +646,7 @@ pub fn extract_from_object(
             });
 
             if has_go {
+                is_go_binary = true;
                 let extractor = GoStringExtractor::new(min_length);
                 strings.extend(extractor.extract_elf(elf, data));
             } else if has_rust {
@@ -655,7 +666,10 @@ pub fn extract_from_object(
                     strings.extend(rust_strings);
                 }
             }
-            strings.extend(extract_stack_strings(data, min_length));
+            // Skip stack string extraction for Go binaries (they don't use stack-based obfuscation)
+            if !is_go_binary {
+                strings.extend(extract_stack_strings(data, min_length));
+            }
             // Add imports/exports from dynamic symbols, upgrading existing strings
             let imports = extract_elf_imports(elf, min_length);
             let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
@@ -697,6 +711,7 @@ pub fn extract_from_object(
             });
 
             if has_go {
+                is_go_binary = true;
                 let extractor = GoStringExtractor::new(min_length);
                 strings.extend(extractor.extract_pe(pe, data));
             }
@@ -712,7 +727,10 @@ pub fn extract_from_object(
             // Raw scan for PE (catches strings missed by structure extraction)
             strings.extend(extract_raw_strings(data, min_length, None, &segments));
 
-            strings.extend(extract_stack_strings(data, min_length));
+            // Skip stack string extraction for Go binaries
+            if !is_go_binary {
+                strings.extend(extract_stack_strings(data, min_length));
+            }
 
             // Extract overlay/appended data (common malware technique)
             strings.extend(extract_overlay_strings(data, min_length));
@@ -729,8 +747,8 @@ pub fn extract_from_object(
         }
     }
 
-    // XOR string detection
-    if !data.is_empty() {
+    // XOR string detection - skip for Go binaries (they don't use XOR obfuscation)
+    if !data.is_empty() && !is_go_binary {
         // Get radare2 string boundaries for XOR hints (if r2 is enabled)
         let r2_boundaries = if opts.use_r2 {
             if let Some(path) = &opts.path {

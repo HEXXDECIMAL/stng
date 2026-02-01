@@ -51,33 +51,45 @@ pub(super) fn classify_gopclntab_string(s: &str) -> StringKind {
 /// Classify a general string by its content.
 /// Note: Section names are detected via goblin, not pattern matching here.
 pub fn classify_string(s: &str) -> StringKind {
-    // Check for shell commands first (high priority for security)
+    // Fast early exit for very short strings (but not env vars which can be short like A_B)
+    if s.len() < 3 {
+        return StringKind::Const;
+    }
+
+    let bytes = s.as_bytes();
+    let first = bytes[0];
+
+    // URLs (including database URLs) - check first char for fast path
+    if first == b'h' || first == b'f' || first == b'p' || first == b'm' || first == b'r' || first == b's' || first == b't' || first == b'u' {
+        if s.starts_with("http://")
+            || s.starts_with("https://")
+            || s.starts_with("ftp://")
+            || s.starts_with("postgresql://")
+            || s.starts_with("mysql://")
+            || s.starts_with("redis://")
+            || s.starts_with("mongodb://")
+            || s.starts_with("ssh://")
+            || s.starts_with("tcp://")
+            || s.starts_with("udp://")
+        {
+            // Skip common benign URLs (Apple certs, etc.)
+            if s.starts_with("https://www.apple.com/appleca") {
+                return StringKind::Const;
+            }
+            return StringKind::Url;
+        }
+    }
+
+    // Check for shell commands (high priority for security)
     if is_shell_command(s) {
         return StringKind::ShellCmd;
     }
 
-    // IP addresses and IP:port
-    if let Some(kind) = classify_ip(s) {
-        return kind;
-    }
-
-    // URLs (including database URLs) - but skip known benign ones
-    if s.starts_with("http://")
-        || s.starts_with("https://")
-        || s.starts_with("ftp://")
-        || s.starts_with("postgresql://")
-        || s.starts_with("mysql://")
-        || s.starts_with("redis://")
-        || s.starts_with("mongodb://")
-        || s.starts_with("ssh://")
-        || s.starts_with("tcp://")
-        || s.starts_with("udp://")
-    {
-        // Skip common benign URLs (Apple certs, etc.)
-        if s.starts_with("https://www.apple.com/appleca") {
-            return StringKind::Const;
+    // IP addresses and IP:port - only if starts with digit
+    if first.is_ascii_digit() {
+        if let Some(kind) = classify_ip(s) {
+            return kind;
         }
-        return StringKind::Url;
     }
 
     // Windows registry paths
@@ -204,6 +216,12 @@ fn is_shell_command(s: &str) -> bool {
         return false;
     }
 
+    // Fast path: shell commands almost always contain a space
+    // Exceptions: paths like /bin/sh, command substitution $(...)
+    if !s.contains(' ') && !s.starts_with("/bin/") && !s.starts_with("$(") {
+        return false;
+    }
+
     // Skip if it looks like a .NET generic type (contains backtick followed by digit)
     // e.g., IEnumerable`1, Dictionary`2, etc.
     if s.contains('`') {
@@ -300,8 +318,14 @@ fn is_shell_command(s: &str) -> bool {
     ];
 
     for prefix in cmd_prefixes {
-        if s.starts_with(prefix) || s.contains(&format!(" {prefix}")) {
+        if s.starts_with(prefix) {
             return true;
+        }
+        // Check for " prefix" pattern without allocation
+        if let Some(pos) = s.find(prefix) {
+            if pos > 0 && s.as_bytes()[pos - 1] == b' ' {
+                return true;
+            }
         }
     }
 

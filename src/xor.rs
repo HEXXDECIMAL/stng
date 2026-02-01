@@ -20,6 +20,10 @@ const SKIP_XOR_KEYS: &[u8] = &[0x20];
 /// Maximum file size for auto-detection of XOR keys (512 KB).
 pub const MAX_AUTO_DETECT_SIZE: usize = 512 * 1024;
 
+/// Maximum file size for single-byte XOR scanning (50 MB).
+/// Larger files take too long to scan and rarely contain simple XOR obfuscation.
+pub const MAX_XOR_SCAN_SIZE: usize = 50 * 1024 * 1024;
+
 /// Calculate Shannon entropy of a byte string.
 /// Returns a value between 0.0 (no entropy) and 8.0 (maximum entropy for bytes).
 fn calculate_entropy(data: &[u8]) -> f64 {
@@ -1212,6 +1216,16 @@ pub fn extract_xor_strings(
     min_length: usize,
     scan_wide: bool,
 ) -> Vec<ExtractedString> {
+    // Skip XOR scanning for very large files - too slow and unlikely to have simple XOR
+    if data.len() > MAX_XOR_SCAN_SIZE {
+        tracing::debug!(
+            "Skipping XOR scan: file size {} MB exceeds {} MB limit",
+            data.len() / (1024 * 1024),
+            MAX_XOR_SCAN_SIZE / (1024 * 1024)
+        );
+        return Vec::new();
+    }
+
     let (ac, pattern_info) = if scan_wide {
         get_automaton_with_wide()
     } else {
