@@ -20,6 +20,28 @@ use goblin::mach::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
 use goblin::mach::MachO;
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::OnceLock;
+use rayon::prelude::*;
+
+/// Cached regexes for pattern extraction (compiled once, reused forever)
+struct PatternRegexes {
+    url: Regex,
+    path: Regex,
+    env_var: Regex,
+    snake_case: Regex,
+    domain: Regex,
+}
+
+fn get_pattern_regexes() -> &'static PatternRegexes {
+    static REGEXES: OnceLock<PatternRegexes> = OnceLock::new();
+    REGEXES.get_or_init(|| PatternRegexes {
+        url: Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+").unwrap(),
+        path: Regex::new(r"/[a-zA-Z0-9_./\-]+").unwrap(),
+        env_var: Regex::new(r"[A-Z][A-Z0-9_]{3,}").unwrap(),
+        snake_case: Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+").unwrap(),
+        domain: Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+").unwrap(),
+    })
+}
 
 /// Extracts strings from Rust binaries using structure analysis.
 pub struct RustStringExtractor {
@@ -130,9 +152,21 @@ impl RustStringExtractor {
 
         // PHASE 3: Heuristic extraction from __TEXT,__const for packed strings
         // Rust often packs format strings without structures
+        // Skip for large sections (> 1MB) as regex scanning is expensive
+        const MAX_HEURISTIC_SECTION_SIZE: usize = 1024 * 1024;
         if let Some((text_const_addr, text_const_data)) = text_const_info {
-            let heuristic =
-                self.extract_packed_strings(text_const_data, Some("__TEXT,__const".to_string()));
+            if text_const_data.len() > MAX_HEURISTIC_SECTION_SIZE {
+                tracing::debug!(
+                    "Skipping heuristic extraction for __TEXT,__const ({} bytes > {} limit)",
+                    text_const_data.len(),
+                    MAX_HEURISTIC_SECTION_SIZE
+                );
+            }
+            let heuristic = if text_const_data.len() <= MAX_HEURISTIC_SECTION_SIZE {
+                self.extract_packed_strings(text_const_data, Some("__TEXT,__const".to_string()))
+            } else {
+                Vec::new()
+            };
             let existing: HashSet<String> = strings
                 .iter()
                 .map(|s: &ExtractedString| s.value.clone())
@@ -400,9 +434,6 @@ impl RustStringExtractor {
         data: &[u8],
         section_name: Option<String>,
     ) -> Vec<ExtractedString> {
-        let mut strings = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-
         // Convert bytes to text, marking non-printable bytes
         let mut text = String::with_capacity(data.len());
         for &b in data {
@@ -419,17 +450,30 @@ impl RustStringExtractor {
             }
         }
 
-        // Split on nulls and non-printables first
-        for segment in text.split(['\0', '\x01']) {
-            if segment.len() < self.min_length {
-                continue;
-            }
+        // Collect segments for parallel processing
+        let segments: Vec<&str> = text
+            .split(['\0', '\x01'])
+            .filter(|s| s.len() >= self.min_length)
+            .collect();
 
-            // Extract patterns from each segment
-            self.extract_patterns_from_segment(segment, &section_name, &mut strings, &mut seen);
-        }
+        // Process segments in parallel
+        let all_strings: Vec<Vec<ExtractedString>> = segments
+            .par_iter()
+            .map(|segment| {
+                let mut strings = Vec::new();
+                let mut seen = HashSet::new();
+                self.extract_patterns_from_segment(segment, &section_name, &mut strings, &mut seen);
+                strings
+            })
+            .collect();
 
-        strings
+        // Flatten and deduplicate
+        let mut seen: HashSet<String> = HashSet::new();
+        all_strings
+            .into_iter()
+            .flatten()
+            .filter(|s| seen.insert(s.value.clone()))
+            .collect()
     }
 
     /// Extract recognizable patterns from a text segment.
@@ -440,21 +484,16 @@ impl RustStringExtractor {
         strings: &mut Vec<ExtractedString>,
         seen: &mut HashSet<String>,
     ) {
+        let regexes = get_pattern_regexes();
+
         // Pattern 1: URLs (highest priority, clear boundaries)
-        for cap in
-            Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+")
-                .unwrap()
-                .find_iter(segment)
-        {
+        for cap in regexes.url.find_iter(segment) {
             let url = cap.as_str().trim_end_matches(['.', ',', ';']);
             self.add_if_valid(url, section_name, strings, seen);
         }
 
         // Pattern 2: Unix file paths
-        for cap in Regex::new(r"/[a-zA-Z0-9_./\-]+")
-            .unwrap()
-            .find_iter(segment)
-        {
+        for cap in regexes.path.find_iter(segment) {
             let path = cap.as_str();
             if path.contains('/') && path.len() >= self.min_length {
                 self.add_if_valid(path, section_name, strings, seen);
@@ -462,10 +501,7 @@ impl RustStringExtractor {
         }
 
         // Pattern 3: Environment variable names (UPPER_CASE_WITH_UNDERSCORES)
-        for cap in Regex::new(r"[A-Z][A-Z0-9_]{3,}")
-            .unwrap()
-            .find_iter(segment)
-        {
+        for cap in regexes.env_var.find_iter(segment) {
             let env_var = cap.as_str();
             if env_var.contains('_') && env_var.len() >= self.min_length {
                 self.add_if_valid(env_var, section_name, strings, seen);
@@ -473,10 +509,7 @@ impl RustStringExtractor {
         }
 
         // Pattern 4: snake_case identifiers
-        for cap in Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
-            .unwrap()
-            .find_iter(segment)
-        {
+        for cap in regexes.snake_case.find_iter(segment) {
             let ident = cap.as_str();
             if ident.len() >= self.min_length {
                 self.add_if_valid(ident, section_name, strings, seen);
@@ -484,10 +517,7 @@ impl RustStringExtractor {
         }
 
         // Pattern 5: Domain names
-        for cap in Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+")
-            .unwrap()
-            .find_iter(segment)
-        {
+        for cap in regexes.domain.find_iter(segment) {
             let domain = cap.as_str();
             if domain.len() >= self.min_length {
                 self.add_if_valid(domain, section_name, strings, seen);
