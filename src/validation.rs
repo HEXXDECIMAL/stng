@@ -15,6 +15,26 @@ pub fn is_garbage(s: &str) -> bool {
     // Normalize: trim whitespace first
     let trimmed = s.trim();
 
+    // Fast path: longer strings with normal patterns are rarely garbage
+    // This avoids expensive analysis for the common case
+    if trimmed.len() >= 12 {
+        let bytes = trimmed.as_bytes();
+        let first = bytes[0];
+        // Quick check for all-same-character strings (garbage)
+        if bytes.iter().all(|&b| b == first) {
+            return true;
+        }
+        // If it starts with a letter and has mostly alphanumeric + common punctuation, skip full analysis
+        if first.is_ascii_alphabetic() {
+            let simple_chars = bytes.iter().filter(|&&b| {
+                b.is_ascii_alphanumeric() || b == b' ' || b == b'_' || b == b'-' || b == b'.' || b == b'/'
+            }).count();
+            if simple_chars * 100 / bytes.len() >= 80 {
+                return false;
+            }
+        }
+    }
+
     // Special case: Shell command patterns (check before control char rejection)
     // These often have garbage bytes before/after but are still valuable
     // Examples: "osascript", "bash", "sh ", "/bin/", "2>&1", "<<EOD"

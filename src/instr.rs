@@ -362,66 +362,78 @@ pub fn extract_inline_strings_amd64(
     rodata_addr: u64,
     min_length: usize,
 ) -> Vec<ExtractedString> {
-    let mut strings = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    use rayon::prelude::*;
 
     let rodata_end = rodata_addr + rodata_data.len() as u64;
 
-    // Scan through text looking for CALL instructions
-    let mut i = 0;
-    while i < text_data.len().saturating_sub(5) {
-        // Check for CALL instruction (E8 xx xx xx xx)
-        if text_data[i] != 0xE8 {
-            i += 1;
-            continue;
-        }
+    // Find all CALL instruction positions first
+    let call_positions: Vec<usize> = text_data
+        .iter()
+        .enumerate()
+        .filter(|(i, &b)| b == 0xE8 && *i < text_data.len().saturating_sub(5))
+        .map(|(i, _)| i)
+        .collect();
 
-        // Extract first argument strings (RDI/RSI)
-        extract_amd64_first_arg_string(
-            i,
-            text_data,
-            text_addr,
-            rodata_data,
-            rodata_addr,
-            rodata_end,
-            min_length,
-            StringKind::Arg,
-            &mut strings,
-            &mut seen,
-        );
+    // Process CALL sites in parallel
+    let all_strings: Vec<Vec<ExtractedString>> = call_positions
+        .par_iter()
+        .map(|&i| {
+            let mut strings = Vec::new();
+            let mut seen = HashSet::new();
 
-        // Extract second argument strings (RSI/RDX) - often map keys
-        extract_amd64_key_string(
-            i,
-            text_data,
-            text_addr,
-            rodata_data,
-            rodata_addr,
-            rodata_end,
-            min_length,
-            StringKind::MapKey,
-            &mut strings,
-            &mut seen,
-        );
+            // Extract first argument strings (RDI/RSI)
+            extract_amd64_first_arg_string(
+                i,
+                text_data,
+                text_addr,
+                rodata_data,
+                rodata_addr,
+                rodata_end,
+                min_length,
+                StringKind::Arg,
+                &mut strings,
+                &mut seen,
+            );
 
-        // Extract value strings after CALL
-        extract_amd64_value_string(
-            i,
-            text_data,
-            text_addr,
-            rodata_data,
-            rodata_addr,
-            rodata_end,
-            min_length,
-            StringKind::Const,
-            &mut strings,
-            &mut seen,
-        );
+            // Extract second argument strings (RSI/RDX) - often map keys
+            extract_amd64_key_string(
+                i,
+                text_data,
+                text_addr,
+                rodata_data,
+                rodata_addr,
+                rodata_end,
+                min_length,
+                StringKind::MapKey,
+                &mut strings,
+                &mut seen,
+            );
 
-        i += 1;
-    }
+            // Extract value strings after CALL
+            extract_amd64_value_string(
+                i,
+                text_data,
+                text_addr,
+                rodata_data,
+                rodata_addr,
+                rodata_end,
+                min_length,
+                StringKind::Const,
+                &mut strings,
+                &mut seen,
+            );
 
-    strings
+            strings
+        })
+        .collect();
+
+    // Flatten and deduplicate
+    let mut seen: HashSet<String> = HashSet::new();
+    all_strings
+        .into_iter()
+        .flatten()
+        .filter(|s| seen.insert(s.value.clone()))
+        .collect()
 }
 
 /// Extract first argument string (LEAQ addr(RIP), RDI + MOVL $len, RSI).
