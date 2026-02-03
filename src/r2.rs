@@ -614,7 +614,8 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
                     let func_name = parts[0];
 
                     // Disassemble the function
-                    let pdf_cmd = format!("aaa; pdf @ {func_name}");
+                    // NOTE: 'aaa' analysis already ran on line 447, so just get disassembly
+                    let pdf_cmd = format!("pdf @ {func_name}");
                     let disasm = match run_tool_command(tool, path, &pdf_cmd) {
                         Some(d) => d,
                         None => continue,
