@@ -336,11 +336,14 @@ impl<'a> StackStringExtractor<'a> {
                 }
 
                 let gap = w.disp - current_end_disp;
-                
-                // For memory writes (base < 255), we require strict adjacency or overlap.
+
+                // For memory writes (base < 255), allow a small gap to account for
+                // character-by-character assembly where each instruction writes to successive bytes.
+                // Some instructions may have implicit padding or alignment that creates small gaps.
                 // For instruction-embedded strings (base == 255), we allow a small gap (e.g. 16 bytes)
                 // to merge strings from sequential instructions.
-                let allowed_gap = if base == 255 { 16 } else { 0 };
+                // Threshold: 4 bytes covers most cases (mov dword writes with 1-byte gaps between them)
+                let allowed_gap = if base == 255 { 16 } else { 4 };
 
                 if gap <= allowed_gap { 
                     if gap >= 0 {
@@ -385,10 +388,109 @@ impl<'a> StackStringExtractor<'a> {
             }
             results.push(current);
         }
-        
+
+        // Second pass: merge adjacent short fragments that were split due to small gaps.
+        // This handles character-by-character assembly like "[k" "w" "o" "r" "k" "e" "r" "]"
+        // where fragments end up in the results list but should be combined.
+        results = self.merge_adjacent_fragments(results);
+
         // Final sanity check: filter out very short merged strings
         results.retain(|s| s.value.len() >= self.min_length);
         results
+    }
+
+    /// Merge adjacent short fragments that likely belong together.
+    /// This catches cases where character-by-character assembly creates many 1-2 byte fragments.
+    fn merge_adjacent_fragments(&self, mut strings: Vec<ExtractedString>) -> Vec<ExtractedString> {
+        if strings.is_empty() {
+            return strings;
+        }
+
+        let mut merged = Vec::new();
+        let mut current_group = vec![strings.remove(0)];
+
+        for next_str in strings {
+            let last = current_group.last().unwrap();
+
+            // Check if this string is adjacent to the last one (within a small gap)
+            // and both are short (suggesting character-by-character assembly)
+            let last_end = last.data_offset + last.value.len() as u64;
+            let gap = next_str.data_offset as i64 - last_end as i64;
+
+            // Merge if:
+            // 1. Strings are adjacent or very close (gap < 8 bytes, accounting for instruction padding)
+            // 2. At least one of them is short (< 4 bytes, suggesting fragments)
+            // 3. Neither is suspiciously garbage-like
+            if gap >= -4 && gap < 8 && (last.value.len() < 4 || next_str.value.len() < 4) {
+                // They likely belong together
+                current_group.push(next_str);
+            } else {
+                // End the current group and merge it
+                if current_group.len() > 1 {
+                    merged.push(self.merge_group(&current_group));
+                } else {
+                    merged.extend(current_group);
+                }
+                current_group = vec![next_str];
+            }
+        }
+
+        // Handle the last group
+        if !current_group.is_empty() {
+            if current_group.len() > 1 {
+                merged.push(self.merge_group(&current_group));
+            } else {
+                merged.extend(current_group);
+            }
+        }
+
+        merged
+    }
+
+    /// Merge a group of adjacent fragments into a single string.
+    fn merge_group(&self, group: &[ExtractedString]) -> ExtractedString {
+        if group.is_empty() {
+            return ExtractedString {
+                value: String::new(),
+                data_offset: 0,
+                section: None,
+                method: StringMethod::StackString,
+                kind: StringKind::StackString,
+                library: None,
+                fragments: None,
+            };
+        }
+
+        if group.len() == 1 {
+            return group[0].clone();
+        }
+
+        let mut merged_value = String::new();
+        let first_offset = group[0].data_offset;
+        let mut merged_fragments = Vec::new();
+
+        for (_idx, s) in group.iter().enumerate() {
+            merged_value.push_str(&s.value);
+            if let Some(frags) = &s.fragments {
+                merged_fragments.extend(frags.clone());
+            }
+            // If there's a gap to the next string, we might want to note it
+            // but for now we just concatenate
+        }
+
+        ExtractedString {
+            value: merged_value,
+            data_offset: first_offset,
+            section: group[0].section.clone(),
+            method: StringMethod::StackString,
+            kind: StringKind::StackString,
+            library: None,
+            fragments: if merged_fragments.is_empty() {
+                None
+            } else {
+                Some(merged_fragments)
+            },
+        }
     }
 }
 

@@ -666,6 +666,9 @@ pub fn extract_from_object(
                     strings.extend(rust_strings);
                 }
             }
+            // Extract UTF-16LE wide strings (less common in ELF but can occur, especially in malware)
+            strings.extend(extract_wide_strings(data, min_length, None, &segments));
+
             // Skip stack string extraction for Go binaries (they don't use stack-based obfuscation)
             if !is_go_binary {
                 strings.extend(extract_stack_strings(data, min_length));
