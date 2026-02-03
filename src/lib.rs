@@ -39,6 +39,7 @@ mod validation;
 
 // Binary format modules
 mod binary;
+mod binary_net;
 mod detect;
 mod entitlements;
 mod imports;
@@ -74,6 +75,7 @@ use std::collections::HashSet;
 
 // Import internal modules for use in this file
 use binary::{collect_elf_segments, collect_macho_segments, macho_has_go_sections};
+use binary_net::scan_binary_ips;
 use entitlements::extract_macho_entitlements;
 use imports::{extract_elf_imports, extract_macho_imports};
 use raw::{extract_raw_strings, extract_wide_strings};
@@ -671,6 +673,9 @@ pub fn extract_from_object(
             // Extract UTF-16LE wide strings (less common in ELF but can occur, especially in malware)
             strings.extend(extract_wide_strings(data, min_length, None, &segments));
 
+            // Extract binary network data (IPs and ports in network byte order)
+            strings.extend(scan_binary_ips(data, min_length));
+
             // Skip stack string extraction for Go binaries (they don't use stack-based obfuscation)
             if !is_go_binary {
                 strings.extend(extract_stack_strings(data, min_length));
@@ -729,6 +734,9 @@ pub fn extract_from_object(
             // Extract UTF-16LE wide strings (common in Windows binaries)
             strings.extend(extract_wide_strings(data, min_length, None, &segments));
 
+            // Extract binary network data (IPs and ports in network byte order)
+            strings.extend(scan_binary_ips(data, min_length));
+
             // Raw scan for PE (catches strings missed by structure extraction)
             strings.extend(extract_raw_strings(data, min_length, None, &segments));
 
@@ -748,6 +756,8 @@ pub fn extract_from_object(
             if strings.is_empty() && !data.is_empty() {
                 strings.extend(extract_raw_strings(data, min_length, None, &[]));
             }
+            // Extract binary network data (IPs and ports in network byte order)
+            strings.extend(scan_binary_ips(data, min_length));
             strings.extend(extract_stack_strings(data, min_length));
         }
     }

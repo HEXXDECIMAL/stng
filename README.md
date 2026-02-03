@@ -1,37 +1,35 @@
-# stng
+![stng](media/logo-small.png)
 
-Language-aware string extraction for binary analysis. A smarter `strings(1)` for security research.
+**stng** — Language-aware string extraction for binary malware analysis. Extract indicators, hardcoded credentials, C2 addresses, and obfuscated strings from any binary.
 
-## Install
-
-```bash
-cargo install --path .
-```
-
-## Usage
+## Quick Start
 
 ```bash
-stng malware.bin                 # Full analysis with auto XOR detection
-stng -i malware.bin              # Filter out noise
-stng --xor "key" malware.bin     # Custom XOR key (hex or string)
-stng --json malware.bin          # JSON output
+stng malware.bin              # Full analysis with XOR auto-detection
+stng -i malware.bin           # Filter noise (known library strings)
+stng --json malware.bin       # Machine-readable output
 ```
 
-## Features
+## Detection Capabilities
 
-- **Go/Rust aware**: Extracts strings from `{ptr, len}` structures, not just null-terminated
-- **XOR detection**: Auto-detects and decodes XOR'd strings (single and multi-byte keys)
-- **IOC classification**: Tags IPs, URLs, shell commands, suspicious paths, registry keys
-- **Wide strings**: UTF-16LE extraction for Windows PE files
-- **Overlay extraction**: Finds strings appended after binary boundaries
-- **Mach-O entitlements**: Extracts security capabilities from code signatures
+- **Binary network structures**: Hardcoded IPs/ports in socket structures, network byte order
+- **XOR obfuscation**: Single/multi-byte keys with entropy analysis
+- **Language-aware extraction**: Go/Rust `{ptr, len}`, DWARF stack strings
+- **IOC classification**: IPs, URLs, shell commands, paths, registry keys, credentials
+- **Wide strings**: UTF-16LE in Windows PE binaries
+- **Format support**: ELF, PE, Mach-O, raw binaries, overlays
 
-Strings are classified by type and colored by severity. Run `stng --help` for options.
+## Use Cases
 
-## Library Usage
+- **C2 enumeration**: Extract hardcoded callbacks, encryption keys, beacon URLs
+- **Credential hunting**: Locate database passwords, API keys, private keys
+- **Evasion analysis**: Identify XOR'd strings, packed payloads, obfuscated indicators
+- **YARA acceleration**: Find strings for signature development
+
+## Library
 
 ```rust
-let strings = stng::extract_strings(&std::fs::read("binary")?, 4);
+let strings = stng::extract_strings(&std::fs::read("sample")?, 4);
 ```
 
 License: Apache-2.0
