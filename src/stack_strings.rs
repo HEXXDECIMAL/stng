@@ -49,6 +49,12 @@ impl<'a> StackStringExtractor<'a> {
 
     fn extract(mut self) -> Vec<ExtractedString> {
         let mut results = Vec::new();
+
+        // First pass: look for loop-based string building patterns
+        // Used by kworker_pretenders and similar malware
+        // Pattern: repeated "mov word [mem], imm" with ASCII-decodable immediates
+        results.extend(self.extract_loop_built_strings());
+
         let mut i = 0;
         while i < self.data.len() {
             // Safety check
@@ -60,12 +66,12 @@ impl<'a> StackStringExtractor<'a> {
             // 2. mov [mem], imm (C6, C7)
             // 3. mov [mem], reg (88, 89)
             // 4. Control flow (reset state)
-            
+
             // Skip prefixes
             let mut p = i;
             let mut rex = 0u8;
             let mut _segment = 0u8;
-            
+
             loop {
                 if p >= self.data.len() { break; }
                 let b = self.data[p];
@@ -492,6 +498,150 @@ impl<'a> StackStringExtractor<'a> {
             },
         }
     }
+
+    /// Extract strings built using loop-based patterns.
+    /// Detects patterns like: mov word [rax], imm; ... strlen; ... mov word [rax], imm
+    /// Used by malware like kworker_pretenders that builds strings iteratively.
+    fn extract_loop_built_strings(&self) -> Vec<ExtractedString> {
+        let mut results = Vec::new();
+
+        // Collect all "mov word [mem], imm16" instructions with ASCII immediates
+        let mut mov_word_instrs = Vec::new();
+        let mut i = 0;
+        while i + 4 < self.data.len() {
+            if self.data[i] == 0x66 && self.data[i + 1] == 0xC7 && self.data[i + 2] == 0x00 {
+                let b1 = self.data[i + 3];
+                let b2 = self.data[i + 4];
+
+                // Accept patterns where:
+                // - b1 is printable ASCII (first byte of the 2-byte immediate)
+                // - b2 is either printable ASCII or null (second byte - null acts as string terminator)
+                let is_valid = (b1.is_ascii_graphic() || b1 == b' ') &&
+                               (b2.is_ascii_graphic() || b2 == b' ' || b2 == 0);
+                if is_valid {
+                    mov_word_instrs.push((i, b1, b2));
+                    i += 5;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        // Group consecutive mov word instructions within a function/block
+        // A new group starts if gap changes significantly or we hit invalid chars
+        let mut j = 0;
+        while j < mov_word_instrs.len() {
+            let (start_pos, b1, b2) = mov_word_instrs[j];
+            let mut chunk = String::new();
+            chunk.push(b1 as char);
+
+            // Only add b2 if it's not a null terminator
+            let is_terminated = b2 == 0;
+            if !is_terminated {
+                chunk.push(b2 as char);
+            }
+
+            let mut k = j + 1;
+            let expected_gap = if k < mov_word_instrs.len() {
+                (mov_word_instrs[k].0 - start_pos) as i64
+            } else {
+                37 // Default kworker pattern gap
+            };
+
+            while k < mov_word_instrs.len() {
+                let (pos, b3, b4) = mov_word_instrs[k];
+                let gap = (pos - start_pos) as i64;
+                let prev_pos = if k > 0 { mov_word_instrs[k - 1].0 } else { start_pos };
+                let current_gap = (pos - prev_pos) as i64;
+
+                // Stop if:
+                // 1. Gap changes significantly (likely different loop/string)
+                // 2. String would be unreasonably long
+                // 3. We've hit a null terminator (end of string)
+                let gap_variance = (current_gap - expected_gap).abs();
+                if gap_variance > 2 || gap > 500 || chunk.len() > 64 {
+                    break;
+                }
+
+                chunk.push(b3 as char);
+                // Only add b4 if it's not a null terminator
+                if b4 != 0 {
+                    chunk.push(b4 as char);
+                } else {
+                    // We've hit the end of the string
+                    k += 1;
+                    break;
+                }
+                k += 1;
+            }
+
+            // If we have at least 2 pairs (4+ chars), it's likely a real string
+            // Also check that it doesn't look like random garbage
+            if chunk.len() >= self.min_length && chunk.len() < 256 && self.looks_like_real_string(&chunk) {
+                let chunk_len = chunk.len();
+                results.push(ExtractedString {
+                    value: chunk,
+                    data_offset: start_pos as u64,
+                    section: None,
+                    method: StringMethod::StackString,
+                    kind: StringKind::StackString,
+                    library: None,
+                    fragments: Some(vec![StringFragment {
+                        offset: start_pos as u64,
+                        length: chunk_len,
+                        flavor: Some("mov_word_loop".into()),
+                    }]),
+                });
+            }
+
+            j = k.max(j + 1);
+        }
+
+        results
+    }
+
+    /// Check if a string looks like it was intentionally constructed
+    /// rather than random bytes that happen to be printable.
+    fn looks_like_real_string(&self, s: &str) -> bool {
+        // Very short strings are less reliable
+        if s.len() < 4 {
+            return false;
+        }
+
+        // Strings that are all special characters are suspicious
+        let special_count = s.chars().filter(|c| !c.is_alphanumeric()).count();
+        if special_count > s.len() / 2 {
+            return false;
+        }
+
+        // Common malware strings patterns
+        let suspicious_patterns = [
+            "[kworker]", "bashrc", "profile", ".ICE", "/tmp", "/etc",
+            "home", "user", "root", "bin", "lib", "var", "proc",
+        ];
+
+        for pattern in &suspicious_patterns {
+            if s.contains(pattern) {
+                return true;
+            }
+        }
+
+        // If it has multiple alphanumeric runs, it's likely real
+        let mut alphanumeric_runs = 0;
+        let mut in_run = false;
+        for c in s.chars() {
+            if c.is_alphanumeric() {
+                if !in_run {
+                    alphanumeric_runs += 1;
+                    in_run = true;
+                }
+            } else {
+                in_run = false;
+            }
+        }
+
+        alphanumeric_runs >= 2
+    }
 }
 
 fn check_printable(bytes: &[u8], min_length: usize) -> Option<String> {
@@ -513,6 +663,7 @@ fn check_printable(bytes: &[u8], min_length: usize) -> Option<String> {
     if trimmed.iter().all(|&b| b.is_ascii_graphic() || b == b' ') {
          return String::from_utf8(trimmed.to_vec()).ok();
     }
-    
+
     None
 }
+
