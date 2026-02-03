@@ -24,7 +24,11 @@ pub fn collect_macho_segments(macho: &MachO) -> Vec<String> {
 pub fn collect_elf_segments(elf: &goblin::elf::Elf) -> Vec<String> {
     elf.section_headers
         .iter()
-        .filter_map(|sh| elf.shdr_strtab.get_at(sh.sh_name).map(std::string::ToString::to_string))
+        .filter_map(|sh| {
+            elf.shdr_strtab
+                .get_at(sh.sh_name)
+                .map(std::string::ToString::to_string)
+        })
         .collect()
 }
 

@@ -236,8 +236,7 @@ fn main() -> Result<()> {
     };
 
     // Extract strings with options
-    let mut opts =
-        stng::ExtractOptions::new(cli.min_length).with_garbage_filter(!cli.unfiltered);
+    let mut opts = stng::ExtractOptions::new(cli.min_length).with_garbage_filter(!cli.unfiltered);
 
     if use_r2 {
         opts = opts.with_r2(&cli.target);
@@ -258,6 +257,11 @@ fn main() -> Result<()> {
     } else {
         None
     };
+
+    // Show brief status message only if we'll actually scan (file is within size limits)
+    if !cli.no_xor && !cli.debug && io::stderr().is_terminal() && data.len() <= stng::xor::MAX_XOR_SCAN_SIZE {
+        eprintln!("Scanning file for encoded material...");
+    }
 
     let mut strings = stng::extract_strings_with_options(&data, &opts);
 
@@ -417,9 +421,9 @@ fn main() -> Result<()> {
 
         // Show overlay section even if no printable strings were found
         if let Some(ref overlay) = overlay_info {
-            let has_overlay_strings = strings.iter().any(|s| {
-                s.section.as_deref() == Some("overlay")
-            });
+            let has_overlay_strings = strings
+                .iter()
+                .any(|s| s.section.as_deref() == Some("overlay"));
 
             if !has_overlay_strings && !cli.flat {
                 // Overlay exists but no printable strings - show informational message
@@ -428,14 +432,16 @@ fn main() -> Result<()> {
                 }
                 if use_color {
                     println!("{DIM}── overlay ──{RESET}");
-                    println!("  {}{:>8x}{} {}{:<12}{} {}{} bytes (unprintable){}",
-                        DIM, overlay.start_offset, RESET,
-                        DIM, "-", RESET,
-                        DIM, overlay.size, RESET);
+                    println!(
+                        "  {}{:>8x}{} {}{:<12}{} {}{} bytes (unprintable){}",
+                        DIM, overlay.start_offset, RESET, DIM, "-", RESET, DIM, overlay.size, RESET
+                    );
                 } else {
                     println!("── overlay ──");
-                    println!("  {:>8x} {:<12} {} bytes (unprintable)",
-                        overlay.start_offset, "-", overlay.size);
+                    println!(
+                        "  {:>8x} {:<12} {} bytes (unprintable)",
+                        overlay.start_offset, "-", overlay.size
+                    );
                 }
             }
         }
@@ -631,8 +637,7 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     let kind = if s.method == stng::StringMethod::XorDecode {
         // XOR-decoded strings get "xor/" prefix
         format!("xor/{}", s.kind.short_name())
-    } else if s.method == stng::StringMethod::WideString
-        && s.kind != stng::StringKind::OverlayWide
+    } else if s.method == stng::StringMethod::WideString && s.kind != stng::StringKind::OverlayWide
     {
         // Wide strings get ":16LE" suffix
         format!("{}:16LE", s.kind.short_name())
@@ -694,9 +699,18 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
                 } else {
                     // Binary data - show as hex (especially useful for XOR-decoded base64)
                     let hex_preview = if decoded.len() <= 16 {
-                        decoded.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                        decoded
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
                     } else {
-                        format!("{}...", decoded[..16].iter().map(|b| format!("{b:02x}")).collect::<String>())
+                        format!(
+                            "{}...",
+                            decoded[..16]
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
+                        )
                     };
                     if use_color {
                         value = format!("{value} {DIM}[0x{hex_preview}]{RESET}");

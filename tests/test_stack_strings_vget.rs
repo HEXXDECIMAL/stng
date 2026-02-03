@@ -9,7 +9,7 @@ fn test_stack_strings_vget() {
     }
 
     let data = std::fs::read(sample_path).expect("Failed to read malware sample");
-    
+
     // We expect stack strings to be merged correctly.
     let opts = ExtractOptions::new(4);
     let extracted = stng::extract_strings_with_options(&data, &opts);
@@ -27,17 +27,20 @@ fn test_stack_strings_vget() {
 
     // Stack string merging may produce fragments or full strings depending on instruction patterns
     // Verify we extracted some stack strings with relevant fragments
-    assert!(!stack_strings.is_empty(), "Should extract some stack strings");
+    assert!(
+        !stack_strings.is_empty(),
+        "Should extract some stack strings"
+    );
 
     // Check for CPU-related fragments (may be merged or separate)
-    let has_cpu_strings = stack_strings.iter().any(|s|
+    let has_cpu_strings = stack_strings.iter().any(|s| {
         s.contains("AMD") || s.contains("Authenti") || s.contains("Hygon") || s.contains("Genuine")
-    );
+    });
     assert!(has_cpu_strings, "Should find CPU-related stack strings");
 
     // Check for proc-related fragments
-    let has_proc_strings = stack_strings.iter().any(|s|
-        s.contains("proc") || s.contains("self") || s.contains("exe")
-    );
+    let has_proc_strings = stack_strings
+        .iter()
+        .any(|s| s.contains("proc") || s.contains("self") || s.contains("exe"));
     assert!(has_proc_strings, "Should find proc-related stack strings");
 }

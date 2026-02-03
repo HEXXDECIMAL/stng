@@ -33,18 +33,18 @@
 //! ```
 
 // Core modules
-mod types;
 mod extraction;
+mod types;
 mod validation;
 
 // Binary format modules
 mod binary;
+mod detect;
+mod entitlements;
 mod imports;
+mod overlay;
 mod raw;
 mod stack_strings;
-mod entitlements;
-mod overlay;
-mod detect;
 
 // Language-specific extractors
 mod go;
@@ -54,10 +54,6 @@ mod rust;
 pub mod xor;
 
 // Re-export public API
-pub use types::{
-    BinaryInfo, ExtractedString, OverlayInfo, Severity, StringKind, StringMethod, StringStruct,
-};
-pub use validation::is_garbage;
 pub use binary::{is_go_binary, is_rust_binary};
 pub use detect::{detect_language, is_text_file};
 pub use entitlements::extract_macho_entitlements_xml;
@@ -65,6 +61,10 @@ pub use go::GoStringExtractor;
 pub use overlay::{detect_elf_overlay, extract_overlay_strings};
 pub use rust::RustStringExtractor;
 pub use stack_strings::extract_stack_strings;
+pub use types::{
+    BinaryInfo, ExtractedString, OverlayInfo, Severity, StringKind, StringMethod, StringStruct,
+};
+pub use validation::is_garbage;
 
 // Re-export goblin so library clients can parse binaries themselves
 pub use goblin;
@@ -84,9 +84,7 @@ fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf) 
         if s.section.is_none() {
             // Find which section this offset belongs to
             for sh in &elf.section_headers {
-                if s.data_offset >= sh.sh_offset
-                    && s.data_offset < sh.sh_offset + sh.sh_size
-                {
+                if s.data_offset >= sh.sh_offset && s.data_offset < sh.sh_offset + sh.sh_size {
                     if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
                         if !name.is_empty() {
                             s.section = Some(name.to_string());
@@ -261,9 +259,7 @@ pub fn extract_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
 
 fn method_priority(m: StringMethod) -> u8 {
     match m {
-        StringMethod::Structure
-        | StringMethod::StackString
-        | StringMethod::InstructionPattern => 3,
+        StringMethod::Structure | StringMethod::StackString | StringMethod::InstructionPattern => 3,
         StringMethod::R2String
         | StringMethod::R2Symbol
         | StringMethod::WideString
@@ -439,7 +435,10 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                             );
                             // Use already extracted strings as XOR key candidates
                             let xor_keys = r2::verify_xor_keys(path, &strings);
-                            tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
+                            tracing::debug!(
+                                "Multi-byte XOR: found {} potential keys",
+                                xor_keys.len()
+                            );
                             if xor_keys.is_empty() {
                                 tracing::debug!("Multi-byte XOR: no high-confidence keys found");
                             } else {
@@ -448,7 +447,10 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                                     &xor_keys,
                                     opts.xor_min_length,
                                 );
-                                tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
+                                tracing::debug!(
+                                    "Multi-byte XOR: decoded {} strings",
+                                    decoded.len()
+                                );
                                 strings.extend(decoded);
                             }
                         } else {
@@ -848,8 +850,11 @@ pub fn extract_from_object(
                                 "Multi-byte XOR: attempting decryption with {} keys",
                                 xor_keys.len()
                             );
-                            let decoded =
-                                xor::extract_multikey_xor_strings(data, &xor_keys, opts.xor_min_length);
+                            let decoded = xor::extract_multikey_xor_strings(
+                                data,
+                                &xor_keys,
+                                opts.xor_min_length,
+                            );
                             tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
                             strings.extend(decoded);
                         }
@@ -879,7 +884,9 @@ pub fn extract_from_object(
     // This happens AFTER all extraction (including XOR) is complete
     match object {
         Object::Elf(elf) => enrich_elf_sections(&mut strings, elf),
-        Object::Mach(goblin::mach::Mach::Binary(macho)) => enrich_macho_sections(&mut strings, macho),
+        Object::Mach(goblin::mach::Mach::Binary(macho)) => {
+            enrich_macho_sections(&mut strings, macho)
+        }
         Object::Mach(goblin::mach::Mach::Fat(fat)) => {
             // Use first architecture for section mapping
             if let Some(Ok(goblin::mach::SingleArch::MachO(macho))) = fat.into_iter().next() {
@@ -1122,7 +1129,6 @@ pub fn extract_from_pe(
 
     strings
 }
-
 
 /// Helper to get r2 strings from options (pre-extracted or by running r2)
 fn get_r2_strings(opts: &ExtractOptions) -> Option<Vec<ExtractedString>> {

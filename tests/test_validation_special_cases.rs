@@ -10,9 +10,9 @@ fn test_shell_commands_with_redirections() {
     let test_cases = vec![
         ("osascript 2>&1 <<EOD", "osascript"),
         ("osascript 2>/dev/null <<EOD", "osascript"),
-        ("bash -c command 2>&1", "2>&1"),  // "bash" alone may be split by XOR scanning
-        ("/bin/sh -c script", " -c "),  // -c flag is distinctive for shell commands
-        ("command <<EOF", "<<E"),  // check for heredoc marker
+        ("bash -c command 2>&1", "2>&1"), // "bash" alone may be split by XOR scanning
+        ("/bin/sh -c script", " -c "),    // -c flag is distinctive for shell commands
+        ("command <<EOF", "<<E"),         // check for heredoc marker
     ];
 
     for (cmd, expected_substring) in &test_cases {
@@ -29,18 +29,25 @@ fn test_shell_commands_with_redirections() {
             .with_garbage_filter(true);
 
         let extracted = stng::extract_strings_with_options(&xored, &opts);
-        let found = extracted.iter().any(|s| s.value.contains(expected_substring));
+        let found = extracted
+            .iter()
+            .any(|s| s.value.contains(expected_substring));
 
         if !found {
-            println!("Failed to find '{}' in command '{}'", expected_substring, cmd);
-            println!("Extracted strings: {:?}", extracted.iter().map(|s| &s.value).collect::<Vec<_>>());
+            println!(
+                "Failed to find '{}' in command '{}'",
+                expected_substring, cmd
+            );
+            println!(
+                "Extracted strings: {:?}",
+                extracted.iter().map(|s| &s.value).collect::<Vec<_>>()
+            );
         }
 
         assert!(
             found,
             "Shell command '{}' should NOT be filtered out (looking for '{}')",
-            cmd,
-            expected_substring
+            cmd, expected_substring
         );
     }
 }
@@ -53,7 +60,7 @@ fn test_shell_commands_with_garbage_prefix() {
 
     let test_cases = vec![
         // Simulating garbage + osascript
-        "\x03=fosascript 2>&1 <<EOD",  // control char + garbage + command
+        "\x03=fosascript 2>&1 <<EOD", // control char + garbage + command
         "Wfosascript 2>/dev/null <<EOD", // garbage letter + command
         "#+J8VSgafosascript 2>&1 <<EOD", // multiple garbage chars + command
     ];
@@ -129,11 +136,7 @@ fn test_xml_tags_pass_filter() {
 #[test]
 fn test_heredoc_patterns() {
     let key = b"KEY";
-    let heredocs = vec![
-        "<<EOD",
-        "<<EOF",
-        "command <<END\ncontent\nEND",
-    ];
+    let heredocs = vec!["<<EOD", "<<EOF", "command <<END\ncontent\nEND"];
 
     for heredoc in &heredocs {
         let mut xored = Vec::new();
@@ -160,12 +163,7 @@ fn test_heredoc_patterns() {
 #[test]
 fn test_stderr_redirection_patterns() {
     let key = b"KEY";
-    let redirections = vec![
-        "2>&1",
-        "2>/dev/null",
-        "command 2>&1",
-        "script 2>/dev/null",
-    ];
+    let redirections = vec!["2>&1", "2>/dev/null", "command 2>&1", "script 2>/dev/null"];
 
     for redir in &redirections {
         let mut xored = Vec::new();

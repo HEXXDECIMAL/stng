@@ -4,8 +4,8 @@
 //! pointer+length structures. Instead, compilers pass string addresses and lengths
 //! through registers. We extract these by pattern matching instruction sequences.
 
-use super::types::{ExtractedString, StringKind, StringMethod};
 use super::go::classify_string;
+use super::types::{ExtractedString, StringKind, StringMethod};
 use std::collections::HashSet;
 
 /// Extracts inline strings from ARM64 executable code.
@@ -194,7 +194,7 @@ fn extract_arm64_string_pattern(
                     kind: final_kind,
                     library: None,
                     fragments: None,
-                    });
+                });
             }
         }
 
@@ -533,7 +533,7 @@ fn extract_amd64_first_arg_string(
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
                         library: None,
-                    fragments: None,
+                        fragments: None,
                     });
                 }
             }
@@ -628,7 +628,7 @@ fn extract_amd64_key_string(
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
                         library: None,
-                    fragments: None,
+                        fragments: None,
                     });
                 }
             }
@@ -722,7 +722,7 @@ fn extract_amd64_value_string(
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
                         library: None,
-                    fragments: None,
+                        fragments: None,
                     });
                 }
             }

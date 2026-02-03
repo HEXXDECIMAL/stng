@@ -26,9 +26,17 @@ pub fn is_garbage(s: &str) -> bool {
         }
         // If it starts with a letter and has mostly alphanumeric + common punctuation, skip full analysis
         if first.is_ascii_alphabetic() {
-            let simple_chars = bytes.iter().filter(|&&b| {
-                b.is_ascii_alphanumeric() || b == b' ' || b == b'_' || b == b'-' || b == b'.' || b == b'/'
-            }).count();
+            let simple_chars = bytes
+                .iter()
+                .filter(|&&b| {
+                    b.is_ascii_alphanumeric()
+                        || b == b' '
+                        || b == b'_'
+                        || b == b'-'
+                        || b == b'.'
+                        || b == b'/'
+                })
+                .count();
             if simple_chars * 100 / bytes.len() >= 80 {
                 return false;
             }
@@ -49,7 +57,10 @@ pub fn is_garbage(s: &str) -> bool {
         || (trimmed.contains(" sh ") || trimmed.starts_with("sh ") || trimmed.ends_with(" sh"))
     {
         // BUT: if the string is mostly gibberish (too many special chars), reject it
-        let special_count = trimmed.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
+        let special_count = trimmed
+            .chars()
+            .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+            .count();
         let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
 
         // Real shell commands should have reasonable alphanumeric content
@@ -118,7 +129,8 @@ pub fn is_garbage(s: &str) -> bool {
     if trimmed.contains("2>&1")  // stderr redirect to stdout
         || trimmed.contains("2>")  // stderr redirect to file
         || trimmed.contains("<<")  // heredoc
-        || (trimmed.contains('>') && trimmed.split_whitespace().count() >= 2)  // redirect with spaces
+        || (trimmed.contains('>') && trimmed.split_whitespace().count() >= 2)
+    // redirect with spaces
     {
         // Check if it looks like a command (has alphanumeric content)
         let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
@@ -324,10 +336,9 @@ pub fn is_garbage(s: &str) -> bool {
             if dot_count == special {
                 // Single dot in the middle (filename: "d.exe", "a.out")
                 // OR starts with dot (section name: ".text", ".data", ".bss")
-                let is_filename_pattern = (dot_count == 1
-                    && !trimmed.starts_with('.')
-                    && !trimmed.ends_with('.'))
-                    || trimmed.starts_with('.');
+                let is_filename_pattern =
+                    (dot_count == 1 && !trimmed.starts_with('.') && !trimmed.ends_with('.'))
+                        || trimmed.starts_with('.');
                 if is_filename_pattern && alphanumeric > 0 {
                     // Not garbage - looks like a filename or section name
                 } else {
@@ -494,11 +505,10 @@ pub fn is_garbage(s: &str) -> bool {
         let looks_like_domain = trimmed.contains('.')
             && trimmed.split('.').filter(|s| !s.is_empty()).count() >= 2
             && special * 100 / len <= 20;
-        let looks_like_version = (trimmed.starts_with("go")
-            || trimmed.starts_with('v')
-            || trimmed.starts_with('V'))
-            && trimmed.contains('.')
-            && digit > 0;
+        let looks_like_version =
+            (trimmed.starts_with("go") || trimmed.starts_with('v') || trimmed.starts_with('V'))
+                && trimmed.contains('.')
+                && digit > 0;
         // Base64 strings have uniform character distribution but many transitions
         // They only contain [A-Za-z0-9+/=] and often end with =
         let looks_like_base64 = len >= 16
@@ -557,7 +567,8 @@ pub fn is_garbage(s: &str) -> bool {
                 && !looks_like_version
                 && !looks_like_base64
                 && !looks_like_format_string
-                && !looks_like_url {
+                && !looks_like_url
+            {
                 return true;
             }
         }

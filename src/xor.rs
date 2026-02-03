@@ -292,6 +292,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
     // For multi-byte keys, try both approaches and merge results
     // 1. Pattern-based: each string XOR'd independently from key[0]
     // 2. File-level cycling: entire file XOR'd at all key offsets
+    // Cycling now: skips up to 4 consecutive nulls, removes embedded null bytes
     if key.len() > 1 {
         let mut all_results = extract_custom_xor_strings_pattern_based(
             data,
@@ -315,8 +316,12 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
         let dedup_start = std::time::Instant::now();
         let mut seen: HashSet<(u64, String)> = HashSet::new();
         all_results.retain(|s| seen.insert((s.data_offset, s.value.clone())));
-        eprintln!("[PERF] Dedup by (offset, value): {} -> {} strings in {:.2}s",
-            all_results.len() + seen.len(), all_results.len(), dedup_start.elapsed().as_secs_f64());
+        tracing::debug!(
+            "Dedup by (offset, value): {} -> {} strings in {:.2}s",
+            all_results.len() + seen.len(),
+            all_results.len(),
+            dedup_start.elapsed().as_secs_f64()
+        );
 
         // Remove overlapping strings - keep the higher quality one
         // Sort by quality (score) descending, then by offset
@@ -324,10 +329,15 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
         all_results.sort_by(|a, b| {
             let score_a = string_quality_score(a);
             let score_b = string_quality_score(b);
-            score_b.cmp(&score_a).then(a.data_offset.cmp(&b.data_offset))
+            score_b
+                .cmp(&score_a)
+                .then(a.data_offset.cmp(&b.data_offset))
         });
-        eprintln!("[PERF] Final sorting {} strings took {:.2}s",
-            all_results.len(), sort_start.elapsed().as_secs_f64());
+        tracing::debug!(
+            "Final sorting {} strings took {:.2}s",
+            all_results.len(),
+            sort_start.elapsed().as_secs_f64()
+        );
 
         let overlap_start = std::time::Instant::now();
         let result_count = all_results.len();
@@ -366,8 +376,12 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                 final_results.push(trimmed_result);
             }
         }
-        eprintln!("[PERF] Final overlap checking took {:.2}s, kept {} of {} strings",
-            overlap_start.elapsed().as_secs_f64(), final_results.len(), result_count);
+        tracing::debug!(
+            "Final overlap checking took {:.2}s, kept {} of {} strings",
+            overlap_start.elapsed().as_secs_f64(),
+            final_results.len(),
+            result_count
+        );
 
         // Re-sort by offset for consistent output
         final_results.sort_by_key(|s| s.data_offset);
@@ -434,7 +448,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                             method: StringMethod::XorDecode,
                             kind,
                             library: Some(format!("key:{key_preview}")),
-                        fragments: None,
+                            fragments: None,
                         });
                     }
                 }
@@ -490,16 +504,16 @@ fn extract_custom_xor_strings_file_level_cycling(
                 break;
             }
 
-
             // Skip if this position is in an excluded range (from radare2 hints)
-            let in_excluded_range = excluded_ranges.iter().any(|&(ex_start, ex_end)| {
-                start >= ex_start && start < ex_end
-            });
+            let in_excluded_range = excluded_ranges
+                .iter()
+                .any(|&(ex_start, ex_end)| start >= ex_start && start < ex_end);
             if in_excluded_range {
                 // Skip to end of excluded range
-                if let Some(&(_, ex_end)) = excluded_ranges.iter().find(|&&(ex_start, ex_end)| {
-                    start >= ex_start && start < ex_end
-                }) {
+                if let Some(&(_, ex_end)) = excluded_ranges
+                    .iter()
+                    .find(|&&(ex_start, ex_end)| start >= ex_start && start < ex_end)
+                {
                     start = ex_end;
                     continue;
                 }
@@ -523,13 +537,17 @@ fn extract_custom_xor_strings_file_level_cycling(
             // Collect printable run
             let mut end = start;
             let mut consecutive_nulls = 0;
+            let mut after_null_printables = Vec::new();
             while end < decoded.len() && is_printable_byte_for_file_xor(decoded[end]) {
-                // Stop if we hit many consecutive nulls in the source data
+                // Track consecutive nulls in source data
                 if end < data.len() && data[end] == 0x00 {
                     consecutive_nulls += 1;
-                    if consecutive_nulls >= 2 {
+                    // If we hit many consecutive nulls, that's likely a real boundary
+                    if consecutive_nulls >= 4 {
                         break;
                     }
+                    // Save position after single null to potentially resume
+                    after_null_printables.push(end);
                 } else {
                     consecutive_nulls = 0;
                 }
@@ -538,7 +556,21 @@ fn extract_custom_xor_strings_file_level_cycling(
 
             // Check length
             if end - start >= min_length {
-                if let Ok(s) = String::from_utf8(decoded[start..end].to_vec()) {
+                // Remove embedded null bytes from decoded string (artifacts from XOR cycling)
+                let mut cleaned = Vec::new();
+                for &byte in &decoded[start..end] {
+                    if byte != 0x00 {
+                        cleaned.push(byte);
+                    }
+                }
+
+                if let Ok(s) = String::from_utf8(cleaned) {
+                    // Verify length after removing nulls
+                    if s.len() < min_length {
+                        start = end;
+                        continue;
+                    }
+
                     // Skip XOR key artifacts (key fragments from XORing null bytes)
                     if apply_filters && is_xor_key_artifact(&s, key) {
                         start = end;
@@ -568,7 +600,7 @@ fn extract_custom_xor_strings_file_level_cycling(
                                 method: StringMethod::XorDecode,
                                 kind,
                                 library: Some(format!("key:{key_preview}@{key_offset}")),
-                        fragments: None,
+                                fragments: None,
                             });
                         }
                     }
@@ -580,8 +612,11 @@ fn extract_custom_xor_strings_file_level_cycling(
     }
 
     let collection_time = start_time.elapsed();
-    eprintln!("[PERF] File-level cycling collected {} candidates in {:.2}s",
-        all_candidates.len(), collection_time.as_secs_f64());
+    tracing::debug!(
+        "File-level cycling collected {} candidates in {:.2}s",
+        all_candidates.len(),
+        collection_time.as_secs_f64()
+    );
 
     tracing::info!(
         "File-level cycling collected {} candidate strings across {} offsets",
@@ -595,10 +630,15 @@ fn extract_custom_xor_strings_file_level_cycling(
     all_candidates.sort_by(|a, b| {
         let score_a = string_quality_score(a);
         let score_b = string_quality_score(b);
-        score_b.cmp(&score_a).then(a.data_offset.cmp(&b.data_offset))
+        score_b
+            .cmp(&score_a)
+            .then(a.data_offset.cmp(&b.data_offset))
     });
-    eprintln!("[PERF] Sorting {} candidates took {:.2}s",
-        all_candidates.len(), dedup_start.elapsed().as_secs_f64());
+    tracing::debug!(
+        "Sorting {} candidates took {:.2}s",
+        all_candidates.len(),
+        dedup_start.elapsed().as_secs_f64()
+    );
 
     let candidate_count = all_candidates.len();
     let mut final_results: Vec<ExtractedString> = Vec::new();
@@ -639,14 +679,21 @@ fn extract_custom_xor_strings_file_level_cycling(
     }
 
     let overlap_time = dedup_start.elapsed();
-    eprintln!("[PERF] Overlap checking took {:.2}s, kept {} of {} strings",
-        overlap_time.as_secs_f64(), final_results.len(), candidate_count);
+    tracing::debug!(
+        "Overlap checking took {:.2}s, kept {} of {} strings",
+        overlap_time.as_secs_f64(),
+        final_results.len(),
+        candidate_count
+    );
 
     // Re-sort by offset for consistent output
     final_results.sort_by_key(|s| s.data_offset);
 
     let total_time = start_time.elapsed();
-    eprintln!("[PERF] File-level cycling total: {:.2}s", total_time.as_secs_f64());
+    tracing::debug!(
+        "File-level cycling total: {:.2}s",
+        total_time.as_secs_f64()
+    );
 
     tracing::info!(
         "File-level cycling complete: {} strings after quality-based deduplication",
@@ -733,7 +780,7 @@ fn extract_xor_strings_from_hints(
                             method: StringMethod::XorDecode,
                             kind,
                             library: Some(format!("key:{key_preview}@hint")),
-                        fragments: None,
+                            fragments: None,
                         });
                     }
                 }
@@ -790,22 +837,29 @@ fn string_quality_score(s: &ExtractedString) -> i32 {
     if lower.contains("ethereum") || lower.contains("wallet") || lower.contains("keystore") {
         score += 40;
     }
-    if lower.contains("xattr") || lower.contains("screencapture") || lower.contains("launchagents") {
+    if lower.contains("xattr") || lower.contains("screencapture") || lower.contains("launchagents")
+    {
         score += 30;
     }
     // Bonus for IP addresses (likely C2 infrastructure)
     if s.value.chars().filter(|&c| c == '.').count() == 3 {
         // Check if it looks like an IP address (4 segments with dots)
         let segments: Vec<&str> = s.value.split('.').collect();
-        if segments.len() == 4 && segments.iter().all(|seg| {
-            seg.chars().take_while(char::is_ascii_digit).count() > 0
-        }) {
+        if segments.len() == 4
+            && segments
+                .iter()
+                .all(|seg| seg.chars().take_while(char::is_ascii_digit).count() > 0)
+        {
             score += 35; // Likely an IP address
         }
     }
 
     // Penalty for strings that look like garbage
-    let special_count = s.value.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
+    let special_count = s
+        .value
+        .chars()
+        .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+        .count();
     if !s.value.is_empty() && special_count * 100 / s.value.len() > 40 {
         score -= 20; // Too many special characters
     }
@@ -891,21 +945,25 @@ fn extract_custom_xor_strings_pattern_based(
     for pos in (0..data.len()).step_by(step) {
         checked += 1;
         if checked % 10000 == 0 {
-            tracing::debug!("  Scanned {} positions, found {} strings", checked, results.len());
+            tracing::debug!(
+                "  Scanned {} positions, found {} strings",
+                checked,
+                results.len()
+            );
         }
 
         // Skip if this position is within an already-extracted string
-        let overlaps_existing = used_ranges.iter().any(|&(start, end)| {
-            pos >= start && pos < end
-        });
+        let overlaps_existing = used_ranges
+            .iter()
+            .any(|&(start, end)| pos >= start && pos < end);
         if overlaps_existing {
             continue;
         }
 
         // Skip if this position is in an excluded range (from radare2 hints)
-        let in_excluded_range = excluded_ranges.iter().any(|&(ex_start, ex_end)| {
-            pos >= ex_start && pos < ex_end
-        });
+        let in_excluded_range = excluded_ranges
+            .iter()
+            .any(|&(ex_start, ex_end)| pos >= ex_start && pos < ex_end);
         if in_excluded_range {
             continue;
         }
@@ -913,9 +971,9 @@ fn extract_custom_xor_strings_pattern_based(
         // Try to decode a string starting at this position
         if let Some((decoded, start, end)) = try_decode_xor_string_at(data, pos, key, min_length) {
             // Check if this decoded string would overlap with an existing one
-            let would_overlap = used_ranges.iter().any(|&(used_start, used_end)| {
-                !(end <= used_start || start >= used_end)
-            });
+            let would_overlap = used_ranges
+                .iter()
+                .any(|&(used_start, used_end)| !(end <= used_start || start >= used_end));
 
             if would_overlap {
                 continue;
@@ -936,32 +994,36 @@ fn extract_custom_xor_strings_pattern_based(
             if let Some(kind) = kind_opt {
                 let offset = start as u64;
                 if seen.insert((offset, decoded.clone())) {
-                        let key_preview = if key.len() > 8 {
-                            format!("{}...", String::from_utf8_lossy(&key[..8]))
-                        } else {
-                            String::from_utf8_lossy(key).to_string()
-                        };
+                    let key_preview = if key.len() > 8 {
+                        format!("{}...", String::from_utf8_lossy(&key[..8]))
+                    } else {
+                        String::from_utf8_lossy(key).to_string()
+                    };
 
-                        // Mark this range as used
-                        used_ranges.push((start, end));
+                    // Mark this range as used
+                    used_ranges.push((start, end));
 
-                        results.push(ExtractedString {
-                            value: decoded,
-                            data_offset: offset,
-                            section: None,
-                            method: StringMethod::XorDecode,
-                            kind,
-                            library: Some(format!("key:{key_preview}")),
+                    results.push(ExtractedString {
+                        value: decoded,
+                        data_offset: offset,
+                        section: None,
+                        method: StringMethod::XorDecode,
+                        kind,
+                        library: Some(format!("key:{key_preview}")),
                         fragments: None,
-                        });
-                    }
+                    });
                 }
             }
         }
+    }
 
     let elapsed = start_time.elapsed();
-    eprintln!("[PERF] Pattern-based scanning: checked {} positions, found {} strings in {:.2}s",
-        checked, results.len(), elapsed.as_secs_f64());
+    tracing::debug!(
+        "Pattern-based scanning: checked {} positions, found {} strings in {:.2}s",
+        checked,
+        results.len(),
+        elapsed.as_secs_f64()
+    );
 
     tracing::info!(
         "Multi-byte XOR scan complete: checked {} positions, found {} unique strings",
@@ -1042,7 +1104,10 @@ fn try_decode_xor_string_at(
 
     // Quick sanity check: must have some meaningful content
     // (at least 3 alphanumeric chars total, not necessarily consecutive)
-    let alnum_count = decoded_str.chars().filter(char::is_ascii_alphanumeric).count();
+    let alnum_count = decoded_str
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .count();
 
     if alnum_count < 3 {
         return None;
@@ -1088,11 +1153,7 @@ pub fn auto_detect_xor_key(
     candidates_with_offset.sort_by(|a, b| b.0.cmp(&a.0));
 
     // Take last 5 by file offset (not by position in vector)
-    let candidates: Vec<(u64, &str)> = candidates_with_offset
-        .iter()
-        .take(5)
-        .copied()
-        .collect();
+    let candidates: Vec<(u64, &str)> = candidates_with_offset.iter().take(5).copied().collect();
 
     if candidates.is_empty() {
         return None;
@@ -1144,7 +1205,10 @@ pub fn auto_detect_xor_key(
             }
 
             // URLs and network indicators
-            if matches!(r.kind, StringKind::Url | StringKind::IP | StringKind::IPPort) {
+            if matches!(
+                r.kind,
+                StringKind::Url | StringKind::IP | StringKind::IPPort
+            ) {
                 score += 50;
             }
 
@@ -1253,7 +1317,7 @@ pub fn extract_xor_strings(
                             method: StringMethod::XorDecode,
                             kind,
                             library: Some(format!("0x{:02X}:16LE", info.key)),
-                        fragments: None,
+                            fragments: None,
                         });
                     }
                 }
@@ -1303,10 +1367,11 @@ pub fn extract_multikey_xor_strings(
     let mut results = Vec::new();
     let mut seen: HashSet<(u64, String)> = HashSet::new();
 
-    // Only use high-confidence keys for decryption attempts
+    // Only use top 3 high-confidence keys for decryption attempts
     for key_info in keys
         .iter()
         .filter(|k| matches!(k.confidence, XorConfidence::High))
+        .take(3)
     {
         let key_bytes = key_info.key.as_bytes();
 
@@ -1340,7 +1405,7 @@ pub fn extract_multikey_xor_strings(
                                 method: StringMethod::XorDecode,
                                 kind,
                                 library: Some(format!("key:{key_preview}")),
-                        fragments: None,
+                                fragments: None,
                             });
                         }
                     }
@@ -1406,7 +1471,7 @@ fn scan_dotted_patterns(
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IP,
                                 library: Some(format!("0x{key:02X}")),
-                        fragments: None,
+                                fragments: None,
                             });
                         }
                     }
@@ -1423,7 +1488,7 @@ fn scan_dotted_patterns(
                                 method: StringMethod::XorDecode,
                                 kind: StringKind::IPPort,
                                 library: Some(format!("0x{key:02X}")),
-                        fragments: None,
+                                fragments: None,
                             });
                         }
                     }
@@ -1443,7 +1508,7 @@ fn scan_dotted_patterns(
                             method: StringMethod::XorDecode,
                             kind: StringKind::Hostname,
                             library: Some(format!("0x{key:02X}")),
-                        fragments: None,
+                            fragments: None,
                         });
                     }
                 }
@@ -2038,8 +2103,10 @@ fn trim_trailing_garbage(s: &str) -> &str {
     }
 
     // Check for file extensions as natural endpoints (e.g., .php, .exe, .dll, .so)
-    let file_extensions = [".php", ".exe", ".dll", ".so", ".dylib", ".js", ".py", ".rb", ".pl", ".sh",
-                           ".html", ".xml", ".json", ".txt", ".log", ".conf", ".cfg"];
+    let file_extensions = [
+        ".php", ".exe", ".dll", ".so", ".dylib", ".js", ".py", ".rb", ".pl", ".sh", ".html",
+        ".xml", ".json", ".txt", ".log", ".conf", ".cfg",
+    ];
     for ext in &file_extensions {
         if let Some(pos) = s.rfind(ext) {
             let candidate_end = pos + ext.len();
@@ -2070,7 +2137,12 @@ fn trim_trailing_garbage(s: &str) -> &str {
             if i + 1 < chars.len() {
                 let next = chars[i + 1];
                 // If followed by unusual characters, this might be the real end
-                if !next.is_ascii_alphanumeric() && next != '/' && next != '.' && next != '-' && next != '_' {
+                if !next.is_ascii_alphanumeric()
+                    && next != '/'
+                    && next != '.'
+                    && next != '-'
+                    && next != '_'
+                {
                     return s.char_indices().nth(i + 1).map_or(s, |(pos, _)| &s[..pos]);
                 }
             } else {
@@ -2097,8 +2169,18 @@ fn trim_leading_garbage(s: &str) -> &str {
 
         // Known commands that might have a garbage prefix
         let known_starts = [
-            "launchctl", "screencapture", "osascript", "open ", "curl ", "wget ",
-            "/bin/", "/usr/", "/Library/", "/etc/", "/var/", "~/",
+            "launchctl",
+            "screencapture",
+            "osascript",
+            "open ",
+            "curl ",
+            "wget ",
+            "/bin/",
+            "/usr/",
+            "/Library/",
+            "/etc/",
+            "/var/",
+            "~/",
         ];
 
         for pattern in &known_starts {
@@ -2117,10 +2199,16 @@ fn trim_leading_garbage(s: &str) -> &str {
 
         // If first char is not alphanumeric and not a legitimate prefix character
         // and second char starts a legitimate word, then it's likely garbage
-        let is_legitimate_prefix = matches!(first, '$' | '@' | '~' | '%' | '"' | '\'' | '(' | '[' | '{' | '<' | '/' | '\\' | '.');
+        let is_legitimate_prefix = matches!(
+            first,
+            '$' | '@' | '~' | '%' | '"' | '\'' | '(' | '[' | '{' | '<' | '/' | '\\' | '.'
+        );
 
-        if !first.is_alphanumeric() && !is_legitimate_prefix && !first.is_whitespace()
-           && second.is_ascii_alphabetic() {
+        if !first.is_alphanumeric()
+            && !is_legitimate_prefix
+            && !first.is_whitespace()
+            && second.is_ascii_alphabetic()
+        {
             // Only strip one byte
             return &s[first.len_utf8()..];
         }
@@ -2237,14 +2325,7 @@ const CRYPTO_KEYWORDS: &[&str] = &[
 
 /// Browser and application identifiers.
 const BROWSER_KEYWORDS: &[&str] = &[
-    "Safari",
-    "Chrome",
-    "Firefox",
-    "Mozilla",
-    "WebKit",
-    "Chromium",
-    "Opera",
-    "Edge",
+    "Safari", "Chrome", "Firefox", "Mozilla", "WebKit", "Chromium", "Opera", "Edge",
 ];
 
 /// Well-known UNIX/macOS/Windows path prefixes.
@@ -2315,7 +2396,13 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         StringKind::Url => Some(kind),
         StringKind::ShellCmd => {
             // Reject obvious garbage that starts with backtick but no valid command
-            if s.starts_with('`') && !s[1..].trim_start().chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            if s.starts_with('`')
+                && !s[1..]
+                    .trim_start()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic())
+            {
                 None
             } else {
                 Some(kind)
@@ -2337,7 +2424,10 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             // Check for relative paths with proper structure
             let is_relative_path = (s.starts_with("./") || s.starts_with("../"))
                 && s.matches('/').count() >= 2
-                && s.split('/').filter(|p| !p.is_empty() && *p != "." && *p != "..").count() >= 1;
+                && s.split('/')
+                    .filter(|p| !p.is_empty() && *p != "." && *p != "..")
+                    .count()
+                    >= 1;
 
             if !has_known_prefix && !is_windows_path && !is_relative_path {
                 return None;
@@ -2366,8 +2456,22 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
                     let name = parts[0];
 
                     // Check if it matches known single-level paths
-                    let known_single_level = ["bin", "etc", "usr", "var", "tmp", "dev", "opt", "home", "root",
-                                            "Library", "Users", "Applications", "System", "private"];
+                    let known_single_level = [
+                        "bin",
+                        "etc",
+                        "usr",
+                        "var",
+                        "tmp",
+                        "dev",
+                        "opt",
+                        "home",
+                        "root",
+                        "Library",
+                        "Users",
+                        "Applications",
+                        "System",
+                        "private",
+                    ];
 
                     if !known_single_level.contains(&name) {
                         // For other single-level paths, apply strict validation
@@ -2443,13 +2547,19 @@ fn is_locale_string(s: &str) -> bool {
 
     // Pattern: 2-3 lowercase + underscore/hyphen + 2-3 uppercase
     // en-US, ru-RU, zh-CN, eng-US, etc.
-    let has_separator = chars[2] == '_' || chars[2] == '-' || (chars.len() == 6 && (chars[3] == '_' || chars[3] == '-'));
+    let has_separator = chars[2] == '_'
+        || chars[2] == '-'
+        || (chars.len() == 6 && (chars[3] == '_' || chars[3] == '-'));
 
     if !has_separator {
         return false;
     }
 
-    let sep_idx = if chars[2] == '_' || chars[2] == '-' { 2 } else { 3 };
+    let sep_idx = if chars[2] == '_' || chars[2] == '-' {
+        2
+    } else {
+        3
+    };
 
     // Check lowercase before separator
     for i in 0..sep_idx {
@@ -2481,7 +2591,12 @@ fn has_known_path_prefix(path: &str) -> bool {
     // ../ needs at least 2 levels
     if let Some(after_dot_slash) = path.strip_prefix("./") {
         // Must have some content after ./
-        return !after_dot_slash.is_empty() && after_dot_slash.chars().next().unwrap().is_ascii_alphanumeric();
+        return !after_dot_slash.is_empty()
+            && after_dot_slash
+                .chars()
+                .next()
+                .unwrap()
+                .is_ascii_alphanumeric();
     }
 
     if path.starts_with("../") {
@@ -2609,7 +2724,10 @@ mod tests {
         let results = extract_xor_strings(&data, 10, false);
         assert!(
             results.iter().any(|r| r.value == "http://evil.com"
-                && r.library.as_ref().map(|l| l.contains("0x42")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("0x42"))
+                    .unwrap_or(false)),
             "Should find URL with XOR key 0x42. Results: {:?}",
             results
         );
@@ -2623,7 +2741,10 @@ mod tests {
         let results = extract_xor_strings(&data, 8, false);
         assert!(
             results.iter().any(|r| r.value == "192.168.1.100"
-                && r.library.as_ref().map(|l| l.contains("0x5A")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("0x5A"))
+                    .unwrap_or(false)),
             "Should find IP with XOR key 0x5A. Results: {:?}",
             results
         );
@@ -2637,7 +2758,10 @@ mod tests {
         let results = extract_xor_strings(&data, 8, false);
         assert!(
             results.iter().any(|r| r.value == "10.0.0.1:8080"
-                && r.library.as_ref().map(|l| l.contains("0x3C")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("0x3C"))
+                    .unwrap_or(false)),
             "IP:port should be detected with XOR key 0x3C. Results: {:?}",
             results
         );
@@ -2651,7 +2775,10 @@ mod tests {
         let results = extract_xor_strings(&data, 10, false);
         assert!(
             results.iter().any(|r| r.value == "/etc/passwd"
-                && r.library.as_ref().map(|l| l.contains("0xAB")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("0xAB"))
+                    .unwrap_or(false)),
             "Should find path with XOR key 0xAB. Results: {:?}",
             results
         );
@@ -2665,7 +2792,10 @@ mod tests {
         let results = extract_xor_strings(&data, 10, false);
         assert!(
             results.iter().any(|r| r.value == "password=secret123"
-                && r.library.as_ref().map(|l| l.contains("0x77")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("0x77"))
+                    .unwrap_or(false)),
             "Should find password string with XOR key 0x77. Results: {:?}",
             results
         );
@@ -2675,7 +2805,10 @@ mod tests {
     fn test_no_false_positives_on_random() {
         let data: Vec<u8> = (0..1000).map(|i| ((i * 7 + 13) % 256) as u8).collect();
         let results = extract_xor_strings(&data, 10, false);
-        assert!(results.len() < 10, "Should have few false positives on random data");
+        assert!(
+            results.len() < 10,
+            "Should have few false positives on random data"
+        );
     }
 
     #[test]
@@ -2687,7 +2820,11 @@ mod tests {
         let results = extract_xor_strings(&data, 6, false);
         // Should not find this as it's a false positive
         assert!(
-            !results.iter().any(|r| r.library.as_ref().map(|l| l.contains("0x20")).unwrap_or(false)),
+            !results.iter().any(|r| r
+                .library
+                .as_ref()
+                .map(|l| l.contains("0x20"))
+                .unwrap_or(false)),
             "Should skip key 0x20. Results: {:?}",
             results
         );
@@ -2701,7 +2838,10 @@ mod tests {
         let results = extract_xor_strings(&data, 10, false);
         assert!(
             results.iter().any(|r| r.value == "evil.malware.com"
-                && r.library.as_ref().map(|l| l.contains("0x55")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("0x55"))
+                    .unwrap_or(false)),
             "Hostname should be detected with XOR key 0x55. Results: {:?}",
             results
         );
@@ -2728,7 +2868,10 @@ mod tests {
         let results = extract_xor_strings(&data, 10, false);
         assert!(
             results.iter().any(|r| r.value.contains("Mozilla")
-                && r.library.as_ref().map(|l| l.contains("0x42")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("0x42"))
+                    .unwrap_or(false)),
             "Mozilla user agent should be detected with XOR key 0x42. Results: {:?}",
             results
         );
@@ -2743,8 +2886,13 @@ mod tests {
 
         let results = extract_custom_xor_strings(&xored, &key, 10);
         assert!(
-            results.iter().any(|r| r.value == "http://malware.example.com"
-                && r.library.as_ref().map(|l| l.contains("key:B")).unwrap_or(false)),
+            results
+                .iter()
+                .any(|r| r.value == "http://malware.example.com"
+                    && r.library
+                        .as_ref()
+                        .map(|l| l.contains("key:B"))
+                        .unwrap_or(false)),
             "Custom single-byte XOR should decode URL. Results: {:?}",
             results
         );
@@ -2763,8 +2911,13 @@ mod tests {
 
         let results = extract_custom_xor_strings(&xored, key, 10);
         assert!(
-            results.iter().any(|r| r.value == "secret password: admin123"
-                && r.library.as_ref().map(|l| l.contains("key:KEY")).unwrap_or(false)),
+            results
+                .iter()
+                .any(|r| r.value == "secret password: admin123"
+                    && r.library
+                        .as_ref()
+                        .map(|l| l.contains("key:KEY"))
+                        .unwrap_or(false)),
             "Custom multi-byte XOR should decode password. Results: {:?}",
             results
         );
@@ -2783,8 +2936,13 @@ mod tests {
 
         let results = extract_custom_xor_strings(&xored, key, 10);
         assert!(
-            results.iter().any(|r| r.value == "https://c2server.evil.com/api/v1/beacon"
-                && r.library.as_ref().map(|l| l.contains("key:fYztZORL")).unwrap_or(false)),
+            results
+                .iter()
+                .any(|r| r.value == "https://c2server.evil.com/api/v1/beacon"
+                    && r.library
+                        .as_ref()
+                        .map(|l| l.contains("key:fYztZORL"))
+                        .unwrap_or(false)),
             "Custom string XOR key should decode C2 URL. Results: {:?}",
             results
         );
@@ -2822,7 +2980,10 @@ mod tests {
         let results = extract_custom_xor_strings(&xored, key, 8);
         assert!(
             results.iter().any(|r| r.value == "192.168.1.100"
-                && r.library.as_ref().map(|l| l.contains("key:SECRET")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("key:SECRET"))
+                    .unwrap_or(false)),
             "Custom XOR should detect IP addresses. Results: {:?}",
             results
         );
@@ -2842,7 +3003,10 @@ mod tests {
         let results = extract_custom_xor_strings(&xored, key, 4);
         assert!(
             results.iter().any(|r| r.value == "/bin/bash"
-                && r.library.as_ref().map(|l| l.contains("key:XOR")).unwrap_or(false)),
+                && r.library
+                    .as_ref()
+                    .map(|l| l.contains("key:XOR"))
+                    .unwrap_or(false)),
             "Custom XOR should detect paths. Results: {:?}",
             results
         );
@@ -2881,8 +3045,9 @@ mod tests {
 
         let results = extract_custom_xor_strings(&xored, key, 10);
         assert!(
-            results.iter().any(|r| r.kind == StringKind::ShellCmd
-                && r.value.contains("screencapture")),
+            results
+                .iter()
+                .any(|r| r.kind == StringKind::ShellCmd && r.value.contains("screencapture")),
             "Should detect screencapture command even with trailing garbage. Results: {:?}",
             results
         );
@@ -2998,10 +3163,10 @@ mod tests {
         // Test known DPRK and other malware XOR keys
         let known_keys = vec![
             "fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf", // HomaBrew malware
-            "Moz&Wie;#t/6T!2y",                 // DPRK malware
-            "12GWAPCT1F0I1S14",                 // DPRK malware
-            "009WAYHb90687PXkS",                // Another sample
-            ".sV%58&.lypQ[$=",                  // Another sample
+            "Moz&Wie;#t/6T!2y",                // DPRK malware
+            "12GWAPCT1F0I1S14",                // DPRK malware
+            "009WAYHb90687PXkS",               // Another sample
+            ".sV%58&.lypQ[$=",                 // Another sample
         ];
 
         for key in &known_keys {
@@ -3010,8 +3175,7 @@ mod tests {
             assert!(
                 qualifies,
                 "Known XOR key '{}' should qualify (entropy: {:.2})",
-                key,
-                entropy
+                key, entropy
             );
         }
     }
@@ -3021,20 +3185,16 @@ mod tests {
         // These should NOT qualify as good XOR keys
         let bad_keys = vec![
             "abcdefghijklmnopqrstuvwxyz", // Sequential, despite high entropy
-            "short",                       // Too short
+            "short",                      // Too short
             "this_has_underscores_12345", // Has underscores
-            "AAAAAAAAAAAAAAAAA",           // Low entropy
-            "1111111111111111",            // Low entropy, all same type
+            "AAAAAAAAAAAAAAAAA",          // Low entropy
+            "1111111111111111",           // Low entropy, all same type
             "verylongkeythatexceedsthirtytwocharacterslimit", // Too long
         ];
 
         for key in &bad_keys {
             let qualifies = is_good_xor_key_candidate(key);
-            assert!(
-                !qualifies,
-                "Bad key candidate '{}' should NOT qualify",
-                key
-            );
+            assert!(!qualifies, "Bad key candidate '{}' should NOT qualify", key);
         }
     }
 
@@ -3089,8 +3249,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-                        fragments: None,
-                    },
+                fragments: None,
+            },
             ExtractedString {
                 value: "cstr.SomeString".to_string(),
                 data_offset: 100,
@@ -3098,8 +3258,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-                        fragments: None,
-                    },
+                fragments: None,
+            },
             ExtractedString {
                 value: "ShortKey".to_string(),
                 data_offset: 200,
@@ -3107,8 +3267,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-                        fragments: None,
-                    },
+                fragments: None,
+            },
             ExtractedString {
                 value: key_string.to_string(), // The actual key
                 data_offset: 300,
@@ -3116,8 +3276,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-                        fragments: None,
-                    },
+                fragments: None,
+            },
         ];
 
         // Auto-detect should find the right key
@@ -3178,8 +3338,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-                        fragments: None,
-                    },
+                fragments: None,
+            },
             ExtractedString {
                 value: key_string.to_string(),
                 data_offset: 100,
@@ -3187,8 +3347,8 @@ mod tests {
                 method: StringMethod::RawScan,
                 kind: StringKind::Const,
                 library: None,
-                        fragments: None,
-                    },
+                fragments: None,
+            },
         ];
 
         // Auto-detect should find the correct key
@@ -3200,8 +3360,7 @@ mod tests {
 
         let (detected_key, detected_str, _) = detected.unwrap();
         assert_eq!(
-            detected_key,
-            key_bytes,
+            detected_key, key_bytes,
             "Should detect the correct XOR key based on osascript and Ethereum strings"
         );
         assert_eq!(detected_str, key_string);
@@ -3312,12 +3471,7 @@ mod tests {
                 assert!(
                     !overlaps,
                     "Found overlapping strings: '{}' at {}..{} and '{}' at {}..{}",
-                    results[i].value,
-                    start1,
-                    end1,
-                    results[j].value,
-                    start2,
-                    end2
+                    results[i].value, start1, end1, results[j].value, start2, end2
                 );
             }
         }
@@ -3360,7 +3514,9 @@ mod tests {
         );
 
         // Should NOT find truncated version
-        let found_truncated = results.iter().any(|r| r.value.starts_with("eep ") && !r.value.starts_with("sleep"));
+        let found_truncated = results
+            .iter()
+            .any(|r| r.value.starts_with("eep ") && !r.value.starts_with("sleep"));
         assert!(
             !found_truncated,
             "Should not extract truncated 'eep' version"
@@ -3378,37 +3534,46 @@ mod tests {
             let results = extract_custom_xor_strings(&data, key, 10);
 
             // Check what we found in the region 0x4b100-0x4b200
-            let in_region: Vec<_> = results.iter()
+            let in_region: Vec<_> = results
+                .iter()
                 .filter(|r| r.data_offset >= 0x4b100 && r.data_offset < 0x4b200)
                 .collect();
 
             // Should find the full "open -a /bin/bash" command starting at 0x4b115
-            let found_open_cmd = in_region.iter().any(|r| {
-                r.value.contains("open -a /bin/bash") && r.value.contains("sleep 3")
-            });
+            let found_open_cmd = in_region
+                .iter()
+                .any(|r| r.value.contains("open -a /bin/bash") && r.value.contains("sleep 3"));
 
             // Should find sleep command (either standalone or as part of open command)
             let found_sleep = in_region.iter().any(|r| r.value.contains("sleep 3"));
 
             // Should NOT find truncated "eep 3" without the "sl" prefix
             let found_truncated = in_region.iter().any(|r| {
-                r.value.starts_with("eep 3") ||
-                (r.value.contains("eep 3") && !r.value.contains("sleep 3"))
+                r.value.starts_with("eep 3")
+                    || (r.value.contains("eep 3") && !r.value.contains("sleep 3"))
             });
 
             if !found_open_cmd || !found_sleep || found_truncated {
                 eprintln!("\nStrings found in region 0x4b100-0x4b200:");
                 for r in &in_region {
-                    eprintln!("  0x{:05x} {:20} {:?}",
+                    eprintln!(
+                        "  0x{:05x} {:20} {:?}",
                         r.data_offset,
                         r.library.as_ref().map(|s| s.as_str()).unwrap_or(""),
-                        &r.value[..r.value.len().min(60)]);
+                        &r.value[..r.value.len().min(60)]
+                    );
                 }
             }
 
             assert!(found_sleep, "Should find 'sleep 3' command in region");
-            assert!(found_open_cmd, "Should find full 'open -a /bin/bash' command at 0x4b115");
-            assert!(!found_truncated, "Should NOT find truncated 'eep 3' without 'sleep'");
+            assert!(
+                found_open_cmd,
+                "Should find full 'open -a /bin/bash' command at 0x4b115"
+            );
+            assert!(
+                !found_truncated,
+                "Should NOT find truncated 'eep 3' without 'sleep'"
+            );
         } else {
             eprintln!("Skipping test - brew_agent binary not found");
         }
@@ -3454,7 +3619,10 @@ mod tests {
             // These garbage strings should NOT be extracted
             let found = results.iter().any(|r| r.value == *garbage);
             if found {
-                eprintln!("WARNING: Garbage string '{}' was extracted (may need better filtering)", garbage);
+                eprintln!(
+                    "WARNING: Garbage string '{}' was extracted (may need better filtering)",
+                    garbage
+                );
             }
         }
     }
@@ -3472,9 +3640,14 @@ mod tests {
             .collect();
         let results1 = extract_custom_xor_strings(&xored1, key, 4);
         assert!(
-            results1.iter().any(|r| r.kind == StringKind::Path || r.kind == StringKind::SuspiciousPath),
+            results1
+                .iter()
+                .any(|r| r.kind == StringKind::Path || r.kind == StringKind::SuspiciousPath),
             "/usr/bin/bash should be detected as path or suspicious path. Found: {:?}",
-            results1.iter().map(|r| (&r.value, &r.kind)).collect::<Vec<_>>()
+            results1
+                .iter()
+                .map(|r| (&r.value, &r.kind))
+                .collect::<Vec<_>>()
         );
 
         // Test /etc/passwd
@@ -3486,7 +3659,9 @@ mod tests {
             .collect();
         let results2 = extract_custom_xor_strings(&xored2, key, 4);
         assert!(
-            results2.iter().any(|r| r.kind == StringKind::Path || r.kind == StringKind::SuspiciousPath),
+            results2
+                .iter()
+                .any(|r| r.kind == StringKind::Path || r.kind == StringKind::SuspiciousPath),
             "/etc/passwd should be detected as path"
         );
 

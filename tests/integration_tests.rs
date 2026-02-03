@@ -563,7 +563,10 @@ mod go_binary_tests {
         // Go binaries should extract strings successfully
         // Modern Go binaries may have different internal structures
         // Just verify we extracted some reasonable strings
-        assert!(!strings.is_empty(), "Go binary should have some extracted strings");
+        assert!(
+            !strings.is_empty(),
+            "Go binary should have some extracted strings"
+        );
 
         // If we do find FuncName strings, that's great, but not required
         let _has_funcname = strings.iter().any(|s| s.kind == StringKind::FuncName);
@@ -1056,7 +1059,10 @@ mod cross_compiled_tests {
         let strings = extract_strings(&data, 4);
 
         // Should extract strings successfully from Go ELF binaries
-        assert!(!strings.is_empty(), "ELF Go binary should have extracted strings");
+        assert!(
+            !strings.is_empty(),
+            "ELF Go binary should have extracted strings"
+        );
 
         // Modern Go binaries may not have traditional gopclntab structure
         let _has_func = strings.iter().any(|s| s.kind == StringKind::FuncName);
@@ -1071,7 +1077,10 @@ mod cross_compiled_tests {
         let strings = extract_strings(&data, 4);
 
         // Should extract strings successfully
-        assert!(!strings.is_empty(), "ELF Go binary should have extracted strings");
+        assert!(
+            !strings.is_empty(),
+            "ELF Go binary should have extracted strings"
+        );
 
         // File paths may or may not be present depending on build flags
         let _has_path = strings
@@ -2756,17 +2765,24 @@ mod xor_detection_tests {
             .collect();
 
         assert!(
-            xor_strings.iter().any(|s| s.library.as_ref().map(|l| l.contains("0x42")).unwrap_or(false)),
+            xor_strings.iter().any(|s| s
+                .library
+                .as_ref()
+                .map(|l| l.contains("0x42"))
+                .unwrap_or(false)),
             "Should include XOR key (0x42) in library field. Found: {:?}",
-            xor_strings.iter().map(|s| (s.value.clone(), s.library.clone())).collect::<Vec<_>>()
+            xor_strings
+                .iter()
+                .map(|s| (s.value.clone(), s.library.clone()))
+                .collect::<Vec<_>>()
         );
     }
 }
 
 #[cfg(test)]
 mod sockaddr_extraction_tests {
-    use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
     use std::fs;
+    use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
 
     #[test]
     fn test_kimwolf_installer_ip_extraction() {
@@ -2836,10 +2852,7 @@ mod sockaddr_extraction_tests {
         let strings = extract_strings_with_options(&data, &opts);
 
         // Check strings at offset 0x1d4
-        let strings_at_1d4: Vec<_> = strings
-            .iter()
-            .filter(|s| s.data_offset == 0x1d4)
-            .collect();
+        let strings_at_1d4: Vec<_> = strings.iter().filter(|s| s.data_offset == 0x1d4).collect();
 
         // Should only have ONE string at this offset (the longest one)
         assert_eq!(
@@ -2860,8 +2873,8 @@ mod sockaddr_extraction_tests {
 
 #[cfg(test)]
 mod string_deduplication_tests {
-    use stng::{extract_strings_with_options, ExtractOptions};
     use std::fs;
+    use stng::{extract_strings_with_options, ExtractOptions};
 
     #[test]
     fn test_overlapping_strings_keep_longest() {
@@ -2887,7 +2900,10 @@ mod string_deduplication_tests {
                 1,
                 "Offset 0x{:x} should only have one string (the longest). Found: {:?}",
                 offset,
-                strings_at_offset.iter().map(|s| &s.value).collect::<Vec<_>>()
+                strings_at_offset
+                    .iter()
+                    .map(|s| &s.value)
+                    .collect::<Vec<_>>()
             );
         }
     }
@@ -2908,7 +2924,10 @@ mod string_deduplication_tests {
         // Print strings around offset 520-560
         for s in &strings {
             if s.data_offset >= 520 && s.data_offset <= 560 {
-                eprintln!("Offset {:#x} ({}): {:?}", s.data_offset, s.data_offset, s.value);
+                eprintln!(
+                    "Offset {:#x} ({}): {:?}",
+                    s.data_offset, s.data_offset, s.value
+                );
             }
         }
 

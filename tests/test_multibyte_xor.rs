@@ -9,11 +9,7 @@ use stng::{ExtractOptions, StringMethod};
 fn test_multibyte_xor_basic() {
     // Create test data with strings XOR'd independently
     let key = b"SECRET";
-    let strings = vec![
-        "hello world",
-        "test string",
-        "osascript command",
-    ];
+    let strings = vec!["hello world", "test string", "osascript command"];
 
     let mut data = Vec::new();
     for s in &strings {
@@ -44,9 +40,21 @@ fn test_multibyte_xor_basic() {
     let found_test = xor_strings.iter().any(|s| s.contains("test string"));
     let found_osascript = xor_strings.iter().any(|s| s.contains("osascript"));
 
-    assert!(found_hello, "Should find 'hello world'. Found: {:?}", xor_strings);
-    assert!(found_test, "Should find 'test string'. Found: {:?}", xor_strings);
-    assert!(found_osascript, "Should find 'osascript'. Found: {:?}", xor_strings);
+    assert!(
+        found_hello,
+        "Should find 'hello world'. Found: {:?}",
+        xor_strings
+    );
+    assert!(
+        found_test,
+        "Should find 'test string'. Found: {:?}",
+        xor_strings
+    );
+    assert!(
+        found_osascript,
+        "Should find 'osascript'. Found: {:?}",
+        xor_strings
+    );
 }
 
 #[test]
@@ -74,7 +82,9 @@ fn test_multibyte_xor_with_newlines() {
 
     // Should find the full multi-line string
     assert!(
-        xor_strings.iter().any(|s| s.contains("line one") && s.contains("line two")),
+        xor_strings
+            .iter()
+            .any(|s| s.contains("line one") && s.contains("line two")),
         "Should find multi-line string with newlines"
     );
 }
@@ -125,19 +135,25 @@ fn test_multibyte_xor_real_malware() {
 
     // Test case 3: Multi-line AppleScript
     assert!(
-        xor_strings.iter().any(|s| s.contains("POSIX file") && s.contains("Finder")),
+        xor_strings
+            .iter()
+            .any(|s| s.contains("POSIX file") && s.contains("Finder")),
         "Should find multi-line AppleScript from real malware"
     );
 
     // Test case 4: Safari/browser targeting
     assert!(
-        xor_strings.iter().any(|s| s.contains("Safari") || s.contains("Cookies")),
+        xor_strings
+            .iter()
+            .any(|s| s.contains("Safari") || s.contains("Cookies")),
         "Should find Safari/browser targeting strings"
     );
 
     // Test case 5: Ethereum wallet targeting
     assert!(
-        xor_strings.iter().any(|s| s.contains("Ethereum") || s.contains("keystore")),
+        xor_strings
+            .iter()
+            .any(|s| s.contains("Ethereum") || s.contains("keystore")),
         "Should find crypto wallet targeting strings"
     );
 }
@@ -167,12 +183,20 @@ fn test_multibyte_xor_offsets() {
         .filter(|s| s.method == StringMethod::XorDecode)
         .collect();
 
-    assert!(!xor_strings.is_empty(), "Should find XOR'd string. Found: {:?}", xor_strings);
+    assert!(
+        !xor_strings.is_empty(),
+        "Should find XOR'd string. Found: {:?}",
+        xor_strings
+    );
 
     // Check offset is correct (within a few bytes due to scanning step)
-    let found_offset = xor_strings.iter().find(|s| s.value.contains("firstline")).map(|s| s.data_offset as usize);
+    let found_offset = xor_strings
+        .iter()
+        .find(|s| s.value.contains("firstline"))
+        .map(|s| s.data_offset as usize);
     assert!(
-        found_offset.is_some() && (found_offset.unwrap() >= start_offset && found_offset.unwrap() <= start_offset + 4),
+        found_offset.is_some()
+            && (found_offset.unwrap() >= start_offset && found_offset.unwrap() <= start_offset + 4),
         "Offset should be near start of XOR'd data. Expected ~{}, found {:?}",
         start_offset,
         found_offset
@@ -218,8 +242,16 @@ fn test_multibyte_xor_independent_cycling() {
     let found_test1 = xor_strings.iter().any(|s| s.contains("test1"));
     let found_test2 = xor_strings.iter().any(|s| s.contains("test2"));
 
-    assert!(found_test1, "Should find first string. Found: {:?}", xor_strings);
-    assert!(found_test2, "Should find second string. Found: {:?}", xor_strings);
+    assert!(
+        found_test1,
+        "Should find first string. Found: {:?}",
+        xor_strings
+    );
+    assert!(
+        found_test2,
+        "Should find second string. Found: {:?}",
+        xor_strings
+    );
 }
 
 #[test]
@@ -258,12 +290,18 @@ fn test_multibyte_xor_min_length() {
     assert!(!xor_strings.is_empty(), "Should extract some XOR strings");
 
     // Short string should be filtered out
-    assert!(!xor_strings.contains(&"abc"), "Short string should be filtered");
+    assert!(
+        !xor_strings.contains(&"abc"),
+        "Short string should be filtered"
+    );
 
     // Should find a long string (exact match may vary due to overlap detection)
     let has_long_string = xor_strings.iter().any(|s| s.len() >= 10);
     if !has_long_string {
         eprintln!("XOR strings found: {:?}", xor_strings);
     }
-    assert!(has_long_string, "Should find at least one string >= 10 chars");
+    assert!(
+        has_long_string,
+        "Should find at least one string >= 10 chars"
+    );
 }

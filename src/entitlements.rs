@@ -83,8 +83,8 @@ pub fn extract_macho_entitlements(
                             method: StringMethod::CodeSignature,
                             kind: StringKind::EntitlementsXml,
                             library: None,
-                    fragments: None,
-                    });
+                            fragments: None,
+                        });
                     }
                 }
             }
@@ -118,7 +118,7 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
                     kind: StringKind::Entitlement,
                     library: None,
                     fragments: None,
-                    });
+                });
             }
 
             offset = key_content_start + key_end_pos + 6; // after "</key>"
@@ -143,7 +143,7 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
                     kind: StringKind::AppId,
                     library: None,
                     fragments: None,
-                    });
+                });
             }
 
             offset = str_content_start + str_end_pos + 9; // after "</string>"
@@ -154,4 +154,3 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
 
     keys
 }
-

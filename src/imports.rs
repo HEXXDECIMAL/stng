@@ -26,7 +26,7 @@ pub fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedS
                     kind: StringKind::Import,
                     library: Some(lib.to_string()),
                     fragments: None,
-                    });
+                });
             }
         }
     }
@@ -46,7 +46,7 @@ pub fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedS
                     kind: StringKind::Export,
                     library: None,
                     fragments: None,
-                    });
+                });
             }
         }
     }

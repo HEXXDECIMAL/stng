@@ -59,7 +59,11 @@ pub fn extract_string_boundaries(path: &str) -> Option<Vec<StringBoundary>> {
             .iter()
             .map(|s| StringBoundary {
                 offset: s.paddr,
-                length: if s.length > 0 { s.length } else { s.string.len() },
+                length: if s.length > 0 {
+                    s.length
+                } else {
+                    s.string.len()
+                },
             })
             .collect();
 
@@ -138,8 +142,8 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         section: Some(s.section),
                         method: StringMethod::R2String,
                         library: None,
-                    fragments: None,
-                    kind,
+                        fragments: None,
+                        kind,
                     });
                 } else if s.string.contains("fYzt") {
                     tracing::debug!("r2::extract_strings: XOR KEY FILTERED: len={} < min_length={}, or already seen",
@@ -169,7 +173,7 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         method: StringMethod::R2Symbol,
                         kind: classify_r2_symbol(&s.r#type, &s.bind),
                         library: None,
-                    fragments: None,
+                        fragments: None,
                     });
                 }
             }
@@ -264,7 +268,9 @@ fn analyze_candidates_by_patterns(
 
     // Get all function names (run aaa first to ensure analysis is done)
     let functions_cmd = "aaa; afl";
-    let functions = if let Some(f) = run_tool_command(tool, path, functions_cmd) { f } else {
+    let functions = if let Some(f) = run_tool_command(tool, path, functions_cmd) {
+        f
+    } else {
         tracing::debug!("analyze_candidates_by_patterns: failed to get function list");
         return vec![];
     };
@@ -322,7 +328,9 @@ fn analyze_candidates_by_patterns(
         func_addrs.len()
     );
 
-    let all_output = if let Some(o) = run_tool_command(tool, path, &compound_cmd) { o } else {
+    let all_output = if let Some(o) = run_tool_command(tool, path, &compound_cmd) {
+        o
+    } else {
         tracing::debug!(
             "analyze_candidates_by_patterns: failed to run compound disassembly command"
         );
@@ -501,7 +509,10 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
             Some(x) => x,
             None => continue,
         };
-        let xref_lines: Vec<String> = xrefs.lines().map(std::string::ToString::to_string).collect();
+        let xref_lines: Vec<String> = xrefs
+            .lines()
+            .map(std::string::ToString::to_string)
+            .collect();
 
         if !xref_lines.is_empty() {
             candidates_with_refs.push((candidate, xref_lines));
@@ -957,7 +968,12 @@ fn parse_sockaddr_from_disasm(disasm: &str, _data: &[u8]) -> Option<SockaddrIn> 
         if (line.contains("strb") || line.contains("str ")) && pending_byte.is_some() {
             if let Some(sp_offset) = extract_stack_offset(line) {
                 let byte_val = pending_byte.unwrap();
-                tracing::debug!("parse_sockaddr: found byte 0x{:02x} at sp+{} from line: {}", byte_val, sp_offset, line.trim());
+                tracing::debug!(
+                    "parse_sockaddr: found byte 0x{:02x} at sp+{} from line: {}",
+                    byte_val,
+                    sp_offset,
+                    line.trim()
+                );
 
                 // sockaddr_in: sin_family (2 bytes), sin_port (2 bytes), sin_addr (4 bytes)
                 // sin_addr starts at offset 4
@@ -986,7 +1002,6 @@ fn parse_sockaddr_from_disasm(disasm: &str, _data: &[u8]) -> Option<SockaddrIn> 
                 pending_byte = None;
             }
         }
-
     }
 
     if found_count == 4 && !is_zero_or_invalid(&ip_bytes) {
@@ -1001,7 +1016,9 @@ fn parse_sockaddr_from_disasm(disasm: &str, _data: &[u8]) -> Option<SockaddrIn> 
 }
 
 fn parse_immediate(s: &str) -> Result<u8, std::num::ParseIntError> {
-    let cleaned = s.trim_start_matches("0x").trim_end_matches(|c: char| !c.is_ascii_hexdigit());
+    let cleaned = s
+        .trim_start_matches("0x")
+        .trim_end_matches(|c: char| !c.is_ascii_hexdigit());
     if s.starts_with("0x") {
         u8::from_str_radix(cleaned, 16)
     } else {
@@ -1039,7 +1056,6 @@ fn extract_stack_offset(line: &str) -> Option<u8> {
     None
 }
 
-
 fn is_zero_or_invalid(ip: &[u8; 4]) -> bool {
     ip.iter().all(|&b| b == 0) || ip[0] == 0 || ip[0] >= 224
 }
@@ -1066,10 +1082,7 @@ fn find_sockaddr_in_binary(data: &[u8]) -> Vec<SockaddrIn> {
                 let byte_val = data[i + j];
 
                 // Check for strb r0, [sp, #offset]: YY 00 CD E5
-                if i + j + 7 < data.len()
-                    && data[i + j + 6] == 0xCD
-                    && data[i + j + 7] == 0xE5
-                {
+                if i + j + 7 < data.len() && data[i + j + 6] == 0xCD && data[i + j + 7] == 0xE5 {
                     let offset = data[i + j + 4];
 
                     // Collect IP bytes at offsets 4-7

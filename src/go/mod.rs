@@ -7,8 +7,8 @@
 //! For inline literals (function arguments, map keys/values), we also perform
 //! instruction pattern analysis to extract strings that don't have stored structures.
 
-mod extractor;
 pub mod classifier;
+mod extractor;
 
 // Re-export the main extractor
 pub use extractor::GoStringExtractor;

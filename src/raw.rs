@@ -12,7 +12,10 @@ pub fn extract_raw_strings(
     segment_names: &[String],
 ) -> Vec<ExtractedString> {
     // Build a set of known segment/section names for quick lookup
-    let segment_names_set: HashSet<&str> = segment_names.iter().map(std::string::String::as_str).collect();
+    let segment_names_set: HashSet<&str> = segment_names
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
 
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -65,7 +68,7 @@ pub fn extract_raw_strings(
                     kind,
                     library: None,
                     fragments: None,
-                    });
+                });
             }
         }
     }
@@ -124,8 +127,8 @@ pub fn extract_printable_runs(
                             method: StringMethod::RawScan,
                             kind,
                             library: None,
-                    fragments: None,
-                    });
+                            fragments: None,
+                        });
                     }
                 }
             }
@@ -154,7 +157,7 @@ pub fn extract_printable_runs(
                         method: StringMethod::RawScan,
                         kind,
                         library: None,
-                    fragments: None,
+                        fragments: None,
                     });
                 }
             }
@@ -173,7 +176,10 @@ pub fn extract_wide_strings(
     section: Option<String>,
     segment_names: &[String],
 ) -> Vec<ExtractedString> {
-    let segment_names_set: HashSet<&str> = segment_names.iter().map(std::string::String::as_str).collect();
+    let segment_names_set: HashSet<&str> = segment_names
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -234,7 +240,7 @@ pub fn extract_wide_strings(
                         method: StringMethod::WideString,
                         kind,
                         library: None,
-                    fragments: None,
+                        fragments: None,
                     });
                 }
             }
@@ -250,7 +256,6 @@ pub fn extract_wide_strings(
 
     strings
 }
-
 
 /// Check if a UTF-16 code unit represents a valid printable character.
 #[inline]

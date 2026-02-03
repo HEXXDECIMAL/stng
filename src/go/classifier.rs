@@ -60,7 +60,15 @@ pub fn classify_string(s: &str) -> StringKind {
     let first = bytes[0];
 
     // URLs (including database URLs) - check first char for fast path
-    if first == b'h' || first == b'f' || first == b'p' || first == b'm' || first == b'r' || first == b's' || first == b't' || first == b'u' {
+    if first == b'h'
+        || first == b'f'
+        || first == b'p'
+        || first == b'm'
+        || first == b'r'
+        || first == b's'
+        || first == b't'
+        || first == b'u'
+    {
         if s.starts_with("http://")
             || s.starts_with("https://")
             || s.starts_with("ftp://")
@@ -491,8 +499,8 @@ fn is_base64(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BinaryInfo, StringStruct};
     use crate::extraction::{extract_from_structures, find_string_structures};
+    use crate::types::{BinaryInfo, StringStruct};
 
     #[test]
     fn test_find_string_structures() {

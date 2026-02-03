@@ -12,16 +12,16 @@
 //! For inline literals, we also perform instruction pattern analysis.
 
 use super::extraction::{extract_from_structures, find_string_structures};
-use super::types::{BinaryInfo, ExtractedString, StringMethod};
 use super::go::classify_string;
 use super::instr::{extract_inline_strings_amd64, extract_inline_strings_arm64};
+use super::types::{BinaryInfo, ExtractedString, StringMethod};
 use goblin::elf::Elf;
 use goblin::mach::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
 use goblin::mach::MachO;
+use rayon::prelude::*;
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::OnceLock;
-use rayon::prelude::*;
 
 /// Cached regexes for pattern extraction (compiled once, reused forever)
 struct PatternRegexes {
@@ -35,7 +35,8 @@ struct PatternRegexes {
 fn get_pattern_regexes() -> &'static PatternRegexes {
     static REGEXES: OnceLock<PatternRegexes> = OnceLock::new();
     REGEXES.get_or_init(|| PatternRegexes {
-        url: Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+").unwrap(),
+        url: Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+")
+            .unwrap(),
         path: Regex::new(r"/[a-zA-Z0-9_./\-]+").unwrap(),
         env_var: Regex::new(r"[A-Z][A-Z0-9_]{3,}").unwrap(),
         snake_case: Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+").unwrap(),
@@ -180,7 +181,7 @@ impl RustStringExtractor {
                         method: StringMethod::Heuristic,
                         kind: s.kind,
                         library: None,
-                    fragments: None,
+                        fragments: None,
                     });
                 }
             }
@@ -405,8 +406,8 @@ impl RustStringExtractor {
                                 method: StringMethod::RawScan,
                                 kind: classify_string(trimmed),
                                 library: None,
-                    fragments: None,
-                    });
+                                fragments: None,
+                            });
                         }
                     }
                 }

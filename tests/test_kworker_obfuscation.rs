@@ -4,7 +4,10 @@ use stng::{ExtractOptions, StringKind};
 fn test_kworker_character_assembly_detection() {
     let sample_path = "testdata/kworker_samples/kworker_obfuscated_1";
     if !std::path::Path::new(sample_path).exists() {
-        eprintln!("Skipping - kworker malware sample not found at {}", sample_path);
+        eprintln!(
+            "Skipping - kworker malware sample not found at {}",
+            sample_path
+        );
         return;
     }
 
@@ -20,9 +23,11 @@ fn test_kworker_character_assembly_detection() {
     // Print suspicious strings (high severity)
     let suspicious: Vec<_> = extracted
         .iter()
-        .filter(|s| s.kind == StringKind::SuspiciousPath ||
-                   s.kind == StringKind::ShellCmd ||
-                   s.kind == StringKind::StackString)
+        .filter(|s| {
+            s.kind == StringKind::SuspiciousPath
+                || s.kind == StringKind::ShellCmd
+                || s.kind == StringKind::StackString
+        })
         .collect();
 
     println!("\nSuspicious strings found: {}", suspicious.len());
@@ -57,8 +62,9 @@ fn test_kworker_character_assembly_detection() {
     let proc_keywords = ["kworker", "worker", "[k"];
     let mut found_proc_parts = 0;
     for keyword in &proc_keywords {
-        if stack_strings.iter().any(|s| s.contains(keyword)) ||
-           extracted.iter().any(|s| s.value.contains(keyword)) {
+        if stack_strings.iter().any(|s| s.contains(keyword))
+            || extracted.iter().any(|s| s.value.contains(keyword))
+        {
             found_proc_parts += 1;
             println!("\n✓ Found process name keyword: {}", keyword);
         }
@@ -68,8 +74,9 @@ fn test_kworker_character_assembly_detection() {
     let persistence_keywords = ["/etc/", "profile", "bashrc", "profile.d"];
     let mut found_persistence = 0;
     for keyword in &persistence_keywords {
-        if stack_strings.iter().any(|s| s.contains(keyword)) ||
-           extracted.iter().any(|s| s.value.contains(keyword)) {
+        if stack_strings.iter().any(|s| s.contains(keyword))
+            || extracted.iter().any(|s| s.value.contains(keyword))
+        {
             found_persistence += 1;
             println!("✓ Found persistence keyword: {}", keyword);
         }
@@ -79,8 +86,9 @@ fn test_kworker_character_assembly_detection() {
     let tmp_keywords = ["/tmp", ".ICE", "unix"];
     let mut found_tmp = 0;
     for keyword in &tmp_keywords {
-        if stack_strings.iter().any(|s| s.contains(keyword)) ||
-           extracted.iter().any(|s| s.value.contains(keyword)) {
+        if stack_strings.iter().any(|s| s.contains(keyword))
+            || extracted.iter().any(|s| s.value.contains(keyword))
+        {
             found_tmp += 1;
             println!("✓ Found tmp file keyword: {}", keyword);
         }
@@ -120,7 +128,10 @@ fn test_kworker_character_assembly_detection() {
 fn test_kworker_missing_strings_utf16_url() {
     let sample_path = "testdata/kworker_samples/kworker_obfuscated_1";
     if !std::path::Path::new(sample_path).exists() {
-        eprintln!("Skipping - kworker malware sample not found at {}", sample_path);
+        eprintln!(
+            "Skipping - kworker malware sample not found at {}",
+            sample_path
+        );
         return;
     }
 
@@ -132,7 +143,8 @@ fn test_kworker_missing_strings_utf16_url() {
 
     // Find UTF-16LE sequences (every other byte is 0x00)
     let utf16le_marker = [0x68u8, 0x00, 0x74, 0x00, 0x70, 0x00]; // "htp" in UTF-16LE
-    let found_utf16_htp = data.windows(utf16le_marker.len())
+    let found_utf16_htp = data
+        .windows(utf16le_marker.len())
         .any(|window| window == utf16le_marker);
 
     println!("\n=== UTF-16LE URL Detection ===");
@@ -140,14 +152,20 @@ fn test_kworker_missing_strings_utf16_url() {
 
     // Note: The URL appears to be "htp://cunilos.aemrg" not "http://"
     // The second 't' is missing from the rodata section
-    assert!(found_utf16_htp, "Should find UTF-16LE encoded URL fragment in .rodata");
+    assert!(
+        found_utf16_htp,
+        "Should find UTF-16LE encoded URL fragment in .rodata"
+    );
 }
 
 #[test]
 fn test_kworker_missing_persistence_strings() {
     let sample_path = "testdata/kworker_samples/kworker_obfuscated_1";
     if !std::path::Path::new(sample_path).exists() {
-        eprintln!("Skipping - kworker malware sample not found at {}", sample_path);
+        eprintln!(
+            "Skipping - kworker malware sample not found at {}",
+            sample_path
+        );
         return;
     }
 
@@ -175,7 +193,8 @@ fn test_kworker_missing_persistence_strings() {
 
     for (component, description) in &expected_components {
         let found = extracted.iter().any(|s| s.value.contains(component));
-        println!("  {}: {} ({})",
+        println!(
+            "  {}: {} ({})",
             if found { "✓" } else { "✗" },
             component,
             description
@@ -187,7 +206,10 @@ fn test_kworker_missing_persistence_strings() {
 fn test_kworker_stack_string_assembly_patterns() {
     let sample_path = "testdata/kworker_samples/kworker_obfuscated_1";
     if !std::path::Path::new(sample_path).exists() {
-        eprintln!("Skipping - kworker malware sample not found at {}", sample_path);
+        eprintln!(
+            "Skipping - kworker malware sample not found at {}",
+            sample_path
+        );
         return;
     }
 
@@ -209,7 +231,10 @@ fn test_kworker_stack_string_assembly_patterns() {
         }
     }
 
-    println!("Found {} potential 2-byte ASCII sequences", two_byte_immediates.len());
+    println!(
+        "Found {} potential 2-byte ASCII sequences",
+        two_byte_immediates.len()
+    );
 
     // Check for specific patterns we know should exist:
     // "kw" from "[kworker]"
@@ -225,7 +250,8 @@ fn test_kworker_stack_string_assembly_patterns() {
     println!("  'ba': {}", if has_ba { "✓" } else { "✗" });
 
     // Print some extracted short strings
-    let short_strings: Vec<_> = extracted.iter()
+    let short_strings: Vec<_> = extracted
+        .iter()
         .filter(|s| s.value.len() >= 2 && s.value.len() <= 4)
         .map(|s| s.value.as_str())
         .collect();
@@ -237,7 +263,10 @@ fn test_kworker_stack_string_assembly_patterns() {
 fn test_kworker_utf16_url_content() {
     let sample_path = "testdata/kworker_samples/kworker_obfuscated_1";
     if !std::path::Path::new(sample_path).exists() {
-        eprintln!("Skipping - kworker malware sample not found at {}", sample_path);
+        eprintln!(
+            "Skipping - kworker malware sample not found at {}",
+            sample_path
+        );
         return;
     }
 
@@ -248,17 +277,25 @@ fn test_kworker_utf16_url_content() {
     println!("\n=== UTF-16LE URL Detection Results ===");
 
     // Look for the URL we detected
-    let url_strings: Vec<_> = extracted.iter()
-        .filter(|s| s.value.contains("htp") || s.value.contains("cunilos") || s.value.contains("aemrg"))
+    let url_strings: Vec<_> = extracted
+        .iter()
+        .filter(|s| {
+            s.value.contains("htp") || s.value.contains("cunilos") || s.value.contains("aemrg")
+        })
         .collect();
 
     println!("Found {} URL-related strings:", url_strings.len());
     for s in &url_strings {
-        println!("  0x{:x}: {} (method: {:?})", s.data_offset, s.value, s.method);
+        println!(
+            "  0x{:x}: {} (method: {:?})",
+            s.data_offset, s.value, s.method
+        );
     }
 
     // Verify we found the actual URL
-    let has_url = extracted.iter().any(|s| s.value.contains("htp:/cunilos.aemrg"));
+    let has_url = extracted
+        .iter()
+        .any(|s| s.value.contains("htp:/cunilos.aemrg"));
     println!("\nFull URL detected: {}", if has_url { "✓" } else { "✗" });
 
     // The actual string should be the full UTF-16LE decoded URL

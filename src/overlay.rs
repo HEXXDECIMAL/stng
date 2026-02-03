@@ -37,7 +37,8 @@ pub fn detect_elf_overlay(data: &[u8]) -> Option<OverlayInfo> {
 
     // Also check for section header table position (often at the end of the file)
     if elf.header.e_shoff > 0 {
-        let sh_table_end = elf.header.e_shoff + (elf.header.e_shnum as u64 * elf.header.e_shentsize as u64);
+        let sh_table_end =
+            elf.header.e_shoff + (elf.header.e_shnum as u64 * elf.header.e_shentsize as u64);
         if sh_table_end > max_offset {
             max_offset = sh_table_end;
         }
@@ -75,7 +76,14 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
             let segment_names_set = HashSet::new();
             let mut seen = HashSet::new();
             let initial_count = strings.len();
-            extract_printable_runs(overlay_data, min_length, &section, &segment_names_set, &mut strings, &mut seen);
+            extract_printable_runs(
+                overlay_data,
+                min_length,
+                &section,
+                &segment_names_set,
+                &mut strings,
+                &mut seen,
+            );
 
             // Mark all newly added strings as overlay
             for s in &mut strings[initial_count..] {
@@ -83,7 +91,8 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
             }
 
             // Extract wide strings
-            let wide_strings = extract_wide_strings(overlay_data, min_length, Some("overlay".to_string()), &[]);
+            let wide_strings =
+                extract_wide_strings(overlay_data, min_length, Some("overlay".to_string()), &[]);
             for mut s in wide_strings {
                 s.kind = StringKind::OverlayWide;
                 strings.push(s);
