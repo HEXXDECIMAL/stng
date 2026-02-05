@@ -9,6 +9,7 @@ use crate::{ExtractedString, StringKind, StringMethod};
 use aho_corasick::AhoCorasick;
 use std::collections::HashSet;
 use std::sync::OnceLock;
+use rayon::prelude::*;
 
 /// Minimum length for XOR-decoded strings (default).
 pub const DEFAULT_XOR_MIN_LENGTH: usize = 10;
@@ -1267,123 +1268,152 @@ pub fn auto_detect_xor_key(
         );
     }
 
-    // Try each candidate and calculate weighted scores based on string value
+    // OPTIMIZATION 1: Phase 1 Quick Pre-filter
+    // Skip candidates that don't decode killer IOCs in first 32KB - saves time by avoiding full extraction
+    let quick_scan_size = std::cmp::min(32768, data.len());
+    let quick_data = &data[..quick_scan_size];
+    let killer_patterns = [
+        "osascript", "screencapture", "/bin/sh", "/bin/bash", "2>&1",
+        "http://", "https://", "launchctl", "electrum", "ethereum", "exodus"
+    ];
+
+    let mut promising_candidates = Vec::new();
+    for (offset, candidate) in &candidates {
+        let key = candidate.as_bytes().to_vec();
+        let decoded: Vec<u8> = quick_data
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ key[i % key.len()])
+            .collect();
+
+        let decoded_str = String::from_utf8_lossy(&decoded);
+        if killer_patterns.iter().any(|p| decoded_str.contains(p)) {
+            promising_candidates.push((*offset, *candidate));
+            tracing::debug!("Phase 1: Candidate '{}' found killer pattern", candidate);
+        }
+    }
+
+    // Fall back to all candidates if Phase 1 eliminates everything (safety net)
+    let candidates_to_test = if promising_candidates.is_empty() {
+        tracing::info!("Phase 1: No killer patterns in first 32KB, testing all {} candidates", candidates.len());
+        candidates
+    } else {
+        tracing::info!("Phase 1: {} promising candidates (skipped {})", promising_candidates.len(), candidates.len() - promising_candidates.len());
+        promising_candidates
+    };
+
+    // OPTIMIZATION 2: Parallel candidate testing
+    // Test all promising candidates in parallel for 2-3x speedup on multi-core CPUs
+    tracing::info!("Phase 2: Testing {} candidates in parallel", candidates_to_test.len());
+
+    let candidate_scores: Vec<(i32, u64, String, Vec<u8>)> = candidates_to_test
+        .into_par_iter()
+        .filter_map(|(offset, candidate)| {
+            let key = candidate.as_bytes().to_vec();
+            let results = extract_custom_xor_strings(data, &key, min_length);
+
+            // Sanity check: if we extracted way too many strings, it's likely noise
+            if results.len() > 5000 {
+                tracing::debug!(
+                    "Rejecting XOR key '{}' - extracted {} strings (> 5000 = likely noise)",
+                    candidate,
+                    results.len()
+                );
+                return None;
+            }
+
+            // Calculate weighted score based on decoded string quality
+            let mut score = 0;
+
+            for r in &results {
+                let value_lower = r.value.to_ascii_lowercase();
+
+                // CRITICAL: Shell commands and redirections (highest priority)
+                if value_lower.contains("osascript")
+                    || value_lower.contains("screencapture")
+                    || value_lower.contains("/bin/sh")
+                    || value_lower.contains("/bin/bash")
+                    || value_lower.contains("2>&1")
+                    || value_lower.contains("<<eod")
+                    || value_lower.contains("<<eof")
+                {
+                    score += 100;
+                }
+
+                // Cryptocurrency terms (very high priority)
+                for crypto in CRYPTO_KEYWORDS {
+                    if value_lower.contains(&crypto.to_ascii_lowercase()) {
+                        score += 80;
+                        break;
+                    }
+                }
+
+                // Suspicious paths (very high priority)
+                if matches!(r.kind, StringKind::SuspiciousPath) {
+                    score += 75;
+                }
+
+                // URLs and network indicators
+                if matches!(
+                    r.kind,
+                    StringKind::Url | StringKind::IP | StringKind::IPPort
+                ) {
+                    score += 50;
+                }
+
+                // Browser strings
+                for browser in BROWSER_KEYWORDS {
+                    if value_lower.contains(&browser.to_ascii_lowercase()) {
+                        score += 40;
+                        break;
+                    }
+                }
+
+                // Shell commands
+                if matches!(r.kind, StringKind::ShellCmd) {
+                    score += 30;
+                }
+
+                // Locale strings (en-US, ru-RU pattern)
+                if is_locale_string(&r.value) {
+                    score += 25;
+                }
+
+                // Generic paths (lower priority, only if they match known prefixes)
+                if matches!(r.kind, StringKind::Path) && has_known_path_prefix(&r.value) {
+                    score += 10;
+                }
+
+                // Base64 (low priority)
+                if matches!(r.kind, StringKind::Base64) {
+                    score += 5;
+                }
+            }
+
+            tracing::debug!(
+                "XOR key candidate '{}': score={} ({} strings)",
+                candidate,
+                score,
+                results.len()
+            );
+
+            Some((score, offset, candidate.to_string(), key))
+        })
+        .collect();
+
+    // Find the best candidate from parallel results
     let mut best_key: Option<(Vec<u8>, String, u64)> = None;
     let mut best_score = 0;
 
-    for (offset, candidate) in candidates {
-        let key = candidate.as_bytes().to_vec();
-        let results = extract_custom_xor_strings(data, &key, min_length);
-
-        // Sanity check: if we extracted way too many strings, it's likely noise
-        // Real XOR'd code can have hundreds or even thousands of decoded strings
-        // Larger binaries or those with extensive string obfuscation can produce 1000+ strings
-        // (Very high counts 5000+ might indicate random noise, but 1000-2000 is reasonable)
-        if results.len() > 5000 {
-            tracing::debug!(
-                "Rejecting XOR key '{}' - extracted {} strings (> 5000 = likely noise)",
-                candidate,
-                results.len()
-            );
-            continue;
-        }
-
-        // Calculate weighted score based on decoded string quality
-        let mut score = 0;
-        let mut has_shell_cmd = false;  // Track if we find shell commands
-
-        for r in &results {
-            let value_lower = r.value.to_ascii_lowercase();
-
-            // CRITICAL: Shell commands and redirections (highest priority)
-            if value_lower.contains("osascript")
-                || value_lower.contains("screencapture")
-                || value_lower.contains("/bin/sh")
-                || value_lower.contains("/bin/bash")
-                || value_lower.contains("2>&1")
-                || value_lower.contains("<<eod")
-                || value_lower.contains("<<eof")
-            {
-                score += 100; // Highest priority
-                has_shell_cmd = true;
-            }
-
-            // Cryptocurrency terms (very high priority)
-            for crypto in CRYPTO_KEYWORDS {
-                if value_lower.contains(&crypto.to_ascii_lowercase()) {
-                    score += 80;
-                        break;
-                }
-            }
-
-            // Suspicious paths (very high priority)
-            if matches!(r.kind, StringKind::SuspiciousPath) {
-                score += 75;
-            }
-
-            // URLs and network indicators
-            if matches!(
-                r.kind,
-                StringKind::Url | StringKind::IP | StringKind::IPPort
-            ) {
-                score += 50;
-            }
-
-            // Browser strings
-            for browser in BROWSER_KEYWORDS {
-                if value_lower.contains(&browser.to_ascii_lowercase()) {
-                    score += 40;
-                    break;
-                }
-            }
-
-            // Shell commands
-            if matches!(r.kind, StringKind::ShellCmd) {
-                score += 30;
-            }
-
-            // Locale strings (en-US, ru-RU pattern)
-            if is_locale_string(&r.value) {
-                score += 25;
-            }
-
-            // Generic paths (lower priority, only if they match known prefixes)
-            if matches!(r.kind, StringKind::Path) && has_known_path_prefix(&r.value) {
-                score += 10;
-            }
-
-            // Base64 (low priority)
-            if matches!(r.kind, StringKind::Base64) {
-                score += 5;
-            }
-        }
-
-        // Calculate average score per string - random XOR produces low-quality strings
-        let avg_score = if results.is_empty() { 0 } else { score / results.len() as i32 };
-
-        tracing::debug!(
-            "XOR key candidate '{}': score={} avg={} shell_cmd={} ({} strings)",
-            candidate,
-            score,
-            avg_score,
-            has_shell_cmd,
-            results.len()
-        );
-
-        // Prefer keys that found shell commands, or pick highest score
+    for (score, offset, candidate, key) in candidate_scores {
         if score > best_score {
             best_score = score;
-            best_key = Some((key, candidate.to_string(), offset));
+            best_key = Some((key, candidate, offset));
         }
 
-        // Early termination: if we found a key with very high confidence (multiple shell commands,
-        // C2 URLs, wallet references), we can stop checking other candidates
-        // Score > 500 indicates definitive malware: 5+ shell commands OR combinations of IOCs
+        // Early termination: if we found a key with very high confidence
         if score > 500 {
-            tracing::debug!(
-                "High-confidence XOR key found early (score={}), skipping remaining candidates",
-                score
-            );
+            tracing::debug!("High-confidence XOR key found, stopping search");
             break;
         }
     }
