@@ -127,6 +127,73 @@ fn is_good_xor_key_candidate(s: &str) -> bool {
     true
 }
 
+/// Score a candidate string as a potential XOR key.
+/// Higher scores indicate better XOR key candidates.
+/// Good XOR keys typically have:
+/// - Low character repetition (no character appears too many times)
+/// - High character diversity (uses many different characters)
+/// - High entropy (random-looking)
+fn score_xor_key_candidate(s: &str) -> u32 {
+    let mut score = 0u32;
+
+    // Bonus for length (32-char keys are ideal)
+    let len = s.len();
+    if len == 32 {
+        score += 100;
+    } else if len >= 24 {
+        score += 80;
+    } else if len >= 20 {
+        score += 60;
+    } else if len >= 15 {
+        score += 40;
+    }
+
+    // Calculate character frequency - good keys have low repetition
+    let mut char_freq = [0u32; 256];
+    for &byte in s.as_bytes() {
+        char_freq[byte as usize] += 1;
+    }
+
+    // Bonus for diversity: penalize if any character appears too often
+    let max_freq = *char_freq.iter().max().unwrap_or(&1);
+    let unique_chars = char_freq.iter().filter(|&&f| f > 0).count();
+
+    // Max frequency should be low for good keys
+    if max_freq <= 2 {
+        score += 80; // Excellent - no character repeats more than twice
+    } else if max_freq <= 3 {
+        score += 60;
+    } else if max_freq <= 4 {
+        score += 40;
+    } else if max_freq <= 5 {
+        score += 20;
+    }
+    // else: penalize heavily for high repetition
+
+    // Bonus for unique character count (good keys use many different chars)
+    if unique_chars >= 20 {
+        score += 60;
+    } else if unique_chars >= 15 {
+        score += 40;
+    } else if unique_chars >= 12 {
+        score += 20;
+    }
+
+    // Calculate entropy
+    let entropy = calculate_entropy(s.as_bytes());
+
+    // Bonus for high entropy
+    if entropy >= 4.5 {
+        score += 50;
+    } else if entropy >= 4.0 {
+        score += 40;
+    } else if entropy >= 3.5 {
+        score += 20;
+    }
+
+    score
+}
+
 /// Minimal high-signal patterns for XOR detection.
 /// These short patterns catch a wide variety of malware indicators:
 /// - `://` catches all URL schemes (http://, https://, ftp://, etc.)
@@ -1154,33 +1221,51 @@ pub fn auto_detect_xor_key(
         return None;
     }
 
-    // Find candidate XOR keys: high-entropy strings near the end of the file
-    // Sort by offset (descending) to get strings physically near the end of the binary
-    let mut candidates_with_offset: Vec<(u64, &str)> = candidate_strings
+    // Find candidate XOR keys by quality scoring
+    // Score each candidate based on characteristics of good XOR keys
+    let mut candidates_with_score: Vec<(u32, u64, &str)> = candidate_strings
         .iter()
         .filter(|s| {
             !s.value.contains('_')
                 && !s.value.starts_with("cstr.")
                 && is_good_xor_key_candidate(&s.value)
         })
-        .map(|s| (s.data_offset, s.value.as_str()))
+        .map(|s| {
+            let score = score_xor_key_candidate(&s.value);
+            (score, s.data_offset, s.value.as_str())
+        })
         .collect();
 
-    // Sort by offset descending (highest offsets first - near end of file)
-    candidates_with_offset.sort_by(|a, b| b.0.cmp(&a.0));
+    // Sort by score descending (best candidates first)
+    candidates_with_score.sort_by(|a, b| {
+        b.0.cmp(&a.0) // Score first (descending)
+            .then(b.1.cmp(&a.1)) // Then offset (descending - prefer later strings as tiebreaker)
+    });
 
-    // Take last 5 by file offset (not by position in vector)
-    let candidates: Vec<(u64, &str)> = candidates_with_offset.iter().take(5).copied().collect();
+    // Take top candidates instead of just last 5 by offset
+    // Try up to 5 best-scored candidates (3-5 is usually sufficient and much faster)
+    let candidates: Vec<(u64, &str)> = candidates_with_score
+        .iter()
+        .take(5)
+        .map(|(_, offset, s)| (*offset, *s))
+        .collect();
 
     if candidates.is_empty() {
         return None;
     }
 
     tracing::debug!(
-        "Auto-detecting XOR key from {} candidates: {:?}",
-        candidates.len(),
-        candidates.iter().map(|(_, s)| s).collect::<Vec<_>>()
+        "Auto-detecting XOR key from {} best-scored candidates",
+        candidates.len()
     );
+
+    for (score, _offset, candidate) in candidates_with_score.iter().take(5) {
+        tracing::debug!(
+            "  Candidate (score={}): {}",
+            score,
+            candidate
+        );
+    }
 
     // Try each candidate and calculate weighted scores based on string value
     let mut best_key: Option<(Vec<u8>, String, u64)> = None;
@@ -1191,11 +1276,12 @@ pub fn auto_detect_xor_key(
         let results = extract_custom_xor_strings(data, &key, min_length);
 
         // Sanity check: if we extracted way too many strings, it's likely noise
-        // Real XOR'd code typically has 50-200 strings, not 500+
-        // (High counts indicate random XOR producing mostly garbage)
-        if results.len() > 500 {
+        // Real XOR'd code can have hundreds or even thousands of decoded strings
+        // Larger binaries or those with extensive string obfuscation can produce 1000+ strings
+        // (Very high counts 5000+ might indicate random noise, but 1000-2000 is reasonable)
+        if results.len() > 5000 {
             tracing::debug!(
-                "Rejecting XOR key '{}' - extracted {} strings (> 500 = likely noise)",
+                "Rejecting XOR key '{}' - extracted {} strings (> 5000 = likely noise)",
                 candidate,
                 results.len()
             );
@@ -1288,6 +1374,17 @@ pub fn auto_detect_xor_key(
         if score > best_score {
             best_score = score;
             best_key = Some((key, candidate.to_string(), offset));
+        }
+
+        // Early termination: if we found a key with very high confidence (multiple shell commands,
+        // C2 URLs, wallet references), we can stop checking other candidates
+        // Score > 500 indicates definitive malware: 5+ shell commands OR combinations of IOCs
+        if score > 500 {
+            tracing::debug!(
+                "High-confidence XOR key found early (score={}), skipping remaining candidates",
+                score
+            );
+            break;
         }
     }
 
@@ -3345,7 +3442,7 @@ mod tests {
         // So this test may not detect anything if classification doesn't mark it as URL
         //
         // For now, we'll just check that IF a key is detected, it extracts a URL-like string
-        if let Some((detected_key, detected_str, _offset)) = detected {
+        if let Some((_detected_key, detected_str, _offset)) = detected {
             // At minimum, the detected string should contain the URL we're trying to find
             assert!(
                 detected_str.contains("http") || detected_str.contains("evil") || detected_str.contains(".com"),

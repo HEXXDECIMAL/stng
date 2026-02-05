@@ -918,6 +918,29 @@ pub fn extract_from_object(
         _ => {}
     }
 
+    // XOR string detection with auto-discovery
+    // Try to auto-detect XOR key from extracted strings if XOR scanning is enabled
+    if !data.is_empty() && opts.xor_scan {
+        // Auto-detect XOR key from high-quality candidates in extracted strings
+        if let Some((key, key_str, _key_offset)) = xor::auto_detect_xor_key(data, &strings, opts.xor_min_length) {
+            tracing::info!("Auto-detected XOR key: '{}' (from extracted strings)", key_str);
+
+            // Mark the key string as XorKey type if it exists in extracted strings
+            if let Some(key_string) = strings.iter_mut().find(|s| s.value == key_str) {
+                key_string.kind = StringKind::XorKey;
+            }
+
+            // Extract XOR strings with the detected key
+            strings.extend(xor::extract_custom_xor_strings_with_hints(
+                data,
+                &key,
+                opts.xor_min_length,
+                None,
+                opts.filter_garbage,
+            ));
+        }
+    }
+
     // Apply garbage filter if enabled (but never filter entitlements XML or section names)
     if opts.filter_garbage {
         strings.retain(|s| {
