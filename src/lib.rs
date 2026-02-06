@@ -100,17 +100,69 @@ fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf) 
 }
 
 /// Enrich strings with section information based on their file offsets (Mach-O)
-fn enrich_macho_sections(strings: &mut [ExtractedString], macho: &goblin::mach::MachO) {
+///
+/// `base_offset` is the file offset where this architecture starts (0 for regular binaries,
+/// arch.offset for fat binaries).
+fn enrich_macho_sections(
+    strings: &mut [ExtractedString],
+    macho: &goblin::mach::MachO,
+    base_offset: u64,
+) {
+    // Calculate Mach-O header regions (relative to architecture start)
+    // Header is 32 bytes for 64-bit, 28 bytes for 32-bit
+    let header_size: u64 = if macho.is_64 { 32 } else { 28 };
+    let load_cmds_end = base_offset + header_size + u64::from(macho.header.sizeofcmds);
+
+
+    // Find LINKEDIT segment range (contains symbol/string tables)
+    // Segment fileoff is relative to architecture, so add base_offset
+    let mut linkedit_range: Option<(u64, u64)> = None;
+    for segment in &macho.segments {
+        if let Ok(name) = segment.name() {
+            if name == "__LINKEDIT" {
+                let start = base_offset + segment.fileoff;
+                let end = start + segment.filesize;
+                linkedit_range = Some((start, end));
+                break;
+            }
+        }
+    }
+
     for s in strings {
-        if s.section.is_none() {
-            // Find which section this offset belongs to
+        // Check if section needs enrichment (None or empty string)
+        let needs_section = s.section.as_ref().map_or(true, |sec| sec.is_empty());
+        if needs_section {
+            // First check actual sections
+            // Section offsets are relative to architecture, so add base_offset
+            let mut found = false;
             for segment in &macho.segments {
                 for (section, _data) in segment.into_iter().flatten() {
-                    let section_start = u64::from(section.offset);
+                    // Skip BSS/uninitialized sections (offset 0, no file content)
+                    if section.offset == 0 {
+                        continue;
+                    }
+                    let section_start = base_offset + u64::from(section.offset);
                     let section_end = section_start + section.size;
                     if s.data_offset >= section_start && s.data_offset < section_end {
                         s.section = Some(section.name().unwrap_or("(unknown)").to_string());
+                        found = true;
                         break;
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+
+            // If not in a section, check Mach-O specific regions
+            if !found {
+                if s.data_offset >= base_offset && s.data_offset < load_cmds_end {
+                    // In header or load commands area
+                    s.section = Some("load_commands".to_string());
+                } else if let Some((start, end)) = linkedit_range {
+                    if s.data_offset >= start && s.data_offset < end {
+                        // In LINKEDIT but not in a specific section (symbol/string tables)
+                        s.section = Some("__LINKEDIT".to_string());
                     }
                 }
             }
@@ -901,23 +953,6 @@ pub fn extract_from_object(
         }
     }
 
-    // Enrich all strings with section information based on file offsets
-    // This happens AFTER all extraction (including XOR) is complete
-    match object {
-        Object::Elf(elf) => enrich_elf_sections(&mut strings, elf),
-        Object::Mach(goblin::mach::Mach::Binary(macho)) => {
-            enrich_macho_sections(&mut strings, macho)
-        }
-        Object::Mach(goblin::mach::Mach::Fat(fat)) => {
-            // Use first architecture for section mapping
-            if let Some(Ok(goblin::mach::SingleArch::MachO(macho))) = fat.into_iter().next() {
-                enrich_macho_sections(&mut strings, &macho);
-            }
-        }
-        Object::PE(pe) => enrich_pe_sections(&mut strings, pe),
-        _ => {}
-    }
-
     // XOR string detection with auto-discovery
     // Try to auto-detect XOR key from extracted strings if XOR scanning is enabled
     if !data.is_empty() && opts.xor_scan {
@@ -939,6 +974,32 @@ pub fn extract_from_object(
                 opts.filter_garbage,
             ));
         }
+    }
+
+    // Enrich all strings with section information based on file offsets
+    // This happens AFTER all extraction (including XOR) is complete
+    match object {
+        Object::Elf(elf) => enrich_elf_sections(&mut strings, elf),
+        Object::Mach(goblin::mach::Mach::Binary(macho)) => {
+            enrich_macho_sections(&mut strings, macho, 0)
+        }
+        Object::Mach(goblin::mach::Mach::Fat(fat)) => {
+            // Collect architecture offsets first
+            let arch_offsets: Vec<u64> = fat
+                .iter_arches()
+                .filter_map(|r| r.ok())
+                .map(|a| u64::from(a.offset))
+                .collect();
+
+            // Enrich strings against each architecture
+            for (macho_result, base_offset) in fat.into_iter().zip(arch_offsets) {
+                if let Ok(goblin::mach::SingleArch::MachO(macho)) = macho_result {
+                    enrich_macho_sections(&mut strings, &macho, base_offset);
+                }
+            }
+        }
+        Object::PE(pe) => enrich_pe_sections(&mut strings, pe),
+        _ => {}
     }
 
     // Apply garbage filter if enabled (but never filter entitlements XML or section names)

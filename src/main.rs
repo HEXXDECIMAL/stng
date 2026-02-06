@@ -376,20 +376,34 @@ fn main() -> Result<()> {
         }
         println!();
 
-        // Sort by section, then by offset (preserves file order)
+        // Sort by section (in file offset order), then by offset within section
         // In --flat mode, sort purely by offset for raw file order
         if cli.flat {
             strings.sort_by_key(|s| s.data_offset);
         } else {
-            strings.sort_by(|a, b| match (&a.section, &b.section) {
-                (Some(sa), Some(sb)) => sa.cmp(sb).then(a.data_offset.cmp(&b.data_offset)),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.data_offset.cmp(&b.data_offset),
+            // Build section order map based on minimum offset per section
+            let mut section_min_offset: std::collections::HashMap<Option<String>, u64> =
+                std::collections::HashMap::new();
+            for s in &strings {
+                let section = s.section.clone();
+                section_min_offset
+                    .entry(section)
+                    .and_modify(|min| *min = (*min).min(s.data_offset))
+                    .or_insert(s.data_offset);
+            }
+
+            // Sort by section's minimum offset, then by string offset within section
+            strings.sort_by(|a, b| {
+                let a_section_offset = section_min_offset.get(&a.section).copied().unwrap_or(u64::MAX);
+                let b_section_offset = section_min_offset.get(&b.section).copied().unwrap_or(u64::MAX);
+                a_section_offset
+                    .cmp(&b_section_offset)
+                    .then(a.data_offset.cmp(&b.data_offset))
             });
         }
 
-        let mut current_section: Option<&str> = None;
+        // Use sentinel to detect first section (distinguishes from "no section yet" vs "section is None")
+        let mut current_section: Option<Option<&str>> = None;
 
         // Collect high-severity items for summary
         let mut notable: Vec<&stng::ExtractedString> = Vec::new();
@@ -398,7 +412,7 @@ fn main() -> Result<()> {
             let section = s.section.as_deref();
 
             // Print section header when section changes
-            if !cli.flat && section != current_section {
+            if !cli.flat && current_section != Some(section) {
                 if current_section.is_some() {
                     println!();
                 }
@@ -408,7 +422,7 @@ fn main() -> Result<()> {
                 } else {
                     println!("── {section_name} ──");
                 }
-                current_section = section;
+                current_section = Some(section);
             }
 
             print_string_line(s, use_color);
