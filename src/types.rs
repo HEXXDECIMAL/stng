@@ -88,6 +88,14 @@ pub enum StringMethod {
     WideString,
     /// Found via XOR decoding (single-byte key)
     XorDecode,
+    /// Found via base64 decoding
+    Base64Decode,
+    /// Found via hex decoding
+    HexDecode,
+    /// Found via URL decoding
+    UrlDecode,
+    /// Found via unicode escape decoding (\xHH, \uHHHH, \UHHHHHHHH)
+    UnicodeEscapeDecode,
     /// Found via stack string construction analysis (immediate values)
     StackString,
     /// Found in Mach-O code signature (entitlements)
@@ -150,6 +158,10 @@ pub enum StringKind {
     UnicodeEscaped,
     /// URL-encoded data (%XX format)
     UrlEncoded,
+    /// Base32-encoded data
+    Base32,
+    /// Base58-encoded data (Bitcoin/cryptocurrency)
+    Base58,
     /// Overlay/appended data after ELF/PE boundary (ASCII/UTF-8)
     Overlay,
     /// Overlay data in UTF-16LE encoding (common in malware configs)
@@ -195,6 +207,8 @@ impl StringKind {
             | StringKind::HexEncoded
             | StringKind::UnicodeEscaped
             | StringKind::UrlEncoded
+            | StringKind::Base32
+            | StringKind::Base58
             | StringKind::Overlay
             | StringKind::OverlayWide
             | StringKind::StackString
@@ -243,6 +257,8 @@ impl StringKind {
             StringKind::HexEncoded => "hex",
             StringKind::UnicodeEscaped => "unicode",
             StringKind::UrlEncoded => "urlenc",
+            StringKind::Base32 => "base32",
+            StringKind::Base58 => "base58",
             StringKind::Overlay => "overlay",
             StringKind::OverlayWide => "overlay:16LE",
             StringKind::StackString => "stack",

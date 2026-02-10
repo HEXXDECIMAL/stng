@@ -54,6 +54,9 @@ pub mod r2;
 mod rust;
 pub mod xor;
 
+// Decoders for encoded strings
+pub mod decoders;
+
 // Re-export public API
 pub use binary::{is_go_binary, is_rust_binary};
 pub use detect::{detect_language, is_text_file};
@@ -318,6 +321,10 @@ fn method_priority(m: StringMethod) -> u8 {
         | StringMethod::R2Symbol
         | StringMethod::WideString
         | StringMethod::XorDecode
+        | StringMethod::Base64Decode
+        | StringMethod::HexDecode
+        | StringMethod::UrlDecode
+        | StringMethod::UnicodeEscapeDecode
         | StringMethod::CodeSignature => 2,
         StringMethod::Heuristic => 1,
         StringMethod::RawScan => 0,
@@ -523,6 +530,20 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                     || !validation::is_garbage(&s.value)
             });
         }
+
+        // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
+        // This happens after all extraction so we can decode strings found by any method
+        tracing::debug!("Running decoders on {} strings", strings.len());
+        let mut decoded = Vec::new();
+        decoded.extend(decoders::decode_base64_strings(&strings));
+        decoded.extend(decoders::decode_hex_strings(&strings));
+        decoded.extend(decoders::decode_url_strings(&strings));
+        decoded.extend(decoders::decode_unicode_escape_strings(&strings));
+
+        tracing::debug!("Decoded {} additional strings", decoded.len());
+
+        // Add decoded strings to the main list
+        strings.extend(decoded);
 
         deduplicate_by_offset(strings)
     }
@@ -1010,6 +1031,17 @@ pub fn extract_from_object(
                 || !validation::is_garbage(&s.value)
         });
     }
+
+    // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
+    // This happens after all extraction so we can decode strings found by any method
+    let mut decoded = Vec::new();
+    decoded.extend(decoders::decode_base64_strings(&strings));
+    decoded.extend(decoders::decode_hex_strings(&strings));
+    decoded.extend(decoders::decode_url_strings(&strings));
+    decoded.extend(decoders::decode_unicode_escape_strings(&strings));
+
+    // Add decoded strings to the main list
+    strings.extend(decoded);
 
     deduplicate_by_offset(strings)
 }

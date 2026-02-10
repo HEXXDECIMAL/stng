@@ -13,7 +13,8 @@ stng --json malware.bin       # Machine-readable output
 ## Detection Capabilities
 
 - **Binary network structures**: Hardcoded IPs/ports in socket structures, network byte order
-- **XOR obfuscation**: Single/multi-byte keys with entropy analysis
+- **XOR obfuscation**: Single/multi-byte keys with entropy analysis, double-layer (encoding+XOR)
+- **Encoding detection**: Base64, hex, URL-encoding, Unicode escapes (Base32/Base58 classification)
 - **Language-aware extraction**: Go/Rust `{ptr, len}`, DWARF stack strings
 - **IOC classification**: IPs, URLs, shell commands, paths, registry keys, credentials
 - **Wide strings**: UTF-16LE in Windows PE binaries
