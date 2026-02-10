@@ -2507,6 +2507,116 @@ mod string_kind_tests {
             "SHA256 hash should not be detected as hex-encoded text"
         );
     }
+
+    #[test]
+    fn test_unicode_escaped_detection() {
+        // JavaScript with \xXX escapes (from actual malware)
+        let unicode_str = "\\x27;\\x20const\\x20fs\\x20=\\x20require(\\x27fs\\x27);";
+        let data = minimal_elf_with_string(unicode_str);
+        let strings = extract_strings(&data, 4);
+
+        let unicode_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::UnicodeEscaped)
+            .collect();
+
+        assert!(
+            !unicode_strings.is_empty(),
+            "Should detect Unicode-escaped string"
+        );
+        assert_eq!(unicode_strings[0].value, unicode_str);
+    }
+
+    #[test]
+    fn test_unicode_escaped_u_format() {
+        // \uXXXX format
+        let unicode_str = "\\u0048\\u0065\\u006c\\u006c\\u006f\\u0020\\u0057\\u006f\\u0072\\u006c\\u0064";
+        let data = minimal_elf_with_string(unicode_str);
+        let strings = extract_strings(&data, 4);
+
+        let unicode_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::UnicodeEscaped)
+            .collect();
+
+        assert!(
+            !unicode_strings.is_empty(),
+            "Should detect \\uXXXX format Unicode-escaped string"
+        );
+    }
+
+    #[test]
+    fn test_unicode_escaped_not_few_escapes() {
+        // Too few escape sequences should not be detected
+        let text = "Hello \\x20 World";
+        let data = minimal_elf_with_string(text);
+        let strings = extract_strings(&data, 4);
+
+        let unicode_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::UnicodeEscaped)
+            .collect();
+
+        assert!(
+            unicode_strings.is_empty(),
+            "Should not detect strings with too few escape sequences"
+        );
+    }
+
+    #[test]
+    fn test_url_encoded_detection() {
+        // XSS payload
+        let url_str = "%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E";
+        let data = minimal_elf_with_string(url_str);
+        let strings = extract_strings(&data, 4);
+
+        let url_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::UrlEncoded)
+            .collect();
+
+        assert!(
+            !url_strings.is_empty(),
+            "Should detect URL-encoded string"
+        );
+        assert_eq!(url_strings[0].value, url_str);
+    }
+
+    #[test]
+    fn test_url_encoded_sql_injection() {
+        // SQL injection payload
+        let url_str = "%27%20OR%20%271%27%3D%271%27%3B%20DROP%20TABLE%20users%3B--";
+        let data = minimal_elf_with_string(url_str);
+        let strings = extract_strings(&data, 4);
+
+        let url_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::UrlEncoded)
+            .collect();
+
+        assert!(
+            !url_strings.is_empty(),
+            "Should detect URL-encoded SQL injection"
+        );
+    }
+
+    #[test]
+    fn test_url_encoded_not_few_percent() {
+        // Too few percent signs should not be detected
+        let text = "Hello%20World";
+        let data = minimal_elf_with_string(text);
+        let strings = extract_strings(&data, 4);
+
+        let url_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::UrlEncoded)
+            .collect();
+
+        assert!(
+            url_strings.is_empty(),
+            "Should not detect strings with too few percent signs"
+        );
+    }
 }
 
 // Tests for severity levels
@@ -2531,6 +2641,8 @@ mod severity_tests {
             StringKind::ShellCmd,
             StringKind::Base64,
             StringKind::HexEncoded,
+            StringKind::UnicodeEscaped,
+            StringKind::UrlEncoded,
             StringKind::Overlay,
             StringKind::OverlayWide,
         ];
@@ -2556,6 +2668,8 @@ mod severity_tests {
         assert_eq!(StringKind::IPPort.severity(), Severity::High);
         assert_eq!(StringKind::Base64.severity(), Severity::High);
         assert_eq!(StringKind::HexEncoded.severity(), Severity::High);
+        assert_eq!(StringKind::UnicodeEscaped.severity(), Severity::High);
+        assert_eq!(StringKind::UrlEncoded.severity(), Severity::High);
         assert_eq!(StringKind::Overlay.severity(), Severity::High);
         assert_eq!(StringKind::OverlayWide.severity(), Severity::High);
     }

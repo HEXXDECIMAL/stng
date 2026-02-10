@@ -189,6 +189,96 @@ fn get_binary_format(data: &[u8]) -> String {
     }
 }
 
+/// Decode Unicode escape sequences from a string
+fn decode_unicode_escapes(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                match next {
+                    // \xXX format (2 hex digits)
+                    'x' => {
+                        let hex: String = chars.by_ref().take(2).collect();
+                        if hex.len() == 2 {
+                            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                                result.push(byte);
+                                continue;
+                            }
+                        }
+                        // Failed to parse, add literal characters
+                        result.push(b'\\');
+                        result.push(b'x');
+                        result.extend(hex.as_bytes());
+                    }
+                    // \uXXXX format (4 hex digits)
+                    'u' => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if hex.len() == 4 {
+                            if let Ok(codepoint) = u16::from_str_radix(&hex, 16) {
+                                // Convert to UTF-8
+                                if let Some(ch) = char::from_u32(codepoint as u32) {
+                                    let mut buf = [0u8; 4];
+                                    let encoded = ch.encode_utf8(&mut buf);
+                                    result.extend_from_slice(encoded.as_bytes());
+                                    continue;
+                                }
+                            }
+                        }
+                        // Failed to parse, add literal characters
+                        result.push(b'\\');
+                        result.push(b'u');
+                        result.extend(hex.as_bytes());
+                    }
+                    // Other escape sequences - just add as-is
+                    _ => {
+                        result.push(b'\\');
+                        result.push(next as u8);
+                    }
+                }
+            } else {
+                result.push(b'\\');
+            }
+        } else {
+            // Regular character
+            result.push(c as u8);
+        }
+    }
+
+    result
+}
+
+/// Decode URL-encoded string (%XX format)
+fn decode_url_encoding(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            // Try to read two hex digits
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    result.push(byte);
+                    continue;
+                }
+            }
+            // Failed to parse, add literal characters
+            result.push(b'%');
+            result.extend(hex.as_bytes());
+        } else if c == '+' {
+            // In URL encoding, + represents space
+            result.push(b' ');
+        } else {
+            // Regular character
+            result.push(c as u8);
+        }
+    }
+
+    result
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -790,6 +880,40 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
             .filter_map(|i| u8::from_str_radix(&s.value[i..i + 2], 16).ok())
             .collect();
 
+        if !decoded.is_empty() {
+            if let Ok(text) = String::from_utf8(decoded) {
+                let text = text.trim();
+                if !text.is_empty() {
+                    if use_color {
+                        value = format!("{value} {DIM}[{text}]{RESET}");
+                    } else {
+                        value = format!("{value} [{text}]");
+                    }
+                }
+            }
+        }
+    }
+
+    // Decode Unicode escape sequences
+    if s.kind == stng::StringKind::UnicodeEscaped {
+        let decoded = decode_unicode_escapes(&s.value);
+        if !decoded.is_empty() {
+            if let Ok(text) = String::from_utf8(decoded) {
+                let text = text.trim();
+                if !text.is_empty() {
+                    if use_color {
+                        value = format!("{value} {DIM}[{text}]{RESET}");
+                    } else {
+                        value = format!("{value} [{text}]");
+                    }
+                }
+            }
+        }
+    }
+
+    // Decode URL-encoded strings
+    if s.kind == stng::StringKind::UrlEncoded {
+        let decoded = decode_url_encoding(&s.value);
         if !decoded.is_empty() {
             if let Ok(text) = String::from_utf8(decoded) {
                 let text = text.trim();

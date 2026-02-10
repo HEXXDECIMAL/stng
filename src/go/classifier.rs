@@ -148,6 +148,16 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::Path;
     }
 
+    // Unicode escape sequences (common in JavaScript malware)
+    if is_unicode_escaped(s) {
+        return StringKind::UnicodeEscaped;
+    }
+
+    // URL-encoded data (common in web shells and HTTP payloads)
+    if is_url_encoded(s) {
+        return StringKind::UrlEncoded;
+    }
+
     // Hex-encoded ASCII data (common in malware obfuscation)
     if is_hex_encoded(s) {
         return StringKind::HexEncoded;
@@ -535,6 +545,167 @@ fn is_hex_encoded(s: &str) -> bool {
 
     // At least 70% printable
     printable * 10 > decoded.len() * 7
+}
+
+/// Check if a string looks like Unicode-escaped data (\xXX or \uXXXX format)
+fn is_unicode_escaped(s: &str) -> bool {
+    // Must be reasonably long
+    if s.len() < 20 {
+        return false;
+    }
+
+    // Count escape sequences
+    let mut escape_count = 0;
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                if next == 'x' || next == 'u' {
+                    escape_count += 1;
+                }
+            }
+        }
+    }
+
+    // Need at least 5 escape sequences to be confident
+    if escape_count < 5 {
+        return false;
+    }
+
+    // Try to decode and check if result is mostly printable
+    let decoded = decode_unicode_escapes(s);
+    if decoded.is_empty() {
+        return false;
+    }
+
+    let printable = decoded
+        .iter()
+        .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+        .count();
+
+    // At least 60% printable (slightly more lenient than hex)
+    printable * 10 > decoded.len() * 6
+}
+
+/// Decode Unicode escape sequences from a string
+fn decode_unicode_escapes(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                match next {
+                    // \xXX format (2 hex digits)
+                    'x' => {
+                        let hex: String = chars.by_ref().take(2).collect();
+                        if hex.len() == 2 {
+                            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                                result.push(byte);
+                                continue;
+                            }
+                        }
+                        // Failed to parse, add literal characters
+                        result.push(b'\\');
+                        result.push(b'x');
+                        result.extend(hex.as_bytes());
+                    }
+                    // \uXXXX format (4 hex digits)
+                    'u' => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if hex.len() == 4 {
+                            if let Ok(codepoint) = u16::from_str_radix(&hex, 16) {
+                                // Convert to UTF-8
+                                if let Some(ch) = char::from_u32(codepoint as u32) {
+                                    let mut buf = [0u8; 4];
+                                    let encoded = ch.encode_utf8(&mut buf);
+                                    result.extend_from_slice(encoded.as_bytes());
+                                    continue;
+                                }
+                            }
+                        }
+                        // Failed to parse, add literal characters
+                        result.push(b'\\');
+                        result.push(b'u');
+                        result.extend(hex.as_bytes());
+                    }
+                    // Other escape sequences - just add as-is
+                    _ => {
+                        result.push(b'\\');
+                        result.push(next as u8);
+                    }
+                }
+            } else {
+                result.push(b'\\');
+            }
+        } else {
+            // Regular character
+            result.push(c as u8);
+        }
+    }
+
+    result
+}
+
+/// Check if a string looks like URL-encoded data (%XX format)
+fn is_url_encoded(s: &str) -> bool {
+    // Must be reasonably long
+    if s.len() < 20 {
+        return false;
+    }
+
+    // Count percent-encoded sequences
+    let percent_count = s.matches('%').count();
+
+    // Need at least 3 percent signs to be confident (short payloads like %3Bcat%20%2Fetc%2Fpasswd)
+    if percent_count < 3 {
+        return false;
+    }
+
+    // Try to decode and check if result is mostly printable
+    let decoded = decode_url_encoding(s);
+    if decoded.is_empty() {
+        return false;
+    }
+
+    let printable = decoded
+        .iter()
+        .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+        .count();
+
+    // At least 60% printable
+    printable * 10 > decoded.len() * 6
+}
+
+/// Decode URL-encoded string (%XX format)
+fn decode_url_encoding(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            // Try to read two hex digits
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    result.push(byte);
+                    continue;
+                }
+            }
+            // Failed to parse, add literal characters
+            result.push(b'%');
+            result.extend(hex.as_bytes());
+        } else if c == '+' {
+            // In URL encoding, + represents space
+            result.push(b' ');
+        } else {
+            // Regular character
+            result.push(c as u8);
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -962,5 +1133,166 @@ mod tests {
             .collect();
         let text = String::from_utf8(decoded).unwrap();
         assert_eq!(text, "Hello World");
+    }
+
+    #[test]
+    fn test_is_unicode_escaped_valid() {
+        // Valid \xXX format (from actual malware)
+        assert!(is_unicode_escaped(
+            "\\x27;\\x20const\\x20fs\\x20=\\x20require(\\x27fs\\x27);"
+        ));
+
+        // Mixed \xXX and regular text
+        assert!(is_unicode_escaped(
+            "\\x48\\x65\\x6c\\x6c\\x6f\\x20\\x57\\x6f\\x72\\x6c\\x64"
+        ));
+
+        // \uXXXX format
+        assert!(is_unicode_escaped(
+            "\\u0048\\u0065\\u006c\\u006c\\u006f"
+        ));
+
+        // Mixed format
+        assert!(is_unicode_escaped(
+            "const\\x20url\\x20=\\x20\\x27https://example.com\\x27;"
+        ));
+    }
+
+    #[test]
+    fn test_is_unicode_escaped_invalid() {
+        // Too short
+        assert!(!is_unicode_escaped("\\x48\\x65"));
+
+        // Too few escape sequences
+        assert!(!is_unicode_escaped("Hello \\x20 World"));
+
+        // Not actually escaped
+        assert!(!is_unicode_escaped("const url = 'https://example.com';"));
+
+        // Invalid escape sequences
+        assert!(!is_unicode_escaped("\\x\\x\\x\\x\\x\\x\\x\\x"));
+    }
+
+    #[test]
+    fn test_classify_string_unicode_escaped() {
+        // JavaScript with \xXX escapes (from actual malware)
+        assert_eq!(
+            classify_string("\\x27;\\x20const\\x20fs\\x20=\\x20require(\\x27fs\\x27);"),
+            StringKind::UnicodeEscaped
+        );
+
+        // \uXXXX format
+        assert_eq!(
+            classify_string("\\u0048\\u0065\\u006c\\u006c\\u006f"),
+            StringKind::UnicodeEscaped
+        );
+
+        // Should not be Unicode escaped (too few sequences)
+        assert_ne!(
+            classify_string("Hello \\x20 World"),
+            StringKind::UnicodeEscaped
+        );
+    }
+
+    #[test]
+    fn test_decode_unicode_escapes() {
+        // Test \xXX format
+        let decoded = decode_unicode_escapes("\\x48\\x65\\x6c\\x6c\\x6f");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "Hello");
+
+        // Test \uXXXX format
+        let decoded = decode_unicode_escapes("\\u0048\\u0065\\u006c\\u006c\\u006f");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "Hello");
+
+        // Test mixed content
+        let decoded = decode_unicode_escapes("const\\x20fs\\x20=\\x20require");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "const fs = require");
+
+        // Test actual malware pattern
+        let decoded = decode_unicode_escapes("\\x27;\\x20const\\x20fs\\x20=\\x20require(\\x27fs\\x27);");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "'; const fs = require('fs');");
+    }
+
+    #[test]
+    fn test_is_url_encoded_valid() {
+        // Valid URL-encoded strings (from web shells)
+        assert!(is_url_encoded("%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"));
+
+        // SQL injection payload
+        assert!(is_url_encoded("%27%20OR%20%271%27%3D%271"));
+
+        // Command injection
+        assert!(is_url_encoded("%3Bcat%20%2Fetc%2Fpasswd"));
+
+        // Mixed with plus signs and multiple encoded chars
+        assert!(is_url_encoded("param1%3Dvalue1%26param2%3Dvalue2"));
+    }
+
+    #[test]
+    fn test_is_url_encoded_invalid() {
+        // Too short
+        assert!(!is_url_encoded("%48%65"));
+
+        // Too few percent signs (only 1)
+        assert!(!is_url_encoded("Hello%20World"));
+
+        // Not actually URL encoded (no percent signs)
+        assert!(!is_url_encoded("regular text with some words"));
+
+        // Has percent but not valid encoding (non-hex after %)
+        assert!(!is_url_encoded("100% complete status check"));
+    }
+
+    #[test]
+    fn test_classify_string_url_encoded() {
+        // XSS payload
+        assert_eq!(
+            classify_string("%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"),
+            StringKind::UrlEncoded
+        );
+
+        // SQL injection
+        assert_eq!(
+            classify_string("%27%20OR%20%271%27%3D%271"),
+            StringKind::UrlEncoded
+        );
+
+        // Should not be URL encoded (too few percent signs)
+        assert_ne!(
+            classify_string("Hello%20World"),
+            StringKind::UrlEncoded
+        );
+    }
+
+    #[test]
+    fn test_decode_url_encoding() {
+        // Test basic decoding
+        let decoded = decode_url_encoding("%48%65%6c%6c%6f");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "Hello");
+
+        // Test with plus signs
+        let decoded = decode_url_encoding("Hello+World%21");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "Hello World!");
+
+        // Test XSS payload
+        let decoded = decode_url_encoding("%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "<script>alert('XSS')</script>");
+
+        // Test SQL injection
+        let decoded = decode_url_encoding("%27%20OR%20%271%27%3D%271");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "' OR '1'='1");
+
+        // Test command injection
+        let decoded = decode_url_encoding("%3Bcat%20%2Fetc%2Fpasswd");
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, ";cat /etc/passwd");
     }
 }

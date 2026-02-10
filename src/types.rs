@@ -146,6 +146,10 @@ pub enum StringKind {
     Base64,
     /// Hex-encoded ASCII data (each byte as two hex chars)
     HexEncoded,
+    /// Unicode escape sequences (\xXX, \uXXXX format)
+    UnicodeEscaped,
+    /// URL-encoded data (%XX format)
+    UrlEncoded,
     /// Overlay/appended data after ELF/PE boundary (ASCII/UTF-8)
     Overlay,
     /// Overlay data in UTF-16LE encoding (common in malware configs)
@@ -189,6 +193,8 @@ impl StringKind {
             | StringKind::SuspiciousPath
             | StringKind::Base64
             | StringKind::HexEncoded
+            | StringKind::UnicodeEscaped
+            | StringKind::UrlEncoded
             | StringKind::Overlay
             | StringKind::OverlayWide
             | StringKind::StackString
@@ -235,6 +241,8 @@ impl StringKind {
             StringKind::Registry => "registry",
             StringKind::Base64 => "base64",
             StringKind::HexEncoded => "hex",
+            StringKind::UnicodeEscaped => "unicode",
+            StringKind::UrlEncoded => "urlenc",
             StringKind::Overlay => "overlay",
             StringKind::OverlayWide => "overlay:16LE",
             StringKind::StackString => "stack",
