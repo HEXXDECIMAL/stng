@@ -333,6 +333,14 @@ fn main() -> Result<()> {
             })
             .collect();
 
+        // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
+        let mut decoded = Vec::new();
+        decoded.extend(stng::decoders::decode_base64_strings(&strings));
+        decoded.extend(stng::decoders::decode_hex_strings(&strings));
+        decoded.extend(stng::decoders::decode_url_strings(&strings));
+        decoded.extend(stng::decoders::decode_unicode_escape_strings(&strings));
+        strings.extend(decoded);
+
         // Jump to output section
         if strings.is_empty() {
             if !cli.json {
