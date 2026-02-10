@@ -58,7 +58,7 @@ pub mod xor;
 pub use binary::{is_go_binary, is_rust_binary};
 pub use detect::{detect_language, is_text_file};
 pub use entitlements::extract_macho_entitlements_xml;
-pub use go::GoStringExtractor;
+pub use go::{classify_string, GoStringExtractor};
 pub use overlay::{detect_elf_overlay, extract_overlay_strings};
 pub use rust::RustStringExtractor;
 pub use stack_strings::extract_stack_strings;

@@ -2469,6 +2469,44 @@ mod string_kind_tests {
         // Base64 detection depends on various heuristics
         let _ = b64_strings;
     }
+
+    #[test]
+    fn test_hex_encoded_detection() {
+        // Hex-encoded JavaScript (from actual malware)
+        // Decodes to: "const _0x1c31000=_0x2330d;function _0x2330d"
+        let hex_str = "636F6E7374205F307831633331303030333D5F3078323330643B66756E6374696F6E205F307832333064";
+        let data = minimal_elf_with_string(hex_str);
+        let strings = extract_strings(&data, 4);
+
+        let hex_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::HexEncoded)
+            .collect();
+
+        assert!(
+            !hex_strings.is_empty(),
+            "Should detect hex-encoded string"
+        );
+        assert_eq!(hex_strings[0].value, hex_str);
+    }
+
+    #[test]
+    fn test_hex_encoded_not_sha256() {
+        // SHA256 hash should not be detected as hex-encoded text
+        let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let data = minimal_elf_with_string(hash);
+        let strings = extract_strings(&data, 4);
+
+        let hex_strings: Vec<_> = strings
+            .iter()
+            .filter(|s| s.kind == StringKind::HexEncoded)
+            .collect();
+
+        assert!(
+            hex_strings.is_empty(),
+            "SHA256 hash should not be detected as hex-encoded text"
+        );
+    }
 }
 
 // Tests for severity levels
@@ -2492,6 +2530,7 @@ mod severity_tests {
             StringKind::SuspiciousPath,
             StringKind::ShellCmd,
             StringKind::Base64,
+            StringKind::HexEncoded,
             StringKind::Overlay,
             StringKind::OverlayWide,
         ];
@@ -2516,6 +2555,7 @@ mod severity_tests {
         assert_eq!(StringKind::IP.severity(), Severity::High);
         assert_eq!(StringKind::IPPort.severity(), Severity::High);
         assert_eq!(StringKind::Base64.severity(), Severity::High);
+        assert_eq!(StringKind::HexEncoded.severity(), Severity::High);
         assert_eq!(StringKind::Overlay.severity(), Severity::High);
         assert_eq!(StringKind::OverlayWide.severity(), Severity::High);
     }

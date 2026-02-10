@@ -144,6 +144,8 @@ pub enum StringKind {
     Registry,
     /// Base64-encoded data
     Base64,
+    /// Hex-encoded ASCII data (each byte as two hex chars)
+    HexEncoded,
     /// Overlay/appended data after ELF/PE boundary (ASCII/UTF-8)
     Overlay,
     /// Overlay data in UTF-16LE encoding (common in malware configs)
@@ -186,6 +188,7 @@ impl StringKind {
             | StringKind::ShellCmd
             | StringKind::SuspiciousPath
             | StringKind::Base64
+            | StringKind::HexEncoded
             | StringKind::Overlay
             | StringKind::OverlayWide
             | StringKind::StackString
@@ -231,6 +234,7 @@ impl StringKind {
             StringKind::SuspiciousPath => "sus",
             StringKind::Registry => "registry",
             StringKind::Base64 => "base64",
+            StringKind::HexEncoded => "hex",
             StringKind::Overlay => "overlay",
             StringKind::OverlayWide => "overlay:16LE",
             StringKind::StackString => "stack",

@@ -219,10 +219,57 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Handle text files like cat
+    // Handle text files by extracting and classifying strings from lines
     if stng::is_text_file(&data) {
         let content = String::from_utf8_lossy(&data);
-        print!("{content}");
+        let mut strings: Vec<stng::ExtractedString> = content
+            .lines()
+            .enumerate()
+            .filter_map(|(idx, line)| {
+                let trimmed = line.trim();
+                if trimmed.len() >= cli.min_length {
+                    Some(stng::ExtractedString {
+                        value: trimmed.to_string(),
+                        data_offset: idx as u64,
+                        section: None,
+                        method: stng::StringMethod::RawScan,
+                        kind: stng::classify_string(trimmed),
+                        library: None,
+                        fragments: None,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Jump to output section
+        if strings.is_empty() {
+            if !cli.json {
+                eprintln!("No strings found in {}", cli.target);
+            }
+            return Ok(());
+        }
+
+        // Continue to normal output handling below
+        let use_color = !cli.no_color && !cli.json && io::stdout().is_terminal();
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&strings)?);
+            return Ok(());
+        }
+
+        // Sort and display
+        strings.sort_by(|a, b| {
+            b.kind
+                .severity()
+                .cmp(&a.kind.severity())
+                .then_with(|| a.value.cmp(&b.value))
+        });
+
+        for s in &strings {
+            print_string_line(s, use_color);
+        }
+
         return Ok(());
     }
 
@@ -730,6 +777,27 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
                         value = format!("{value} {DIM}[0x{hex_preview}]{RESET}");
                     } else {
                         value = format!("{value} [0x{hex_preview}]");
+                    }
+                }
+            }
+        }
+    }
+
+    // Decode hex-encoded strings
+    if s.kind == stng::StringKind::HexEncoded {
+        let decoded: Vec<u8> = (0..s.value.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&s.value[i..i + 2], 16).ok())
+            .collect();
+
+        if !decoded.is_empty() {
+            if let Ok(text) = String::from_utf8(decoded) {
+                let text = text.trim();
+                if !text.is_empty() {
+                    if use_color {
+                        value = format!("{value} {DIM}[{text}]{RESET}");
+                    } else {
+                        value = format!("{value} [{text}]");
                     }
                 }
             }

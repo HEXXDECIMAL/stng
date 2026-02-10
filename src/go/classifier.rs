@@ -148,6 +148,11 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::Path;
     }
 
+    // Hex-encoded ASCII data (common in malware obfuscation)
+    if is_hex_encoded(s) {
+        return StringKind::HexEncoded;
+    }
+
     // Base64-encoded data (long strings, right charset, proper padding)
     if is_base64(s) {
         return StringKind::Base64;
@@ -496,6 +501,42 @@ fn is_base64(s: &str) -> bool {
     has_upper && has_lower && has_digit
 }
 
+/// Check if a string looks like hex-encoded ASCII data
+fn is_hex_encoded(s: &str) -> bool {
+    // Must be reasonably long (at least 40 chars = 20 decoded bytes)
+    if s.len() < 40 {
+        return false;
+    }
+
+    // Must be even length (pairs of hex digits)
+    if !s.len().is_multiple_of(2) {
+        return false;
+    }
+
+    // Must be all hex digits
+    if !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    // Decode and check if mostly printable ASCII
+    let decoded: Vec<u8> = (0..s.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect();
+
+    if decoded.is_empty() {
+        return false;
+    }
+
+    let printable = decoded
+        .iter()
+        .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+        .count();
+
+    // At least 70% printable
+    printable * 10 > decoded.len() * 7
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,5 +873,94 @@ mod tests {
             StringKind::ShellCmd
         );
         assert_ne!(classify_string("exec format error"), StringKind::ShellCmd);
+    }
+
+    #[test]
+    fn test_is_hex_encoded_valid() {
+        // Valid hex-encoded strings (from actual malware samples)
+        // "const _0x1c31000=_0x2330d;"
+        assert!(is_hex_encoded(
+            "636F6E7374205F307831633331303030333D5F3078323330643B"
+        ));
+
+        // "function _0x2330d(_0x99a22,_0x58a56){"
+        assert!(is_hex_encoded(
+            "66756E6374696F6E205F307832333064285F3078393961322C5F30783538613536297B"
+        ));
+
+        // "Mozilla/5.0 (Windows NT 10.0; Win64)"
+        assert!(is_hex_encoded(
+            "4D6F7A696C6C612F352E30202857696E646F7773204E542031302E303B2057696E3634"
+        ));
+
+        // Long hex string with spaces
+        assert!(is_hex_encoded(
+            "48656C6C6F20576F726C642120546869732069732061207465737420737472696E67"
+        ));
+    }
+
+    #[test]
+    fn test_is_hex_encoded_invalid() {
+        // Too short
+        assert!(!is_hex_encoded("48656C6C6F"));
+
+        // Odd length (51 chars)
+        assert!(!is_hex_encoded("48656C6C6F20576F726C6421205468697320697320612074657"));
+
+        // Not hex (contains 'G')
+        assert!(!is_hex_encoded(
+            "48656C6C6F20576F726C6421205468697320697320612074657374G1"
+        ));
+
+        // Valid hex but decodes to mostly non-printable
+        assert!(!is_hex_encoded(
+            "00010203040506070809FF00010203040506070809FF00010203040506070809FF"
+        ));
+
+        // All zeros
+        assert!(!is_hex_encoded(
+            "00000000000000000000000000000000000000000000000000000000"
+        ));
+
+        // Real SHA256 hash (should not be detected as hex-encoded text)
+        assert!(!is_hex_encoded(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        ));
+    }
+
+    #[test]
+    fn test_classify_string_hex_encoded() {
+        // Hex-encoded JavaScript (from actual malware)
+        assert_eq!(
+            classify_string("636F6E7374205F307831633331303030333D5F3078323330643B"),
+            StringKind::HexEncoded
+        );
+
+        // Hex-encoded function
+        assert_eq!(
+            classify_string("66756E6374696F6E205F307832333064285F3078393961322C5F30783538613536297B"),
+            StringKind::HexEncoded
+        );
+
+        // Should not be hex-encoded (too short)
+        assert_ne!(classify_string("48656C6C6F"), StringKind::HexEncoded);
+
+        // Should not be hex-encoded (odd length)
+        assert_ne!(
+            classify_string("48656C6C6F20576F726C642120546869732069732061207465737420737472696E6"),
+            StringKind::HexEncoded
+        );
+    }
+
+    #[test]
+    fn test_hex_encoded_decoding() {
+        // Test that hex-encoded strings decode correctly
+        let hex = "48656C6C6F20576F726C64";
+        let decoded: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+            .collect();
+        let text = String::from_utf8(decoded).unwrap();
+        assert_eq!(text, "Hello World");
     }
 }
