@@ -173,6 +173,11 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::Base32;
     }
 
+    // Base85-encoded data (ASCII85/Z85, some compressed formats)
+    if is_base85(s) {
+        return StringKind::Base85;
+    }
+
     // Base64-encoded data (long strings, right charset, proper padding)
     if is_base64(s) {
         return StringKind::Base64;
@@ -789,6 +794,56 @@ fn is_base58(s: &str) -> bool {
 
     // Base58 typically has all three
     has_upper && has_lower && has_digit
+}
+
+/// Check if a string looks like Base85-encoded data (ASCII85 or Z85)
+fn is_base85(s: &str) -> bool {
+    // Must be reasonably long
+    if s.len() < 20 {
+        return false;
+    }
+
+    // Base85 (ASCII85) uses characters from '!' (33) to 'u' (117) = 85 chars
+    // However, environment variables and other plain text might also fall in this range
+    // We need to be more selective to avoid false positives
+
+    // Reject if it looks like an environment variable (all uppercase + underscores)
+    let is_env_var_like = s
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit());
+    if is_env_var_like {
+        return false;
+    }
+
+    // Base85 should have mixed case and punctuation, not just uppercase
+    let has_lowercase = s.chars().any(|c| c.is_ascii_lowercase());
+    let has_punctuation = s.chars().any(|c| c.is_ascii_punctuation());
+
+    // Must have either lowercase or punctuation (encoded data isn't purely uppercase)
+    if !has_lowercase && !has_punctuation {
+        return false;
+    }
+
+    // Check ASCII85 charset (33-117, plus 'z')
+    let ascii85_chars = s
+        .chars()
+        .filter(|&c| {
+            matches!(c, '!'..'v' | 'z')
+        })
+        .count();
+
+    // Must be at least 90% valid ASCII85 characters
+    if ascii85_chars * 10 >= s.len() * 9 {
+        // Must have good character distribution (not just repeated chars)
+        let unique_chars: std::collections::HashSet<char> = s.chars().collect();
+        if unique_chars.len() < 8 {
+            return false;
+        }
+
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]

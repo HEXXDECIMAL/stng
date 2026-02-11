@@ -322,6 +322,8 @@ fn method_priority(m: StringMethod) -> u8 {
         | StringMethod::WideString
         | StringMethod::XorDecode
         | StringMethod::Base64Decode
+        | StringMethod::Base32Decode
+        | StringMethod::Base85Decode
         | StringMethod::HexDecode
         | StringMethod::UrlDecode
         | StringMethod::UnicodeEscapeDecode
@@ -527,6 +529,8 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
         tracing::debug!("Running decoders on {} strings", strings.len());
         let mut decoded = Vec::new();
         decoded.extend(decoders::decode_base64_strings(&strings));
+        decoded.extend(decoders::decode_base32_strings(&strings));
+        decoded.extend(decoders::decode_base85_strings(&strings));
         decoded.extend(decoders::decode_hex_strings(&strings));
         decoded.extend(decoders::decode_url_strings(&strings));
         decoded.extend(decoders::decode_unicode_escape_strings(&strings));
@@ -544,6 +548,8 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                 s.kind == StringKind::EntitlementsXml
                     || s.kind == StringKind::Section
                     || s.kind == StringKind::Base64
+                    || s.kind == StringKind::Base32
+                    || s.kind == StringKind::Base85
                     || s.kind == StringKind::HexEncoded
                     || s.kind == StringKind::UrlEncoded
                     || s.kind == StringKind::UnicodeEscaped
@@ -1033,6 +1039,8 @@ pub fn extract_from_object(
     // This happens BEFORE garbage filtering so we can decode potentially-garbage-looking encodings
     let mut decoded = Vec::new();
     decoded.extend(decoders::decode_base64_strings(&strings));
+    decoded.extend(decoders::decode_base32_strings(&strings));
+    decoded.extend(decoders::decode_base85_strings(&strings));
     decoded.extend(decoders::decode_hex_strings(&strings));
     decoded.extend(decoders::decode_url_strings(&strings));
     decoded.extend(decoders::decode_unicode_escape_strings(&strings));
@@ -1046,6 +1054,8 @@ pub fn extract_from_object(
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
                 || s.kind == StringKind::Base64
+                || s.kind == StringKind::Base32
+                || s.kind == StringKind::Base85
                 || s.kind == StringKind::HexEncoded
                 || s.kind == StringKind::UrlEncoded
                 || s.kind == StringKind::UnicodeEscaped
@@ -1134,6 +1144,8 @@ pub fn extract_from_macho(
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
                 || s.kind == StringKind::Base64
+                || s.kind == StringKind::Base32
+                || s.kind == StringKind::Base85
                 || s.kind == StringKind::HexEncoded
                 || s.kind == StringKind::UrlEncoded
                 || s.kind == StringKind::UnicodeEscaped
@@ -1217,6 +1229,8 @@ pub fn extract_from_elf(
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
                 || s.kind == StringKind::Base64
+                || s.kind == StringKind::Base32
+                || s.kind == StringKind::Base85
                 || s.kind == StringKind::HexEncoded
                 || s.kind == StringKind::UrlEncoded
                 || s.kind == StringKind::UnicodeEscaped
@@ -1279,6 +1293,8 @@ pub fn extract_from_pe(
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
                 || s.kind == StringKind::Base64
+                || s.kind == StringKind::Base32
+                || s.kind == StringKind::Base85
                 || s.kind == StringKind::HexEncoded
                 || s.kind == StringKind::UrlEncoded
                 || s.kind == StringKind::UnicodeEscaped

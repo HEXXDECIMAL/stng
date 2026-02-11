@@ -96,6 +96,10 @@ pub enum StringMethod {
     UrlDecode,
     /// Found via unicode escape decoding (\xHH, \uHHHH, \UHHHHHHHH)
     UnicodeEscapeDecode,
+    /// Found via base32 decoding
+    Base32Decode,
+    /// Found via base85 decoding (ASCII85/Z85)
+    Base85Decode,
     /// Found via stack string construction analysis (immediate values)
     StackString,
     /// Found in Mach-O code signature (entitlements)
@@ -162,6 +166,8 @@ pub enum StringKind {
     Base32,
     /// Base58-encoded data (Bitcoin/cryptocurrency)
     Base58,
+    /// Base85-encoded data (ASCII85/Z85)
+    Base85,
     /// Overlay/appended data after ELF/PE boundary (ASCII/UTF-8)
     Overlay,
     /// Overlay data in UTF-16LE encoding (common in malware configs)
@@ -209,6 +215,7 @@ impl StringKind {
             | StringKind::UrlEncoded
             | StringKind::Base32
             | StringKind::Base58
+            | StringKind::Base85
             | StringKind::Overlay
             | StringKind::OverlayWide
             | StringKind::StackString
@@ -259,6 +266,7 @@ impl StringKind {
             StringKind::UrlEncoded => "urlenc",
             StringKind::Base32 => "base32",
             StringKind::Base58 => "base58",
+            StringKind::Base85 => "base85",
             StringKind::Overlay => "overlay",
             StringKind::OverlayWide => "overlay:16LE",
             StringKind::StackString => "stack",

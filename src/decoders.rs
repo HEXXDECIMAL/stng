@@ -4,6 +4,7 @@
 //! Each decoder attempts to decode strings and validates the result to minimize false positives.
 
 use crate::{ExtractedString, StringKind, StringMethod};
+use data_encoding::{BASE32, BASE32_NOPAD};
 
 /// Minimum length for base64 strings to attempt decoding
 pub const MIN_BASE64_LENGTH: usize = 16;
@@ -365,6 +366,238 @@ fn is_likely_unicode_escaped(s: &str) -> bool {
     s.contains("\\x") || s.contains("\\u") || s.contains("\\U")
 }
 
+/// Decode base32-encoded strings from a list of extracted strings.
+///
+/// Returns a vector of newly decoded strings with `StringMethod::Base32Decode`.
+pub fn decode_base32_strings(strings: &[ExtractedString]) -> Vec<ExtractedString> {
+    strings
+        .iter()
+        .filter(|s| s.kind == StringKind::Base32 || is_likely_base32(&s.value))
+        .filter_map(|s| decode_base32_string(s))
+        .collect()
+}
+
+/// Attempt to decode a single base32 string.
+fn decode_base32_string(s: &ExtractedString) -> Option<ExtractedString> {
+    if s.value.len() < 16 {
+        return None;
+    }
+
+    // Try decoding with padding
+    let decoded = BASE32
+        .decode(s.value.trim().as_bytes())
+        .or_else(|_| BASE32_NOPAD.decode(s.value.trim().as_bytes()))
+        .ok()?;
+
+    // Check size limit
+    if decoded.len() > MAX_DECODED_SIZE {
+        return None;
+    }
+
+    // Validate decoded content (must be printable ASCII or valid UTF-8)
+    let decoded_str = if decoded
+        .iter()
+        .all(|&b| b.is_ascii() && (!b.is_ascii_control() || b == b'\n' || b == b'\r' || b == b'\t'))
+    {
+        // All printable ASCII (+ newlines/tabs)
+        String::from_utf8_lossy(&decoded).to_string()
+    } else if let Ok(utf8_str) = std::str::from_utf8(&decoded) {
+        // Valid UTF-8
+        utf8_str.to_string()
+    } else {
+        // Not valid text - skip
+        return None;
+    };
+
+    // Reject if decoded string is too short or just whitespace
+    let trimmed = decoded_str.trim();
+    if trimmed.len() < 4 {
+        return None;
+    }
+
+    // Classify before moving
+    let kind = classify_decoded_string(&decoded_str);
+
+    // Create new ExtractedString with decoded content
+    Some(ExtractedString {
+        value: decoded_str,
+        data_offset: s.data_offset,
+        section: s.section.clone(),
+        method: StringMethod::Base32Decode,
+        kind,
+        library: None,
+        fragments: None,
+    })
+}
+
+/// Decode base85-encoded strings from a list of extracted strings.
+///
+/// Returns a vector of newly decoded strings with `StringMethod::Base85Decode`.
+pub fn decode_base85_strings(strings: &[ExtractedString]) -> Vec<ExtractedString> {
+    strings
+        .iter()
+        .filter(|s| s.kind == StringKind::Base85 || is_likely_base85(&s.value))
+        .filter_map(|s| decode_base85_string(s))
+        .collect()
+}
+
+/// Attempt to decode a single base85 string (ASCII85 format).
+fn decode_base85_string(s: &ExtractedString) -> Option<ExtractedString> {
+    if s.value.len() < 20 {
+        return None;
+    }
+
+    // Try ASCII85 decoding
+    let input = s.value.trim();
+    let decoded = decode_ascii85(input)?;
+
+    // Check size limit
+    if decoded.len() > MAX_DECODED_SIZE {
+        return None;
+    }
+
+    // Validate decoded content (must be printable ASCII or valid UTF-8)
+    let decoded_str = if decoded
+        .iter()
+        .all(|&b| b.is_ascii() && (!b.is_ascii_control() || b == b'\n' || b == b'\r' || b == b'\t'))
+    {
+        // All printable ASCII (+ newlines/tabs)
+        String::from_utf8_lossy(&decoded).to_string()
+    } else if let Ok(utf8_str) = std::str::from_utf8(&decoded) {
+        // Valid UTF-8
+        utf8_str.to_string()
+    } else {
+        // Not valid text - skip
+        return None;
+    };
+
+    // Reject if decoded string is too short or just whitespace
+    let trimmed = decoded_str.trim();
+    if trimmed.len() < 4 {
+        return None;
+    }
+
+    // Classify before moving
+    let kind = classify_decoded_string(&decoded_str);
+
+    Some(ExtractedString {
+        value: decoded_str,
+        data_offset: s.data_offset,
+        section: s.section.clone(),
+        method: StringMethod::Base85Decode,
+        kind,
+        library: None,
+        fragments: None,
+    })
+}
+
+/// Decode ASCII85 encoded data.
+/// ASCII85 uses characters from '!' (33) to 'u' (117), plus 'z' for four zero bytes.
+fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
+    let mut result = Vec::new();
+    let mut group = Vec::new();
+
+    for ch in s.chars() {
+        match ch {
+            // Skip ASCII85 delimiters and whitespace first
+            '<' | '~' | '>' => {
+                // Skip ASCII85 delimiters (<~ and ~>)
+                continue;
+            }
+            ' ' | '\t' | '\n' | '\r' => {
+                // Skip whitespace
+                continue;
+            }
+            'z' => {
+                // 'z' represents four zero bytes (shorthand)
+                if !group.is_empty() {
+                    return None; // 'z' must not appear in the middle of a group
+                }
+                result.extend_from_slice(&[0u8; 4]);
+            }
+            '!' ..= 'u' => {
+                group.push((ch as u8) - b'!');
+                if group.len() == 5 {
+                    // Decode 5 base85 digits to 4 bytes
+                    let mut value: u32 = 0;
+                    for &digit in &group {
+                        value = value * 85 + u32::from(digit);
+                    }
+                    result.extend_from_slice(&value.to_be_bytes());
+                    group.clear();
+                }
+            }
+            _ => {
+                // Invalid character
+                return None;
+            }
+        }
+    }
+
+    // Handle remaining partial group
+    if !group.is_empty() {
+        // Pad with 'u' (84) to make 5 digits
+        while group.len() < 5 {
+            group.push(84);
+        }
+
+        let mut value: u32 = 0;
+        for &digit in &group {
+            value = value * 85 + u32::from(digit);
+        }
+
+        let bytes = value.to_be_bytes();
+        let output_len = group.len() - 1; // Output n-1 bytes for n input characters
+        result.extend_from_slice(&bytes[..output_len]);
+    }
+
+    Some(result)
+}
+
+/// Check if a string looks like base32-encoded data.
+fn is_likely_base32(s: &str) -> bool {
+    if s.len() < 16 {
+        return false;
+    }
+
+    // Base32 uses A-Z and 2-7 (RFC 4648), optionally with = padding
+    let base32_chars = s
+        .chars()
+        .filter(|&c| c.is_ascii_uppercase() || matches!(c, '2'..='7') || c == '=')
+        .count();
+
+    // At least 90% valid Base32 characters
+    if base32_chars * 10 < s.len() * 9 {
+        return false;
+    }
+
+    // Must have letters (not just digits)
+    let has_letters = s.chars().any(|c| c.is_ascii_uppercase());
+    if !has_letters {
+        return false;
+    }
+
+    // Must have some digits 2-7 (pure letters would be plain text)
+    let has_digits = s.chars().any(|c| matches!(c, '2'..='7'));
+    has_digits
+}
+
+/// Check if a string looks like base85-encoded data.
+fn is_likely_base85(s: &str) -> bool {
+    if s.len() < 20 {
+        return false;
+    }
+
+    // ASCII85 uses '!' to 'u' plus 'z'
+    let base85_chars = s
+        .chars()
+        .filter(|&c| matches!(c, '!'..'v' | 'z'))
+        .count();
+
+    // At least 80% valid ASCII85 characters
+    base85_chars * 10 >= s.len() * 8
+}
+
 /// Classify a decoded string into a StringKind.
 fn classify_decoded_string(_s: &str) -> StringKind {
     // Reuse stng's classification if available
@@ -456,5 +689,96 @@ mod tests {
         assert!(is_likely_hex("48656c6c6f20576f726c6421"));
         assert!(!is_likely_hex("not hex!"));
         assert!(!is_likely_hex("48656c6c6f2")); // odd length
+    }
+
+    #[test]
+    fn test_base32_decode() {
+        let input = ExtractedString {
+            value: "JBSWY3DPEBLW64TMMQ======".to_string(), // "Hello World"
+            data_offset: 0,
+            section: None,
+            method: StringMethod::RawScan,
+            kind: StringKind::Base32,
+            library: None,
+            fragments: None,
+        };
+
+        let result = decode_base32_string(&input).unwrap();
+        assert_eq!(result.value, "Hello World");
+        assert_eq!(result.method, StringMethod::Base32Decode);
+    }
+
+    #[test]
+    fn test_base32_decode_nopad() {
+        let input = ExtractedString {
+            value: "JBSWY3DPEBLW64TMMQ".to_string(), // "Hello World" without padding
+            data_offset: 0,
+            section: None,
+            method: StringMethod::RawScan,
+            kind: StringKind::Base32,
+            library: None,
+            fragments: None,
+        };
+
+        let result = decode_base32_string(&input).unwrap();
+        assert_eq!(result.value, "Hello World");
+        assert_eq!(result.method, StringMethod::Base32Decode);
+    }
+
+    #[test]
+    fn test_base32_decode_long() {
+        // Test with actual long base32 strings from real use
+        let input = ExtractedString {
+            value: "KRUGS4ZANFZSAYJAONSWG4TFOQQG2ZLTONQWOZJAMZXXEIDUMVZXI2LOM4======".to_string(),
+            data_offset: 0,
+            section: None,
+            method: StringMethod::RawScan,
+            kind: StringKind::Base32,
+            library: None,
+            fragments: None,
+        };
+
+        let result = decode_base32_string(&input).unwrap();
+        assert_eq!(result.value, "This is a secret message for testing");
+        assert_eq!(result.method, StringMethod::Base32Decode);
+    }
+
+    #[test]
+    fn test_base85_decode() {
+        // Test with a simple known base85 string
+        // We'll test the raw decoder function directly
+        let decoded = decode_ascii85("9jqo^").unwrap();
+        // 9jqo^ decodes to "Man " in ASCII85
+        assert_eq!(decoded, b"Man ");
+    }
+
+    #[test]
+    fn test_ascii85_decode_with_z() {
+        // Test 'z' shorthand for four zero bytes
+        let decoded = decode_ascii85("z").unwrap();
+        assert_eq!(decoded, vec![0u8; 4]);
+    }
+
+    #[test]
+    fn test_ascii85_decode_with_delimiters() {
+        // Test that delimiters are properly skipped
+        let decoded = decode_ascii85("<~9jqo^~>").unwrap();
+        assert_eq!(decoded, b"Man ");
+    }
+
+    #[test]
+    fn test_is_likely_base32() {
+        assert!(is_likely_base32("JBSWY3DPEBLW64TMMQ======"));
+        assert!(is_likely_base32("MFRGG3DFMZTWQ2LK"));
+        assert!(!is_likely_base32("not base32!"));
+        assert!(!is_likely_base32("short"));
+        assert!(!is_likely_base32("ABCDEFGHIJKLMNOP")); // no digits 2-7
+    }
+
+    #[test]
+    fn test_is_likely_base85() {
+        assert!(is_likely_base85("87cURD]i,\"Ebo7EXAMPLE"));
+        assert!(!is_likely_base85("not base85!"));
+        assert!(!is_likely_base85("short"));
     }
 }
