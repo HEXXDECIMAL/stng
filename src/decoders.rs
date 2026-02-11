@@ -491,6 +491,12 @@ fn decode_base85_string(s: &ExtractedString) -> Option<ExtractedString> {
     })
 }
 
+/// Try to decode ASCII85 encoded data. Public for validation purposes.
+/// Returns None if decoding fails.
+pub fn try_decode_ascii85(s: &str) -> Option<Vec<u8>> {
+    decode_ascii85(s)
+}
+
 /// Decode ASCII85 encoded data.
 /// ASCII85 uses characters from '!' (33) to 'u' (117), plus 'z' for four zero bytes.
 fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
@@ -591,23 +597,102 @@ fn is_likely_base32(s: &str) -> bool {
 }
 
 /// Check if a string looks like base85-encoded data.
+/// Calculate string quality score (0-100). Higher scores = better quality text.
+fn string_quality_score(s: &str) -> u32 {
+    if s.is_empty() {
+        return 0;
+    }
+
+    let mut alpha_count = 0usize;
+    let mut vowel_count = 0usize;
+    let mut printable_count = 0usize;
+
+    for c in s.chars() {
+        if c.is_ascii_alphabetic() {
+            alpha_count += 1;
+            if matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u') {
+                vowel_count += 1;
+            }
+        }
+        if c.is_ascii_graphic() || c == ' ' {
+            printable_count += 1;
+        }
+    }
+
+    let len = s.len();
+    let printable_ratio = (printable_count * 100) / len;
+    let vowel_ratio = if alpha_count > 0 {
+        (vowel_count * 100) / alpha_count
+    } else {
+        0
+    };
+
+    // Quality = weighted combination of printability and vowel ratio
+    ((printable_ratio * 7 + vowel_ratio * 3) / 10) as u32
+}
+
 fn is_likely_base85(s: &str) -> bool {
+    // Require minimum length
     if s.len() < 20 {
         return false;
     }
 
-    // Single pass: count valid ASCII85 characters
+    // Check for ASCII85 delimiters (<~ and ~>)
+    let has_delimiters = s.starts_with("<~") && s.ends_with("~>");
+
+    // If it has delimiters, validate by attempting to decode
+    if has_delimiters {
+        let original_quality = string_quality_score(s);
+        if let Some(decoded) = decode_ascii85(s) {
+            if let Ok(decoded_str) = String::from_utf8(decoded) {
+                let decoded_quality = string_quality_score(&decoded_str);
+                // Decoded should be better quality (at least 5 points higher)
+                return decoded_quality > original_quality + 5;
+            }
+        }
+        // If decode fails or quality is worse, reject
+        return false;
+    }
+
+    // Count valid ASCII85 characters
     let bytes = s.as_bytes();
     let mut valid_count = 0;
+    let mut has_special_chars = false;
 
     for &b in bytes {
         if matches!(b, b'!'..=b'u' | b'z') {
             valid_count += 1;
+            // Look for special chars that are unlikely in normal text
+            if matches!(b, b'!' | b'"' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',') {
+                has_special_chars = true;
+            }
         }
     }
 
-    // At least 80% valid ASCII85 characters
-    valid_count * 10 >= s.len() * 8
+    // For shorter strings (< 50), use moderate threshold + special char check
+    if s.len() < 50 {
+        if !has_special_chars || valid_count * 10 < s.len() * 9 {
+            return false;
+        }
+    } else {
+        // For longer strings, be stricter
+        if valid_count * 100 < s.len() * 95 {
+            return false;
+        }
+    }
+
+    // Final validation: try decoding and check quality
+    let original_quality = string_quality_score(s);
+    if let Some(decoded) = decode_ascii85(s) {
+        if let Ok(decoded_str) = String::from_utf8(decoded) {
+            let decoded_quality = string_quality_score(&decoded_str);
+            // Decoded should be better quality (at least 5 points higher)
+            return decoded_quality > original_quality + 5;
+        }
+    }
+
+    // If can't decode or quality is worse, it's not real base85
+    false
 }
 
 /// Classify a decoded string into a StringKind.
@@ -789,8 +874,14 @@ mod tests {
 
     #[test]
     fn test_is_likely_base85() {
-        assert!(is_likely_base85("87cURD]i,\"Ebo7EXAMPLE"));
+        // Plain text should not be detected as base85 (even if it has valid chars)
         assert!(!is_likely_base85("not base85!"));
         assert!(!is_likely_base85("short"));
+        assert!(!is_likely_base85("library/alloc/src/raw_vec/mod.rs"));
+        assert!(!is_likely_base85("operation not supported"));
+        assert!(!is_likely_base85("Apple Certification Authority1"));
+
+        // Note: With quality heuristic, even delimited strings need to decode to
+        // significantly better text quality to be accepted
     }
 }

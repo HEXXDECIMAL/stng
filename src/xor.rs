@@ -1901,6 +1901,11 @@ fn expand_xor_string(
     let new_start = start + trim_start;
     let trimmed_end = new_start + trimmed.len();
 
+    // Additional validation for XOR strings: reject strings with unusual punctuation
+    if !is_valid_xor_string(&s) || !is_valid_xor_string(trimmed) {
+        return None;
+    }
+
     if is_meaningful_string(trimmed) {
         Some((trimmed.to_string(), new_start, trimmed_end))
     } else if is_meaningful_string(&s) {
@@ -1988,6 +1993,11 @@ fn expand_xor_wide_string(
         let lo = data[i] ^ key;
         decoded.push(lo as char);
         i += 2;
+    }
+
+    // Reject strings with unusual punctuation
+    if !is_valid_xor_string(&decoded) {
+        return None;
     }
 
     if is_meaningful_string(&decoded) {
@@ -2103,6 +2113,84 @@ fn is_printable_char(b: u8) -> bool {
 
 /// Check if a string looks meaningful (not random garbage).
 /// This is STRICT for XOR detection - we want high confidence, low false positives.
+/// Check if a decoded XOR string is valid (not garbage with unusual punctuation).
+/// Returns true if the string passes basic sanity checks.
+fn is_valid_xor_string(s: &str) -> bool {
+    // Check for specific malicious indicators (not just any system path)
+    let has_shell_command = s.contains("osascript") || s.contains("screencapture") ||
+        s.contains("bash ") || s.contains("sh -") || s.contains("curl ") ||
+        s.contains("wget ") || s.contains("chmod ");
+
+    let has_suspicious_path = s.contains("Ethereum/keystore") ||
+        s.contains("/tmp/") && (s.contains(".sh") || s.contains("payload")) ||
+        s.contains("/etc/passwd") || s.contains("/etc/shadow");
+
+    let has_suspicious_url = s.contains("://") && !s.contains("apple.com");
+
+    // Check for unicode escape sequences (legitimate obfuscation)
+    let has_unicode_escapes = s.contains("\\x") || s.contains("\\u");
+
+    // Check for shell heredoc patterns
+    let has_heredoc = s.contains("<<") && (s.contains("EOF") || s.contains("END"));
+
+    // Count truly bad punctuation (control chars and unusual symbols)
+    // Allow newlines in heredocs
+    let control_chars = s.chars().filter(|&c| {
+        if has_heredoc && c == '\n' {
+            return false;
+        }
+        matches!(c, '\x00'..='\x1f' | '\x7f')
+    }).count();
+
+    // If string has SPECIFIC malicious indicators OR encoding, allow them
+    if has_shell_command || has_suspicious_path || has_suspicious_url || has_unicode_escapes || has_heredoc {
+        // Only reject if mostly control characters (> 30%)
+        return control_chars * 3 < s.len();
+    }
+
+    // For all other strings, apply strict filtering
+    // But allow certain metacharacters in specific contexts
+    let has_xml_tags = s.starts_with('<') && s.ends_with('>') && !s.contains(' ');
+    let has_shell_metacharacters = s.contains('<') || s.contains('>') || s.contains('|');
+    let looks_like_shell = has_shell_metacharacters && (
+        s.contains("EOF") || s.contains("END") || s.contains("&") ||
+        s.contains(">>") || s.contains("<<") || s.contains("/dev/")
+    );
+
+    let bad_punct_count = s.chars().filter(|&c| {
+        // Allow <, > for XML tags or shell commands
+        if (has_xml_tags || looks_like_shell) && matches!(c, '<' | '>') {
+            return false;
+        }
+        // Allow | for shell commands
+        if looks_like_shell && c == '|' {
+            return false;
+        }
+        matches!(c,
+            '^' | '~' | '`' | '[' | ']' | '{' | '}' | '<' | '>' | '|' |
+            '\x00'..='\x1f' | '\x7f'  // Control characters
+        )
+    }).count();
+
+    // Count "questionable" punctuation that can appear in valid strings
+    let questionable_punct = s.chars().filter(|&c| {
+        matches!(c, '$' | '#' | '@' | '!' | '"' | '\'' | '\\')
+    }).count();
+
+    // Reject if we have ANY bad punctuation characters
+    if bad_punct_count > 0 {
+        return false;
+    }
+
+    // Also reject strings with excessive "questionable" punctuation
+    // Allow max 2 questionable punctuation chars, or 20% of string length
+    if questionable_punct > 2 && questionable_punct * 5 > s.len() {
+        return false;
+    }
+
+    true
+}
+
 fn is_meaningful_string(s: &str) -> bool {
     if s.is_empty() {
         return false;
@@ -2542,6 +2630,11 @@ const KNOWN_PATH_PREFIXES: &[&str] = &[
 
 /// Classify an XOR-decoded string. Returns None if it doesn't look interesting.
 fn classify_xor_string(s: &str) -> Option<StringKind> {
+    // First check if string has invalid punctuation characters
+    if !is_valid_xor_string(s) {
+        return None;
+    }
+
     let lower = s.to_ascii_lowercase();
 
     // Check for well-known suspicious paths (even with garbage around them)
