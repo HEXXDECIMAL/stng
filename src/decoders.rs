@@ -521,7 +521,9 @@ fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
                     // Decode 5 base85 digits to 4 bytes
                     let mut value: u32 = 0;
                     for &digit in &group {
-                        value = value * 85 + u32::from(digit);
+                        value = value.checked_mul(85)
+                            .and_then(|v| v.checked_add(u32::from(digit)))
+                            .filter(|&v| v <= u32::MAX)?;
                     }
                     result.extend_from_slice(&value.to_be_bytes());
                     group.clear();
@@ -536,6 +538,7 @@ fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
 
     // Handle remaining partial group
     if !group.is_empty() {
+        let original_len = group.len();
         // Pad with 'u' (84) to make 5 digits
         while group.len() < 5 {
             group.push(84);
@@ -543,11 +546,13 @@ fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
 
         let mut value: u32 = 0;
         for &digit in &group {
-            value = value * 85 + u32::from(digit);
+            value = value.checked_mul(85)
+                .and_then(|v| v.checked_add(u32::from(digit)))
+                .filter(|&v| v <= u32::MAX)?;
         }
 
         let bytes = value.to_be_bytes();
-        let output_len = group.len() - 1; // Output n-1 bytes for n input characters
+        let output_len = original_len - 1; // Output n-1 bytes for n input characters
         result.extend_from_slice(&bytes[..output_len]);
     }
 
@@ -560,26 +565,29 @@ fn is_likely_base32(s: &str) -> bool {
         return false;
     }
 
-    // Base32 uses A-Z and 2-7 (RFC 4648), optionally with = padding
-    let base32_chars = s
-        .chars()
-        .filter(|&c| c.is_ascii_uppercase() || matches!(c, '2'..='7') || c == '=')
-        .count();
+    // Single pass validation using bytes
+    let bytes = s.as_bytes();
+    let mut valid_count = 0;
+    let mut has_letters = false;
+    let mut has_digits = false;
 
-    // At least 90% valid Base32 characters
-    if base32_chars * 10 < s.len() * 9 {
-        return false;
+    for &b in bytes {
+        match b {
+            b'A'..=b'Z' => {
+                has_letters = true;
+                valid_count += 1;
+            }
+            b'2'..=b'7' => {
+                has_digits = true;
+                valid_count += 1;
+            }
+            b'=' => valid_count += 1,
+            _ => {}
+        }
     }
 
-    // Must have letters (not just digits)
-    let has_letters = s.chars().any(|c| c.is_ascii_uppercase());
-    if !has_letters {
-        return false;
-    }
-
-    // Must have some digits 2-7 (pure letters would be plain text)
-    let has_digits = s.chars().any(|c| matches!(c, '2'..='7'));
-    has_digits
+    // Must have both letters and digits
+    has_letters && has_digits && (valid_count * 10 >= s.len() * 9)
 }
 
 /// Check if a string looks like base85-encoded data.
@@ -588,14 +596,18 @@ fn is_likely_base85(s: &str) -> bool {
         return false;
     }
 
-    // ASCII85 uses '!' to 'u' plus 'z'
-    let base85_chars = s
-        .chars()
-        .filter(|&c| matches!(c, '!'..'v' | 'z'))
-        .count();
+    // Single pass: count valid ASCII85 characters
+    let bytes = s.as_bytes();
+    let mut valid_count = 0;
+
+    for &b in bytes {
+        if matches!(b, b'!'..=b'u' | b'z') {
+            valid_count += 1;
+        }
+    }
 
     // At least 80% valid ASCII85 characters
-    base85_chars * 10 >= s.len() * 8
+    valid_count * 10 >= s.len() * 8
 }
 
 /// Classify a decoded string into a StringKind.

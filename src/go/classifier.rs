@@ -498,32 +498,32 @@ fn is_base64(s: &str) -> bool {
         return false;
     }
 
+    // Fast byte-based checks - single pass
+    let bytes = s.as_bytes();
+    let mut has_upper = false;
+    let mut has_lower = false;
+    let mut has_digit = false;
+
+    for &b in bytes {
+        match b {
+            // Check for invalid patterns in a single pass
+            b' ' => return false, // No spaces
+            b'A'..=b'Z' => has_upper = true,
+            b'a'..=b'z' => has_lower = true,
+            b'0'..=b'9' => has_digit = true,
+            b'+' | b'/' | b'=' => {}
+            _ => return false, // Invalid character
+        }
+    }
+
+    // Must have mixed case and digits (good entropy)
+    if !has_upper || !has_lower || !has_digit {
+        return false;
+    }
+
     // Exclude sequential patterns (alphabet lookups, test data)
-    if s.contains("ABCDE") || s.contains("012345") {
-        return false;
-    }
-
-    // Must not contain spaces or common text patterns
-    if s.contains(' ') || s.contains("the ") || s.contains("and ") {
-        return false;
-    }
-
-    // Check base64 charset: A-Z, a-z, 0-9, +, /, =
-    let valid_b64 = s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
-
-    if !valid_b64 {
-        return false;
-    }
-
-    // Should have mixed case and possibly end with = padding
-    let has_upper = s.chars().any(|c| c.is_ascii_uppercase());
-    let has_lower = s.chars().any(|c| c.is_ascii_lowercase());
-    let has_digit = s.chars().any(|c| c.is_ascii_digit());
-
-    // Base64 typically has good entropy - mixed chars
-    has_upper && has_lower && has_digit
+    // Only check if we've passed other tests (cheaper to do after)
+    !s.contains("ABCDE") && !s.contains("012345") && !s.contains("the ") && !s.contains("and ")
 }
 
 /// Check if a string looks like hex-encoded ASCII data
@@ -730,38 +730,36 @@ fn is_base32(s: &str) -> bool {
         return false;
     }
 
-    // Base32 uses A-Z and 2-7 (RFC 4648)
-    // Padding with = is optional
-    let base32_chars = s
-        .chars()
-        .filter(|&c| {
-            c.is_ascii_uppercase() || matches!(c, '2'..='7') || c == '='
-        })
-        .count();
+    // Single pass: validate all constraints at once
+    let bytes = s.as_bytes();
+    let mut valid_count = 0;
+    let mut has_letters = false;
+    let mut has_digits = false;
+
+    for &b in bytes {
+        match b {
+            b'A'..=b'Z' => {
+                has_letters = true;
+                valid_count += 1;
+            }
+            b'2'..=b'7' => {
+                has_digits = true;
+                valid_count += 1;
+            }
+            b'=' => valid_count += 1, // Padding
+            // Invalid characters for Base32
+            b'0' | b'1' | b'8' | b'9' | b'a'..=b'z' => return false,
+            _ => {} // Other invalid chars reduce the valid percentage
+        }
+    }
+
+    // Must have both letters and digits (not pure text or pure numbers)
+    if !has_letters || !has_digits {
+        return false;
+    }
 
     // At least 90% valid Base32 characters
-    if base32_chars * 10 < s.len() * 9 {
-        return false;
-    }
-
-    // Must have uppercase letters (not just digits)
-    let has_letters = s.chars().any(|c| c.is_ascii_uppercase());
-    if !has_letters {
-        return false;
-    }
-
-    // Must have some digits 2-7 (pure letters would be plain text)
-    let has_digits = s.chars().any(|c| matches!(c, '2'..='7'));
-    if !has_digits {
-        return false;
-    }
-
-    // Check for invalid characters that would never appear in Base32
-    let has_invalid = s.chars().any(|c| {
-        c.is_ascii_lowercase() || matches!(c, '0' | '1' | '8' | '9')
-    });
-
-    !has_invalid
+    valid_count * 10 >= s.len() * 9
 }
 
 /// Check if a string looks like Base58-encoded data (Bitcoin alphabet)
@@ -771,28 +769,25 @@ fn is_base58(s: &str) -> bool {
         return false;
     }
 
+    // Single pass validation
     // Base58 alphabet: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
     // Excludes: 0, O, I, l (confusing characters)
-    let base58_chars = s
-        .chars()
-        .filter(|&c| {
-            matches!(c, '1'..='9' | 'A'..='H' | 'J'..='N' | 'P'..='Z' | 'a'..='k' | 'm'..='z')
-        })
-        .count();
+    let bytes = s.as_bytes();
+    let mut has_upper = false;
+    let mut has_lower = false;
+    let mut has_digit = false;
 
-    // Must be 100% valid Base58 characters
-    if base58_chars != s.len() {
-        return false;
+    for &b in bytes {
+        match b {
+            b'1'..=b'9' => has_digit = true,
+            b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' => has_upper = true,
+            b'a'..=b'k' | b'm'..=b'z' => has_lower = true,
+            // Invalid characters for Base58 (0, O, I, l)
+            _ => return false,
+        }
     }
 
-    // Must have mixed case (otherwise could be other encoding)
-    let has_upper = s.chars().any(|c| c.is_ascii_uppercase());
-    let has_lower = s.chars().any(|c| c.is_ascii_lowercase());
-
-    // Must have digits
-    let has_digit = s.chars().any(|c| c.is_ascii_digit());
-
-    // Base58 typically has all three
+    // Base58 typically has all three types
     has_upper && has_lower && has_digit
 }
 
@@ -803,47 +798,59 @@ fn is_base85(s: &str) -> bool {
         return false;
     }
 
-    // Base85 (ASCII85) uses characters from '!' (33) to 'u' (117) = 85 chars
-    // However, environment variables and other plain text might also fall in this range
-    // We need to be more selective to avoid false positives
+    // Single pass validation
+    // ASCII85 uses '!' (33) to 'u' (117), plus 'z' for zero bytes
+    let bytes = s.as_bytes();
+    let mut valid_count = 0;
+    let mut has_lowercase = false;
+    let mut has_punctuation = false;
+    let mut is_env_var_like = true;
+    let mut unique_char_count = 0;
+    let mut seen_chars = 0u128; // Bitmap for tracking up to 128 unique chars efficiently
 
-    // Reject if it looks like an environment variable (all uppercase + underscores)
-    let is_env_var_like = s
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit());
+    for &b in bytes {
+        // Check if valid ASCII85 character
+        if matches!(b, b'!'..=b'u' | b'z') {
+            valid_count += 1;
+
+            // Track character diversity without allocation
+            let bit_pos = b as u32;
+            if bit_pos < 128 && (seen_chars & (1u128 << bit_pos)) == 0 {
+                seen_chars |= 1u128 << bit_pos;
+                unique_char_count += 1;
+            }
+        }
+
+        // Track character types for filtering false positives
+        match b {
+            b'a'..=b'z' => has_lowercase = true,
+            b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~' => has_punctuation = true,
+            _ => {}
+        }
+
+        // Check if it could be an environment variable
+        if !matches!(b, b'A'..=b'Z' | b'_' | b'0'..=b'9') {
+            is_env_var_like = false;
+        }
+    }
+
+    // Reject environment variable patterns
     if is_env_var_like {
         return false;
     }
 
-    // Base85 should have mixed case and punctuation, not just uppercase
-    let has_lowercase = s.chars().any(|c| c.is_ascii_lowercase());
-    let has_punctuation = s.chars().any(|c| c.is_ascii_punctuation());
-
-    // Must have either lowercase or punctuation (encoded data isn't purely uppercase)
+    // Must have lowercase or punctuation (not just uppercase)
     if !has_lowercase && !has_punctuation {
         return false;
     }
 
-    // Check ASCII85 charset (33-117, plus 'z')
-    let ascii85_chars = s
-        .chars()
-        .filter(|&c| {
-            matches!(c, '!'..'v' | 'z')
-        })
-        .count();
-
     // Must be at least 90% valid ASCII85 characters
-    if ascii85_chars * 10 >= s.len() * 9 {
-        // Must have good character distribution (not just repeated chars)
-        let unique_chars: std::collections::HashSet<char> = s.chars().collect();
-        if unique_chars.len() < 8 {
-            return false;
-        }
-
-        return true;
+    if valid_count * 10 < s.len() * 9 {
+        return false;
     }
 
-    false
+    // Must have good character distribution (at least 8 unique chars)
+    unique_char_count >= 8
 }
 
 #[cfg(test)]
@@ -1535,5 +1542,110 @@ mod tests {
             classify_string("1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa"),
             StringKind::Base58
         );
+    }
+
+    #[test]
+    fn test_is_base64_valid() {
+        // Valid base64 strings
+        assert!(is_base64("SGVsbG8gV29ybGQhCg=="));
+        assert!(is_base64("VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdlIGZvciB0ZXN0aW5n"));
+        assert!(is_base64("YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw"));
+    }
+
+    #[test]
+    fn test_is_base64_invalid() {
+        // Too short
+        assert!(!is_base64("SGVsbG8="));
+
+        // Not multiple of 4
+        assert!(!is_base64("SGVsbG8gV29ybGQhCg"));
+
+        // Contains spaces
+        assert!(!is_base64("SGVs bG8g V29y bGQh Cg=="));
+
+        // Sequential patterns (test data)
+        assert!(!is_base64("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"));
+
+        // Plain text patterns
+        assert!(!is_base64("the quick brown fox ===="));
+
+        // Missing mixed case
+        assert!(!is_base64("AAAAAAAAAAAAAAAAAAAA")); // all uppercase
+        assert!(!is_base64("aaaaaaaaaaaaaaaaaaaaaa==")); // all lowercase
+        assert!(!is_base64("1234567890123456789012345678")); // all digits
+
+        // Invalid characters
+        assert!(!is_base64("SGVsbG8gV29ybGQh@g==")); // @ is not valid
+    }
+
+    #[test]
+    fn test_is_base85_valid() {
+        // Valid ASCII85 strings with good diversity (no delimiters in classifier)
+        assert!(is_base85("9jqo^BlbD-BleB1DJ+*+EGm4CKl!!WoC"));
+        assert!(is_base85("87cURD]i,\"Ebo7EXAMPLE"));
+    }
+
+    #[test]
+    fn test_is_base85_invalid() {
+        // Too short
+        assert!(!is_base85("9jqo^BlbD"));
+
+        // Environment variable pattern (all uppercase + underscores)
+        assert!(!is_base85("DYLD_INSERT_LIBRARIES"));
+        assert!(!is_base85("LD_PRELOAD_PATH_VAR"));
+
+        // No lowercase or punctuation (just uppercase)
+        assert!(!is_base85("ABCDEFGHIJKLMNOPQRST"));
+
+        // Poor character diversity (< 8 unique chars)
+        assert!(!is_base85("!!!!!!!!!!!!!!!!!!!!!"));
+        assert!(!is_base85("aaaaaaaaaaaaaaaaaaaaaa"));
+
+        // Too few valid ASCII85 characters (< 90%)
+        assert!(!is_base85("regular text with spaces here"));
+    }
+
+    #[test]
+    fn test_base32_performance_edge_cases() {
+        // All valid base32 chars but no digits - should fail
+        assert!(!is_base32("AAAABBBBCCCCDDDD"));
+
+        // All digits but no letters - should fail
+        assert!(!is_base32("2222333344445555"));
+
+        // Contains invalid digits (0, 1, 8, 9)
+        assert!(!is_base32("ABCD0123EFGH89IJ"));
+
+        // Contains lowercase
+        assert!(!is_base32("ABCDEFGHabcdefgh"));
+    }
+
+    #[test]
+    fn test_base58_performance_edge_cases() {
+        // Missing uppercase
+        assert!(!is_base58("abcdefghijklmnopqrstuvwxyz123456"));
+
+        // Missing lowercase
+        assert!(!is_base58("ABCDEFGHJKMNPQRSTUVWXYZ123456"));
+
+        // Missing digits
+        assert!(!is_base58("ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"));
+
+        // Contains excluded characters (0, O, I, l)
+        assert!(!is_base58("1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa")); // has 0
+        assert!(!is_base58("1A1zP1eP5QGefi2DMPOfTL5SLmv7DivfNa")); // has O
+        assert!(!is_base58("1A1zP1eP5QGefi2DMPIfTL5SLmv7DivfNa")); // has I
+        assert!(!is_base58("1A1zP1eP5QGefi2DMPlfTL5SLmv7DivfNa")); // has l
+    }
+
+    #[test]
+    fn test_base64_performance_single_pass() {
+        // This test ensures the optimization works - it should reject quickly
+        // on first invalid character without scanning the whole string
+        let invalid_at_start = format!("@{}", "A".repeat(100));
+        assert!(!is_base64(&invalid_at_start));
+
+        let with_space = "SGVs bG8g".repeat(10);
+        assert!(!is_base64(&with_space));
     }
 }
