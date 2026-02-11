@@ -2592,6 +2592,10 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             }
         }
         StringKind::SuspiciousPath => Some(kind),
+        // Preserve encoding-related classifications (for potential further decoding)
+        StringKind::UnicodeEscaped => Some(kind),
+        StringKind::HexEncoded => Some(kind),
+        StringKind::UrlEncoded => Some(kind),
         StringKind::Path => {
             // STRICT PATH VALIDATION: Only accept paths matching known OS patterns
 

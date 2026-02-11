@@ -522,17 +522,8 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
             }
         }
 
-        // Apply garbage filter if enabled (but never filter entitlements XML or section names)
-        if opts.filter_garbage {
-            strings.retain(|s| {
-                s.kind == StringKind::EntitlementsXml
-                    || s.kind == StringKind::Section
-                    || !validation::is_garbage(&s.value)
-            });
-        }
-
         // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
-        // This happens after all extraction so we can decode strings found by any method
+        // This happens BEFORE garbage filtering so we can decode potentially-garbage-looking encodings
         tracing::debug!("Running decoders on {} strings", strings.len());
         let mut decoded = Vec::new();
         decoded.extend(decoders::decode_base64_strings(&strings));
@@ -544,6 +535,21 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 
         // Add decoded strings to the main list
         strings.extend(decoded);
+
+        // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
+        // Note: Encoded strings (Base64, HexEncoded, etc.) are kept even if they look like garbage,
+        // because the decoded version might be valuable
+        if opts.filter_garbage {
+            strings.retain(|s| {
+                s.kind == StringKind::EntitlementsXml
+                    || s.kind == StringKind::Section
+                    || s.kind == StringKind::Base64
+                    || s.kind == StringKind::HexEncoded
+                    || s.kind == StringKind::UrlEncoded
+                    || s.kind == StringKind::UnicodeEscaped
+                    || !validation::is_garbage(&s.value)
+            });
+        }
 
         deduplicate_by_offset(strings)
     }
@@ -1023,17 +1029,8 @@ pub fn extract_from_object(
         _ => {}
     }
 
-    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
-    if opts.filter_garbage {
-        strings.retain(|s| {
-            s.kind == StringKind::EntitlementsXml
-                || s.kind == StringKind::Section
-                || !validation::is_garbage(&s.value)
-        });
-    }
-
     // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
-    // This happens after all extraction so we can decode strings found by any method
+    // This happens BEFORE garbage filtering so we can decode potentially-garbage-looking encodings
     let mut decoded = Vec::new();
     decoded.extend(decoders::decode_base64_strings(&strings));
     decoded.extend(decoders::decode_hex_strings(&strings));
@@ -1042,6 +1039,19 @@ pub fn extract_from_object(
 
     // Add decoded strings to the main list
     strings.extend(decoded);
+
+    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
+    if opts.filter_garbage {
+        strings.retain(|s| {
+            s.kind == StringKind::EntitlementsXml
+                || s.kind == StringKind::Section
+                || s.kind == StringKind::Base64
+                || s.kind == StringKind::HexEncoded
+                || s.kind == StringKind::UrlEncoded
+                || s.kind == StringKind::UnicodeEscaped
+                || !validation::is_garbage(&s.value)
+        });
+    }
 
     deduplicate_by_offset(strings)
 }
@@ -1118,11 +1128,15 @@ pub fn extract_from_macho(
 
     strings.extend(entitlements);
 
-    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
+    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
     if opts.filter_garbage {
         strings.retain(|s| {
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
+                || s.kind == StringKind::Base64
+                || s.kind == StringKind::HexEncoded
+                || s.kind == StringKind::UrlEncoded
+                || s.kind == StringKind::UnicodeEscaped
                 || !validation::is_garbage(&s.value)
         });
     }
@@ -1197,11 +1211,15 @@ pub fn extract_from_elf(
     // Extract overlay/appended data (common malware technique)
     strings.extend(extract_overlay_strings(data, min_length));
 
-    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
+    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
     if opts.filter_garbage {
         strings.retain(|s| {
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
+                || s.kind == StringKind::Base64
+                || s.kind == StringKind::HexEncoded
+                || s.kind == StringKind::UrlEncoded
+                || s.kind == StringKind::UnicodeEscaped
                 || !validation::is_garbage(&s.value)
         });
     }
@@ -1255,11 +1273,15 @@ pub fn extract_from_pe(
         strings.extend(extract_raw_strings(data, min_length, None, &segments));
     }
 
-    // Apply garbage filter if enabled (but never filter entitlements XML or section names)
+    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
     if opts.filter_garbage {
         strings.retain(|s| {
             s.kind == StringKind::EntitlementsXml
                 || s.kind == StringKind::Section
+                || s.kind == StringKind::Base64
+                || s.kind == StringKind::HexEncoded
+                || s.kind == StringKind::UrlEncoded
+                || s.kind == StringKind::UnicodeEscaped
                 || !validation::is_garbage(&s.value)
         });
     }

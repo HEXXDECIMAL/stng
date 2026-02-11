@@ -43,6 +43,32 @@ pub fn is_garbage(s: &str) -> bool {
         }
     }
 
+    // Special case: Obfuscated JavaScript/code patterns with hex identifiers
+    // Common in malware: _0x1c1000, _0x230d, function _0x..., const _0x..., etc.
+    // Detect by presence of _0x pattern (hex identifier prefix used in obfuscation)
+    if trimmed.contains("_0x") || (trimmed.contains("0x") && trimmed.len() >= 10) {
+        // Check if it looks like code:
+        // 1. JavaScript keywords, OR
+        // 2. Function/array syntax (parentheses or brackets), OR
+        // 3. Multiple hex identifiers (common in obfuscated code)
+        let has_keywords = trimmed.contains("function")
+            || trimmed.contains("const")
+            || trimmed.contains("var")
+            || trimmed.contains("let")
+            || trimmed.contains("return")
+            || trimmed.contains("if");
+        let has_code_syntax = trimmed.contains('(') || trimmed.contains('[') || trimmed.contains('{');
+        let hex_id_count = trimmed.matches("_0x").count() + trimmed.matches("0x").count();
+
+        if has_keywords || has_code_syntax || hex_id_count >= 2 {
+            // Verify reasonable alphanumeric content (not just gibberish)
+            let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
+            if alnum_count >= 6 {
+                return false; // Obfuscated JavaScript/code is NOT garbage
+            }
+        }
+    }
+
     // Special case: Shell command patterns (check before control char rejection)
     // These often have garbage bytes before/after but are still valuable
     // Examples: "osascript", "bash", "sh ", "/bin/", "2>&1", "<<EOD"
@@ -424,6 +450,24 @@ pub fn is_garbage(s: &str) -> bool {
         return true;
     }
 
+    // Special case: Obfuscated Python patterns with mangled identifiers
+    // Common in malware: llIIlIlllllIIlllII, IlIlIlIIIIllI, etc.
+    // These use mixed case with lots of I and l to confuse readers
+    if (trimmed.contains("def ")
+        || trimmed.contains("return ")
+        || trimmed.contains("import ")
+        || trimmed.contains(".replace("))
+        && len >= 20
+    {
+        // Check if it has Python-like structure: lots of mixed case identifiers
+        let has_many_identifiers = upper > 5 && lower > 5;
+        let has_reasonable_alnum = alphanumeric >= 12;
+
+        if has_many_identifiers && has_reasonable_alnum {
+            return false; // Obfuscated Python is NOT garbage
+        }
+    }
+
     // Character class contiguous region analysis
     // Legitimate strings have longer runs of the same character class (lowercase, uppercase, digits)
     // Garbage strings alternate chaotically between classes
@@ -785,6 +829,48 @@ mod tests {
         assert!(!is_garbage("VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl"));
         assert!(!is_garbage("SGVsbG8gV29ybGQh"));
         assert!(!is_garbage("YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo="));
+    }
+
+    #[test]
+    fn test_is_garbage_obfuscated_javascript() {
+        // Obfuscated JavaScript with hex identifiers should NOT be garbage
+        // This is common in malware and should be preserved for analysis
+        let test_cases = vec![
+            ("const _0x1c1000=_0x230d;", "simple const assignment"),
+            ("const _0x1c1000=_0x230d;function _0x230d(_0x996a22,_0x589a56){const _0x11053a=_0x1105();return _0x230d=function(_0x2", "full obfuscated code"),
+            ("function _0x230d(_0x996a22,_0x589a56)", "function declaration"),
+            ("const _0x1c1000=_0x230d", "const without semicolon"),
+            ("_0x230d(_0x996a22,_0x589a56)", "function call"),
+            ("return _0x230d", "return statement"),
+            ("var _0x4a5b=['base64','encode','decode']", "var with array"),
+            ("if(_0x1a2b3c===_0x4d5e6f)", "if statement"),
+            ("_0x123abc[_0x456def(0x0)]", "array access"),
+        ];
+
+        for (s, desc) in test_cases {
+            let result = is_garbage(s);
+            assert!(!result, "Obfuscated JavaScript should NOT be garbage: {} - got is_garbage={}", desc, result);
+        }
+    }
+
+    #[test]
+    fn test_is_garbage_shell_shebangs_and_options() {
+        // Shebang lines and shell command options should NOT be garbage
+        assert!(!is_garbage("#!/bin/sh -eux -o p"));
+        assert!(!is_garbage("#!/bin/bash"));
+        assert!(!is_garbage("#!/usr/bin/env python3"));
+        assert!(!is_garbage("sh -c 'command'"));
+        assert!(!is_garbage("bash -eux"));
+        assert!(!is_garbage("/bin/sh -e"));
+    }
+
+    #[test]
+    fn test_is_garbage_obfuscated_python() {
+        // Obfuscated Python with mangled identifiers should NOT be garbage
+        assert!(!is_garbage("def llIIlIlllllIIlllII(lllIllllIIIllIllII):"));
+        assert!(!is_garbage("lllllIIIIlllllIlII=IIllIlI.IllIllIllIllllIIlIIlIllIl();llIIIIIllllIllIlII=lilIIlI.IllIllIllIllllIIlIIlIllIl();llIlIIIIIIIIllIIlI=lIllIlIlIIIlIIIlII.IllIIlIIlllIIIIlIlIIllIII(lllllIIIIlllllIlII,llIIIIIllllIllIlII)"));
+        assert!(!is_garbage("return llIIIIIlIllIllIlIl(lllIllllIIIllIllII.IllllIIllllIIIIIIlIIlIIII(llIlIIIIIIIIllIIlI)).IlIlIlIlIIIIlIllIllllllII()"));
+        assert!(!is_garbage("lIlIlIlIIIlIllllll(IIlIlIIIlIIIIlIIIl(IllIllIlIIIlllllII(llIIlIlllllIIlllII(lIlllllIl)),llIIlIlllllIIlllII(lIIIIIlI))(lIllIlIlIIIlIIIlII.IlIIIllIIIIlllIIIlllIlIll(lIlIIIlIlIIIlI.replace"));
     }
 
     #[test]

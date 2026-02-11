@@ -340,10 +340,11 @@ fn test_cli_base64_decoding() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Should show the decoded text in brackets
+    // Should show the decoded text (either in brackets or as a separate decoded entry)
+    // With the new decoder pipeline, base64 strings are decoded and added as separate entries
     assert!(
-        stdout.contains("[This is a secret message]"),
-        "Expected base64 decoded text in brackets, got: {}",
+        stdout.contains("This is a secret message"),
+        "Expected base64 decoded text, got: {}",
         stdout
     );
 
