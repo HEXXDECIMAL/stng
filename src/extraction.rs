@@ -269,6 +269,9 @@ where
                     kind: classify_fn(trimmed),
                     library: None,
                     fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                 })
             } else {
                 None

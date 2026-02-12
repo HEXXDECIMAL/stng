@@ -194,6 +194,9 @@ fn extract_arm64_string_pattern(
                     kind: final_kind,
                     library: None,
                     fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                 });
             }
         }
@@ -534,6 +537,9 @@ fn extract_amd64_first_arg_string(
                         kind: final_kind,
                         library: None,
                         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                     });
                 }
             }
@@ -629,6 +635,9 @@ fn extract_amd64_key_string(
                         kind: final_kind,
                         library: None,
                         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                     });
                 }
             }
@@ -723,6 +732,9 @@ fn extract_amd64_value_string(
                         kind: final_kind,
                         library: None,
                         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                     });
                 }
             }

@@ -3,6 +3,7 @@
 use crate::go;
 use crate::types::{ExtractedString, StringKind, StringMethod};
 use memchr::memchr_iter;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub fn extract_raw_strings(
@@ -10,6 +11,7 @@ pub fn extract_raw_strings(
     min_length: usize,
     section: Option<String>,
     segment_names: &[String],
+    section_info: &HashMap<String, crate::binary::SectionInfo>,
 ) -> Vec<ExtractedString> {
     // Build a set of known segment/section names for quick lookup
     let segment_names_set: HashSet<&str> = segment_names
@@ -59,6 +61,15 @@ pub fn extract_raw_strings(
                     go::classify_string(trimmed)
                 };
 
+                // Get section metadata if this is a section
+                let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
+                    section_info.get(trimmed).map(|info| {
+                        (Some(info.size), Some(info.is_executable), Some(info.is_writable))
+                    }).unwrap_or((None, None, None))
+                } else {
+                    (None, None, None)
+                };
+
                 seen.insert(trimmed.to_string());
                 strings.push(ExtractedString {
                     value: trimmed.to_string(),
@@ -68,6 +79,9 @@ pub fn extract_raw_strings(
                     kind,
                     library: None,
                     fragments: None,
+                    section_size: sec_size,
+                    section_executable: sec_exec,
+                    section_writable: sec_write,
                 });
             }
         }
@@ -80,6 +94,7 @@ pub fn extract_raw_strings(
         min_length,
         &section,
         &segment_names_set,
+        section_info,
         &mut strings,
         &mut seen,
     );
@@ -94,6 +109,7 @@ pub fn extract_printable_runs(
     min_length: usize,
     section: &Option<String>,
     segment_names_set: &HashSet<&str>,
+    section_info: &HashMap<String, crate::binary::SectionInfo>,
     strings: &mut Vec<ExtractedString>,
     seen: &mut HashSet<String>,
 ) {
@@ -119,6 +135,15 @@ pub fn extract_printable_runs(
                             go::classify_string(trimmed)
                         };
 
+                        // Get section metadata if this is a section
+                        let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
+                            section_info.get(trimmed).map(|info| {
+                                (Some(info.size), Some(info.is_executable), Some(info.is_writable))
+                            }).unwrap_or((None, None, None))
+                        } else {
+                            (None, None, None)
+                        };
+
                         seen.insert(trimmed.to_string());
                         strings.push(ExtractedString {
                             value: trimmed.to_string(),
@@ -128,6 +153,9 @@ pub fn extract_printable_runs(
                             kind,
                             library: None,
                             fragments: None,
+                            section_size: sec_size,
+                            section_executable: sec_exec,
+                            section_writable: sec_write,
                         });
                     }
                 }
@@ -149,6 +177,15 @@ pub fn extract_printable_runs(
                         go::classify_string(trimmed)
                     };
 
+                    // Get section metadata if this is a section
+                    let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
+                        section_info.get(trimmed).map(|info| {
+                            (Some(info.size), Some(info.is_executable), Some(info.is_writable))
+                        }).unwrap_or((None, None, None))
+                    } else {
+                        (None, None, None)
+                    };
+
                     seen.insert(trimmed.to_string());
                     strings.push(ExtractedString {
                         value: trimmed.to_string(),
@@ -158,6 +195,9 @@ pub fn extract_printable_runs(
                         kind,
                         library: None,
                         fragments: None,
+                        section_size: sec_size,
+                        section_executable: sec_exec,
+                        section_writable: sec_write,
                     });
                 }
             }
@@ -175,6 +215,7 @@ pub fn extract_wide_strings(
     min_length: usize,
     section: Option<String>,
     segment_names: &[String],
+    section_info: &HashMap<String, crate::binary::SectionInfo>,
 ) -> Vec<ExtractedString> {
     let segment_names_set: HashSet<&str> = segment_names
         .iter()
@@ -232,6 +273,15 @@ pub fn extract_wide_strings(
                         go::classify_string(trimmed)
                     };
 
+                    // Get section metadata if this is a section
+                    let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
+                        section_info.get(trimmed).map(|info| {
+                            (Some(info.size), Some(info.is_executable), Some(info.is_writable))
+                        }).unwrap_or((None, None, None))
+                    } else {
+                        (None, None, None)
+                    };
+
                     seen.insert(trimmed.to_string());
                     strings.push(ExtractedString {
                         value: trimmed.to_string(),
@@ -241,6 +291,9 @@ pub fn extract_wide_strings(
                         kind,
                         library: None,
                         fragments: None,
+                        section_size: sec_size,
+                        section_executable: sec_exec,
+                        section_writable: sec_write,
                     });
                 }
             }

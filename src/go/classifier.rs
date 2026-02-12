@@ -56,8 +56,213 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::Const;
     }
 
+    let len = s.len();
     let bytes = s.as_bytes();
     let first = bytes[0];
+
+    // ===== HIGH-PRIORITY IOC DETECTION =====
+    // These checks come first because they're high-value security indicators
+
+    // CTF flags: CTF{...}, flag{...}, FLAG{...}, picoCTF{...}, HTB{...}
+    if (s.starts_with("CTF{") || s.starts_with("flag{") || s.starts_with("FLAG{")
+        || s.starts_with("picoCTF{") || s.starts_with("HTB{"))
+        && s.ends_with('}')
+    {
+        return StringKind::CTFFlag;
+    }
+
+    // GUIDs: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}
+    if s.starts_with('{') && s.ends_with('}') && (36..=38).contains(&len) {
+        let dash_count = s.chars().filter(|&c| c == '-').count();
+        let hex_count = s.chars().filter(|c| c.is_ascii_hexdigit()).count();
+        if dash_count == 4 && hex_count >= 30 && hex_count <= 32 {
+            return StringKind::GUID;
+        }
+    }
+
+    // Cryptocurrency wallet addresses (high value IOC)
+    if let Some(kind) = classify_crypto_address(s) {
+        return kind;
+    }
+
+    // Email addresses (often used in ransomware)
+    if s.contains('@') && s.contains('.') && len >= 6 {
+        let at_count = s.chars().filter(|&c| c == '@').count();
+        if at_count == 1 {
+            // Must be mostly ASCII (>95%) - reject garbage with non-ASCII chars
+            let ascii_count = s.chars().filter(|c| c.is_ascii()).count();
+            if ascii_count * 100 / len < 95 {
+                return StringKind::Const; // Skip - has too much non-ASCII
+            }
+
+            // Reject consecutive dots (invalid email format)
+            if s.contains("..") {
+                return StringKind::Const; // Skip - has consecutive dots
+            }
+
+            // Split on @ to validate structure
+            let parts: Vec<&str> = s.split('@').collect();
+            if parts.len() == 2 {
+                let local = parts[0];
+                let domain = parts[1];
+
+                // Local part must exist, not be empty, and start with alphanumeric
+                if local.is_empty() || !local.chars().next().unwrap().is_alphanumeric() {
+                    return StringKind::Const; // Skip - starts with @ or non-alphanumeric
+                }
+
+                // Local part must have at least one alphanumeric character
+                if !local.chars().any(|c| c.is_alphanumeric()) {
+                    return StringKind::Const; // Skip - local part has no alphanumeric
+                }
+
+                // Domain must have a dot (not @domain or @.domain)
+                if !domain.contains('.') || domain.starts_with('.') {
+                    return StringKind::Const; // Skip - invalid domain structure
+                }
+
+                // Domain must have at least one letter (not just numbers/symbols like @0.x)
+                let domain_has_letter = domain.chars().any(|c| c.is_ascii_alphabetic());
+                if !domain_has_letter {
+                    return StringKind::Const; // Skip - domain has no letters
+                }
+
+                // Extract TLD (everything after last dot)
+                if let Some(last_dot_pos) = domain.rfind('.') {
+                    let tld = &domain[last_dot_pos + 1..];
+                    // TLD must be at least 2 chars and all alphabetic
+                    if tld.len() < 2 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+                        return StringKind::Const; // Skip - invalid TLD
+                    }
+                }
+
+                // The main domain part (before TLD) must contain at least one letter
+                // and be at least 2 characters long. Reject cases like "0.x" or "E.MM"
+                if let Some(dot_pos) = domain.find('.') {
+                    let main_domain = &domain[..dot_pos];
+                    if main_domain.len() < 2 {
+                        return StringKind::Const; // Skip - main domain too short (e.g., E.MM)
+                    }
+                    let main_has_letter = main_domain.chars().any(|c| c.is_ascii_alphabetic());
+                    if !main_has_letter {
+                        return StringKind::Const; // Skip - main domain has no letters (e.g., 0.x)
+                    }
+                }
+
+                // Valid email chars check
+                let valid_chars = s.chars().filter(|c| {
+                    c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+')
+                }).count();
+                if valid_chars * 100 / len >= 85 {
+                    return StringKind::Email;
+                }
+            }
+        }
+    }
+
+    // Tor/Onion addresses
+    if s.contains(".onion") && len >= 10 {
+        return StringKind::TorAddress;
+    }
+
+    // JWT tokens (3 base64 parts separated by dots)
+    if s.matches('.').count() == 2 && len >= 50 {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() == 3 && parts.iter().all(|p| !p.is_empty()) {
+            let base64_chars = s.chars().filter(|c| {
+                c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '=')
+            }).count();
+            if base64_chars * 100 / len >= 95 {
+                return StringKind::JWT;
+            }
+        }
+    }
+
+    // API keys (AWS, GitHub, Stripe, Slack)
+    if let Some(kind) = classify_api_key(s) {
+        return kind;
+    }
+
+    // SQL injection patterns
+    if (s.contains("' OR '") || s.contains("1'='1"))
+        || (s.contains("UNION") && s.contains("SELECT"))
+        || s.contains("admin'--")
+    {
+        return StringKind::SQLInjection;
+    }
+
+    // XSS payloads
+    if (s.contains("<script>") && s.contains("</script>"))
+        || (s.contains("onerror=") && s.contains("alert("))
+        || s.starts_with("javascript:")
+    {
+        return StringKind::XSSPayload;
+    }
+
+    // Command injection patterns
+    if (s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
+        || (s.contains("| ") && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
+        || s.contains("$(")
+    {
+        return StringKind::CommandInjection;
+    }
+
+    // Backtick command substitution - must be mostly ASCII and contain command-like content
+    if s.starts_with('`') && s.ends_with('`') && len >= 5 {
+        let content = &s[1..len-1];
+        let content_len = content.len();
+
+        // Must be mostly ASCII (>90%) - reject garbage with non-ASCII chars
+        let ascii_count = content.chars().filter(|c| c.is_ascii()).count();
+        if ascii_count * 100 / content_len > 90 {
+            // Must contain spaces (multiword command) or known command names
+            if content.contains(' ')
+                || content.contains("cat")
+                || content.contains("ls")
+                || content.contains("pwd")
+                || content.contains("echo")
+                || content.contains("wget")
+                || content.contains("curl")
+            {
+                return StringKind::CommandInjection;
+            }
+        }
+    }
+
+    // LDAP/AD paths
+    if s.contains("LDAP://") || (s.contains("CN=") && s.contains("DC=")) {
+        return StringKind::LDAPPath;
+    }
+
+    // Windows mutex names (often weird strings used for malware synchronization)
+    if s.starts_with("Global\\") || s.starts_with("Local\\") {
+        return StringKind::Mutex;
+    }
+
+    // Ransomware patterns
+    if s.contains("ENCRYPTED") || s.contains("DECRYPT") || s.contains("RANSOM") {
+        let uppercase_count = s.chars().filter(|c| c.is_uppercase()).count();
+        if uppercase_count * 100 / len > 50 {
+            return StringKind::RansomNote;
+        }
+    }
+    // Ransomware file extensions
+    if s == ".locked" || s == ".encrypted" || s == ".crypted" || s == ".wannacry"
+        || s == ".ryuk" || s == ".locky" || s.ends_with("-DECRYPT-INSTRUCTIONS.txt")
+        || s.ends_with("HOW-TO-DECRYPT.html")
+    {
+        return StringKind::RansomNote;
+    }
+
+    // Cryptocurrency mining pools
+    if (s.contains("stratum+tcp://") || s.contains("stratum+ssl://"))
+        || ((s.contains("pool.") || s.contains("nanopool") || s.contains("minergate"))
+            && (s.contains(".com") || s.contains(".org") || s.contains(":")))
+    {
+        return StringKind::MiningPool;
+    }
+
+    // ===== ORIGINAL CLASSIFICATION CONTINUES =====
 
     // URLs (including database URLs) - check first char for fast path
     if first == b'h'
@@ -292,16 +497,24 @@ fn is_shell_command(s: &str) -> bool {
 
     // Backtick command substitution - must start with backtick and look like actual command
     // Skip documentation references like "see `go doc ...`" or inline code in error messages
-    if let Some(rest) = s.strip_prefix('`') {
-        if let Some(end) = rest.find('`') {
-            let content = &rest[..end];
-            // Must have command-like content and not look like a doc reference
-            if !content.is_empty()
-                && content.contains(' ')
-                && !content.starts_with("go ")
-                && !content.contains(" doc ")
-            {
-                return true;
+    // Skip strings with escaped backticks (complicated to parse correctly)
+    if s.starts_with('`') && !s.contains("\\`") {
+        if let Some(rest) = s.strip_prefix('`') {
+            if let Some(end) = rest.find('`') {
+                let content = &rest[..end];
+                // Must have command-like content and not look like a doc reference
+                if !content.is_empty()
+                    && content.contains(' ')
+                    && !content.starts_with("go ")
+                    && !content.contains(" doc ")
+                {
+                    // Must be mostly ASCII (>90%) - reject garbage with non-ASCII chars
+                    let ascii_count = content.chars().filter(|c| c.is_ascii()).count();
+                    let content_len = content.chars().count();
+                    if content_len > 0 && ascii_count * 100 / content_len > 90 {
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -975,6 +1188,104 @@ fn validate_base85_by_decoding(s: &str) -> bool {
 
     // If we can't decode or result is worse, it's not real base85
     false
+}
+
+/// Classify cryptocurrency wallet addresses
+fn classify_crypto_address(s: &str) -> Option<StringKind> {
+    let len = s.len();
+
+    // Bitcoin (legacy): starts with 1 or 3, 26-35 chars, Base58 (excludes 0, O, I, l)
+    if (s.starts_with('1') || s.starts_with('3')) && (26..=35).contains(&len) {
+        // Must be valid Base58: no 0, O, I, or l characters
+        if s.chars().all(|c| {
+            c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l'
+        }) {
+            return Some(StringKind::CryptoWallet);
+        }
+    }
+
+    // Bitcoin (bech32): starts with bc1, 42+ chars
+    if s.starts_with("bc1") && len >= 42 {
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric()).count();
+        if alnum_count * 100 / len >= 95 {
+            return Some(StringKind::CryptoWallet);
+        }
+    }
+
+    // Ethereum: starts with 0x, 42 chars hex
+    if s.starts_with("0x") && len == 42 {
+        let hex_count = s[2..].chars().filter(|c| c.is_ascii_hexdigit()).count();
+        if hex_count == 40 {
+            return Some(StringKind::CryptoWallet);
+        }
+    }
+
+    // Monero: starts with 4 or 8, 95-108 chars
+    if (s.starts_with('4') || s.starts_with('8')) && (95..=108).contains(&len) {
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric()).count();
+        if alnum_count * 100 / len >= 95 {
+            return Some(StringKind::CryptoWallet);
+        }
+    }
+
+    // Litecoin: starts with L or M, 26-35 chars, Base58
+    if (s.starts_with('L') || s.starts_with('M')) && (26..=35).contains(&len) {
+        if s.chars().all(|c| {
+            c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l'
+        }) {
+            return Some(StringKind::CryptoWallet);
+        }
+    }
+
+    // Dogecoin: starts with D, 34 chars, Base58
+    if s.starts_with('D') && len == 34 {
+        if s.chars().all(|c| {
+            c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l'
+        }) {
+            return Some(StringKind::CryptoWallet);
+        }
+    }
+
+    None
+}
+
+/// Classify API keys and secrets
+fn classify_api_key(s: &str) -> Option<StringKind> {
+    let len = s.len();
+
+    // AWS access key: starts with AKIA, 20+ chars
+    if s.starts_with("AKIA") && len >= 20 {
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric()).count();
+        if alnum_count * 100 / len >= 90 {
+            return Some(StringKind::APIKey);
+        }
+    }
+
+    // GitHub token: starts with ghp_, 36+ chars
+    if s.starts_with("ghp_") && len >= 36 {
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric() || *c == '_').count();
+        if alnum_count * 100 / len >= 90 {
+            return Some(StringKind::APIKey);
+        }
+    }
+
+    // Stripe keys: starts with sk_live_ or pk_live_
+    if (s.starts_with("sk_live_") || s.starts_with("pk_live_")) && len >= 20 {
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric() || *c == '_').count();
+        if alnum_count * 100 / len >= 90 {
+            return Some(StringKind::APIKey);
+        }
+    }
+
+    // Slack tokens: starts with xox, 30+ chars
+    if s.starts_with("xox") && len >= 30 {
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric() || *c == '-').count();
+        if alnum_count * 100 / len >= 90 {
+            return Some(StringKind::APIKey);
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1655,16 +1966,20 @@ mod tests {
 
     #[test]
     fn test_classify_string_base58() {
-        // Bitcoin address
+        // Bitcoin address - now classified as CryptoWallet (more specific than Base58)
         assert_eq!(
             classify_string("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
-            StringKind::Base58
+            StringKind::CryptoWallet
         );
 
-        // Should not be Base58 (contains 0)
+        // Should not be Base58/CryptoWallet (contains 0, which is invalid in Base58)
         assert_ne!(
             classify_string("1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa"),
             StringKind::Base58
+        );
+        assert_ne!(
+            classify_string("1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa"),
+            StringKind::CryptoWallet
         );
     }
 

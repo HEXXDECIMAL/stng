@@ -182,6 +182,9 @@ impl RustStringExtractor {
                         kind: s.kind,
                         library: None,
                         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                     });
                 }
             }
@@ -407,6 +410,9 @@ impl RustStringExtractor {
                                 kind: classify_string(trimmed),
                                 library: None,
                                 fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                             });
                         }
                     }
@@ -597,6 +603,9 @@ impl RustStringExtractor {
             kind: classify_string(trimmed),
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         });
     }
 }

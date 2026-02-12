@@ -288,6 +288,7 @@ fn test_extracted_string_serialization() {
         kind: StringKind::Const,
         library: None,
         fragments: None,
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&s).unwrap();
@@ -305,6 +306,7 @@ fn test_extracted_string_with_library() {
         kind: StringKind::Import,
         library: Some("libSystem.B.dylib".to_string()),
         fragments: None,
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&s).unwrap();
@@ -321,6 +323,7 @@ fn test_extracted_string_without_library_skips_field() {
         kind: StringKind::Const,
         library: None,
         fragments: None,
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&s).unwrap();
@@ -1263,6 +1266,7 @@ mod api_tests {
             kind: StringKind::Const,
             library: None,
             fragments: None,
+            ..Default::default()
         }];
 
         let opts = ExtractOptions::new(4).with_r2_strings(fake_r2);
@@ -1289,6 +1293,7 @@ mod api_tests {
             kind: StringKind::Const,
             library: None,
             fragments: None,
+            ..Default::default()
         }];
 
         let opts = ExtractOptions::new(8)
@@ -1464,6 +1469,7 @@ mod edge_case_tests {
             kind: StringKind::Const,
             library: None,
             fragments: None,
+            ..Default::default()
         };
         let s2 = ExtractedString {
             value: "test".to_string(),
@@ -1473,6 +1479,7 @@ mod edge_case_tests {
             kind: StringKind::Const,
             library: None,
             fragments: None,
+            ..Default::default()
         };
         // Clone check
         let s3 = s1.clone();
@@ -2689,21 +2696,21 @@ mod string_kind_tests {
 
     #[test]
     fn test_base58_detection() {
-        // Bitcoin address
+        // Bitcoin address - now classified as CryptoWallet (more specific than Base58)
         let base58_str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
         let data = minimal_elf_with_string(base58_str);
         let strings = extract_strings(&data, 4);
 
-        let base58_strings: Vec<_> = strings
+        let crypto_strings: Vec<_> = strings
             .iter()
-            .filter(|s| s.kind == StringKind::Base58)
+            .filter(|s| s.kind == StringKind::CryptoWallet)
             .collect();
 
         assert!(
-            !base58_strings.is_empty(),
-            "Should detect Base58 string (Bitcoin address)"
+            !crypto_strings.is_empty(),
+            "Should detect Bitcoin address as CryptoWallet"
         );
-        assert_eq!(base58_strings[0].value, base58_str);
+        assert_eq!(crypto_strings[0].value, base58_str);
     }
 
     #[test]

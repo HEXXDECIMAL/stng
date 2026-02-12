@@ -2,6 +2,16 @@
 
 use goblin::mach::MachO;
 
+/// Section metadata including name, size, and type.
+#[derive(Debug, Clone)]
+pub struct SectionInfo {
+    #[allow(dead_code)]
+    pub name: String,
+    pub size: u64,
+    pub is_executable: bool,
+    pub is_writable: bool,
+}
+
 /// Collect segment and section names from a Mach-O binary.
 pub fn collect_macho_segments(macho: &MachO) -> Vec<String> {
     let mut segments = Vec::new();
@@ -20,6 +30,31 @@ pub fn collect_macho_segments(macho: &MachO) -> Vec<String> {
     segments
 }
 
+/// Collect section metadata from a Mach-O binary.
+pub fn collect_macho_section_info(macho: &MachO) -> std::collections::HashMap<String, SectionInfo> {
+    use goblin::mach::constants::S_ATTR_SOME_INSTRUCTIONS;
+    let mut sections = std::collections::HashMap::new();
+
+    for seg in &macho.segments {
+        if let Ok(secs) = seg.sections() {
+            for (sec, _) in secs {
+                if let Ok(name) = sec.name() {
+                    let is_executable = (sec.flags & S_ATTR_SOME_INSTRUCTIONS) != 0;
+                    let is_writable = seg.initprot & 0x2 != 0;  // VM_PROT_WRITE
+
+                    sections.insert(name.to_string(), SectionInfo {
+                        name: name.to_string(),
+                        size: sec.size,
+                        is_executable,
+                        is_writable,
+                    });
+                }
+            }
+        }
+    }
+    sections
+}
+
 /// Collect section names from an ELF binary.
 pub fn collect_elf_segments(elf: &goblin::elf::Elf) -> Vec<String> {
     elf.section_headers
@@ -30,6 +65,50 @@ pub fn collect_elf_segments(elf: &goblin::elf::Elf) -> Vec<String> {
                 .map(std::string::ToString::to_string)
         })
         .collect()
+}
+
+/// Collect section metadata from an ELF binary.
+pub fn collect_elf_section_info(elf: &goblin::elf::Elf) -> std::collections::HashMap<String, SectionInfo> {
+    use goblin::elf::section_header::{SHF_EXECINSTR, SHF_WRITE};
+    let mut sections = std::collections::HashMap::new();
+
+    for sh in &elf.section_headers {
+        if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
+            let is_executable = (sh.sh_flags & SHF_EXECINSTR as u64) != 0;
+            let is_writable = (sh.sh_flags & SHF_WRITE as u64) != 0;
+
+            sections.insert(name.to_string(), SectionInfo {
+                name: name.to_string(),
+                size: sh.sh_size,
+                is_executable,
+                is_writable,
+            });
+        }
+    }
+    sections
+}
+
+/// Collect section metadata from a PE binary.
+pub fn collect_pe_section_info(pe: &goblin::pe::PE) -> std::collections::HashMap<String, SectionInfo> {
+    use goblin::pe::section_table::{IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_WRITE};
+    let mut sections = std::collections::HashMap::new();
+
+    for sec in &pe.sections {
+        let name = String::from_utf8_lossy(&sec.name)
+            .trim_end_matches('\0')
+            .to_string();
+
+        let is_executable = (sec.characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+        let is_writable = (sec.characteristics & IMAGE_SCN_MEM_WRITE) != 0;
+
+        sections.insert(name.clone(), SectionInfo {
+            name,
+            size: sec.size_of_raw_data as u64,
+            is_executable,
+            is_writable,
+        });
+    }
+    sections
 }
 
 /// Helper to check if a Mach-O binary has Go sections.

@@ -50,6 +50,18 @@ pub struct ExtractedString {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub fragments: Option<Vec<StringFragment>>,
+    /// For Section strings, stores size and type metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub section_size: Option<u64>,
+    /// For Section strings, whether the section is executable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub section_executable: Option<bool>,
+    /// For Section strings, whether the section is writable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub section_writable: Option<bool>,
 }
 
 impl Default for ExtractedString {
@@ -62,7 +74,42 @@ impl Default for ExtractedString {
             kind: StringKind::Const,
             library: None,
             fragments: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
         }
+    }
+}
+
+impl ExtractedString {
+    /// Get formatted section metadata if this is a section string
+    pub fn section_metadata_str(&self) -> Option<String> {
+        if self.kind != StringKind::Section {
+            return None;
+        }
+
+        let size = self.section_size?;
+        let is_exec = self.section_executable.unwrap_or(false);
+        let is_write = self.section_writable.unwrap_or(false);
+
+        // Format size
+        let size_str = if size < 1024 {
+            format!("{}b", size)
+        } else if size < 1024 * 1024 {
+            format!("{:.1}kb", size as f64 / 1024.0)
+        } else {
+            format!("{:.1}mb", size as f64 / (1024.0 * 1024.0))
+        };
+
+        // Format type
+        let type_str = match (is_exec, is_write) {
+            (true, true) => "TEXT+DATA",
+            (true, false) => "TEXT",
+            (false, true) => "DATA",
+            (false, false) => "DATA",
+        };
+
+        Some(format!("({}, {})", size_str, type_str))
     }
 }
 
@@ -170,6 +217,35 @@ pub enum StringKind {
     Base85,
     /// Overlay/appended data after ELF/PE boundary (ASCII/UTF-8)
     Overlay,
+    // Cryptocurrency and ransomware IOCs
+    /// Cryptocurrency wallet address (Bitcoin, Ethereum, Monero, etc.)
+    CryptoWallet,
+    /// Cryptocurrency mining pool URL or stratum address
+    MiningPool,
+    /// Email address (often used in ransomware contact info)
+    Email,
+    /// Tor/Onion address (.onion domain)
+    TorAddress,
+    /// CTF competition flag (CTF{...}, flag{...}, etc.)
+    CTFFlag,
+    /// SQL injection payload
+    SQLInjection,
+    /// XSS (Cross-Site Scripting) payload
+    XSSPayload,
+    /// Command injection pattern
+    CommandInjection,
+    /// JWT (JSON Web Token)
+    JWT,
+    /// API key or secret (AWS, GitHub, Stripe, etc.)
+    APIKey,
+    /// Windows mutex or synchronization object name
+    Mutex,
+    /// GUID (Globally Unique Identifier)
+    GUID,
+    /// Ransomware-related string (ransom note, file extension, etc.)
+    RansomNote,
+    /// LDAP/Active Directory distinguished name
+    LDAPPath,
     /// Overlay data in UTF-16LE encoding (common in malware configs)
     OverlayWide,
     /// Stack-constructed string (common in malware)
@@ -221,7 +297,21 @@ impl StringKind {
             | StringKind::StackString
             | StringKind::Entitlement
             | StringKind::AppId
-            | StringKind::XorKey => Severity::High,
+            | StringKind::XorKey
+            | StringKind::CryptoWallet
+            | StringKind::MiningPool
+            | StringKind::Email
+            | StringKind::TorAddress
+            | StringKind::CTFFlag
+            | StringKind::SQLInjection
+            | StringKind::XSSPayload
+            | StringKind::CommandInjection
+            | StringKind::JWT
+            | StringKind::APIKey
+            | StringKind::Mutex
+            | StringKind::GUID
+            | StringKind::RansomNote
+            | StringKind::LDAPPath => Severity::High,
 
             StringKind::Path
             | StringKind::FilePath
@@ -229,6 +319,7 @@ impl StringKind {
             | StringKind::EnvVar
             | StringKind::Registry
             | StringKind::Error
+            | StringKind::Section
             | StringKind::EntitlementsXml => Severity::Medium,
 
             StringKind::FuncName | StringKind::Export => Severity::Low,
@@ -274,6 +365,20 @@ impl StringKind {
             StringKind::AppId => "appid",
             StringKind::EntitlementsXml => "entitlements",
             StringKind::XorKey => "xor_key",
+            StringKind::CryptoWallet => "crypto",
+            StringKind::MiningPool => "miner",
+            StringKind::Email => "email",
+            StringKind::TorAddress => "tor",
+            StringKind::CTFFlag => "ctf_flag",
+            StringKind::SQLInjection => "sqli",
+            StringKind::XSSPayload => "xss",
+            StringKind::CommandInjection => "cmdi",
+            StringKind::JWT => "jwt",
+            StringKind::APIKey => "api_key",
+            StringKind::Mutex => "mutex",
+            StringKind::GUID => "guid",
+            StringKind::RansomNote => "ransom",
+            StringKind::LDAPPath => "ldap",
         }
     }
 }
@@ -461,6 +566,9 @@ mod tests {
             kind: StringKind::Const,
             library: Some("lib".to_string()),
             fragments: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
         };
 
         let cloned = s.clone();

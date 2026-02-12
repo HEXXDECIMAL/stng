@@ -84,6 +84,9 @@ pub fn extract_macho_entitlements(
                             kind: StringKind::EntitlementsXml,
                             library: None,
                             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                         });
                     }
                 }
@@ -118,6 +121,9 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
                     kind: StringKind::Entitlement,
                     library: None,
                     fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                 });
             }
 
@@ -143,6 +149,9 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
                     kind: StringKind::AppId,
                     library: None,
                     fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                 });
             }
 

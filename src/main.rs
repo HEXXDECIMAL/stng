@@ -326,6 +326,9 @@ fn main() -> Result<()> {
                         kind: stng::classify_string(trimmed),
                         library: None,
                         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
                     })
                 } else {
                     None
@@ -547,8 +550,85 @@ fn main() -> Result<()> {
             });
         }
 
+        // Build section metadata map directly from binary format
+        let section_metadata: std::collections::HashMap<String, String> = {
+            use goblin::Object;
+            match Object::parse(&data) {
+                Ok(Object::PE(pe)) => {
+                    use stng::binary::collect_pe_section_info;
+                    let info = collect_pe_section_info(&pe);
+                    info.into_iter()
+                        .map(|(name, si)| {
+                            let type_str = match (si.is_executable, si.is_writable) {
+                                (true, true) => "TEXT+DATA",
+                                (true, false) => "TEXT",
+                                (false, true) => "DATA",
+                                (false, false) => "DATA",
+                            };
+                            let size_str = if si.size < 1024 {
+                                format!("{}b", si.size)
+                            } else if si.size < 1024 * 1024 {
+                                format!("{:.1}kb", si.size as f64 / 1024.0)
+                            } else {
+                                format!("{:.1}mb", si.size as f64 / (1024.0 * 1024.0))
+                            };
+                            (name, format!("({}, {})", size_str, type_str))
+                        })
+                        .collect()
+                }
+                Ok(Object::Elf(elf)) => {
+                    use stng::binary::collect_elf_section_info;
+                    let info = collect_elf_section_info(&elf);
+                    info.into_iter()
+                        .map(|(name, si)| {
+                            let type_str = match (si.is_executable, si.is_writable) {
+                                (true, true) => "TEXT+DATA",
+                                (true, false) => "TEXT",
+                                (false, true) => "DATA",
+                                (false, false) => "DATA",
+                            };
+                            let size_str = if si.size < 1024 {
+                                format!("{}b", si.size)
+                            } else if si.size < 1024 * 1024 {
+                                format!("{:.1}kb", si.size as f64 / 1024.0)
+                            } else {
+                                format!("{:.1}mb", si.size as f64 / (1024.0 * 1024.0))
+                            };
+                            (name, format!("({}, {})", size_str, type_str))
+                        })
+                        .collect()
+                }
+                Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) => {
+                    use stng::binary::collect_macho_section_info;
+                    let info = collect_macho_section_info(&macho);
+                    info.into_iter()
+                        .map(|(name, si)| {
+                            let type_str = match (si.is_executable, si.is_writable) {
+                                (true, true) => "TEXT+DATA",
+                                (true, false) => "TEXT",
+                                (false, true) => "DATA",
+                                (false, false) => "DATA",
+                            };
+                            let size_str = if si.size < 1024 {
+                                format!("{}b", si.size)
+                            } else if si.size < 1024 * 1024 {
+                                format!("{:.1}kb", si.size as f64 / 1024.0)
+                            } else {
+                                format!("{:.1}mb", si.size as f64 / (1024.0 * 1024.0))
+                            };
+                            (name, format!("({}, {})", size_str, type_str))
+                        })
+                        .collect()
+                }
+                _ => std::collections::HashMap::new(),
+            }
+        };
+
         // Use sentinel to detect first section (distinguishes from "no section yet" vs "section is None")
         let mut current_section: Option<Option<&str>> = None;
+
+        // Track section offsets (first string's offset in each section)
+        let mut section_offsets: std::collections::HashMap<Option<String>, u64> = std::collections::HashMap::new();
 
         // Collect high-severity items for summary
         let mut notable: Vec<&stng::ExtractedString> = Vec::new();
@@ -561,11 +641,42 @@ fn main() -> Result<()> {
                 if current_section.is_some() {
                     println!();
                 }
+
+                // Skip empty section names
+                if let Some("") = section {
+                    current_section = Some(section);
+                    continue;
+                }
+
+                // Record offset for this section (first string's offset)
+                let section_key = section.map(|s| s.to_string());
+                section_offsets.entry(section_key.clone()).or_insert(s.data_offset);
+                let section_offset = section_offsets.get(&section_key).copied().unwrap_or(0);
+
                 let section_name = section.unwrap_or("(analysis)");
-                if use_color {
-                    println!("{DIM}── {section_name} ──{RESET}");
+                let section_header = if let Some(sect) = section {
+                    // Try exact match first, then prefix match for section strings with trailing garbage
+                    let metadata = section_metadata.get(sect)
+                        .or_else(|| {
+                            section_metadata.iter()
+                                .find(|(k, _)| k.starts_with(sect) || sect.starts_with(k.as_str()))
+                                .map(|(_, v)| v)
+                        });
+
+                    if let Some(meta) = metadata {
+                        format!("{} {}", section_name, meta)
+                    } else {
+                        section_name.to_string()
+                    }
                 } else {
-                    println!("── {section_name} ──");
+                    section_name.to_string()
+                };
+
+                let offset_str = format!("{:>8x}", section_offset);
+                if use_color {
+                    println!("{DIM}{} ── {} ──{RESET}", offset_str, section_header);
+                } else {
+                    println!("{} ── {} ──", offset_str, section_header);
                 }
                 current_section = Some(section);
             }
@@ -832,6 +943,11 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     } else {
         clean_value.to_string()
     };
+
+    // Append section metadata if this is a section
+    if let Some(metadata) = s.section_metadata_str() {
+        value = format!("{} {}", value, metadata);
+    }
 
     // Decode base64 strings and show plaintext/hex in brackets
     if s.kind == stng::StringKind::Base64 {

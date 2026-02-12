@@ -386,6 +386,9 @@ impl<'a> StackStringExtractor<'a> {
                 kind: StringKind::StackString,
                 library: None,
                 fragments: Some(Vec::new()),
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
             };
 
             // We need to initialize 'current' with the first write
@@ -467,6 +470,9 @@ impl<'a> StackStringExtractor<'a> {
                             length: w.string.len(),
                             flavor: Some(w.flavor),
                         }]),
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
                     };
                     current_end_disp = w.disp + w.string.len() as i64;
                 }
@@ -543,6 +549,9 @@ impl<'a> StackStringExtractor<'a> {
                 kind: StringKind::StackString,
                 library: None,
                 fragments: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
             };
         }
 
@@ -575,6 +584,7 @@ impl<'a> StackStringExtractor<'a> {
             } else {
                 Some(merged_fragments)
             },
+            ..Default::default()
         }
     }
 
@@ -677,6 +687,7 @@ impl<'a> StackStringExtractor<'a> {
                         length: chunk_len,
                         flavor: Some("mov_word_loop".into()),
                     }]),
+                    ..Default::default()
                 });
             }
 

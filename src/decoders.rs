@@ -77,6 +77,9 @@ fn decode_base64_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
     })
 }
 
@@ -151,6 +154,9 @@ fn decode_hex_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
     })
 }
 
@@ -196,6 +202,9 @@ fn decode_url_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
     })
 }
 
@@ -240,6 +249,9 @@ fn decode_unicode_escape_string(s: &ExtractedString) -> Option<ExtractedString> 
         kind,
         library: None,
         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
     })
 }
 
@@ -427,6 +439,9 @@ fn decode_base32_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
     })
 }
 
@@ -488,6 +503,9 @@ fn decode_base85_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
     })
 }
 
@@ -696,10 +714,9 @@ fn is_likely_base85(s: &str) -> bool {
 }
 
 /// Classify a decoded string into a StringKind.
-fn classify_decoded_string(_s: &str) -> StringKind {
-    // Reuse stng's classification if available
-    // For now, just return Const - this will be refined by DISSECT
-    StringKind::Const
+fn classify_decoded_string(s: &str) -> StringKind {
+    // Use the general classifier from go::classifier module
+    crate::go::classifier::classify_string(s)
 }
 
 #[cfg(test)]
@@ -716,6 +733,9 @@ mod tests {
             kind: StringKind::Base64,
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         };
 
         let result = decode_base64_string(&input).unwrap();
@@ -733,6 +753,9 @@ mod tests {
             kind: StringKind::HexEncoded,
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         };
 
         let result = decode_hex_string(&input).unwrap();
@@ -750,6 +773,9 @@ mod tests {
             kind: StringKind::UrlEncoded,
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         };
 
         let result = decode_url_string(&input).unwrap();
@@ -767,6 +793,9 @@ mod tests {
             kind: StringKind::UnicodeEscaped,
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         };
 
         let result = decode_unicode_escape_string(&input).unwrap();
@@ -798,6 +827,9 @@ mod tests {
             kind: StringKind::Base32,
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -815,6 +847,9 @@ mod tests {
             kind: StringKind::Base32,
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -833,6 +868,9 @@ mod tests {
             kind: StringKind::Base32,
             library: None,
             fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
         };
 
         let result = decode_base32_string(&input).unwrap();

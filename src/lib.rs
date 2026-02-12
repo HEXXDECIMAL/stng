@@ -38,7 +38,7 @@ mod types;
 mod validation;
 
 // Binary format modules
-mod binary;
+pub mod binary;
 mod binary_net;
 mod detect;
 mod entitlements;
@@ -77,7 +77,10 @@ use goblin::Object;
 use std::collections::HashSet;
 
 // Import internal modules for use in this file
-use binary::{collect_elf_segments, collect_macho_segments, macho_has_go_sections};
+use binary::{
+    collect_elf_section_info, collect_elf_segments, collect_macho_section_info,
+    collect_macho_segments, collect_pe_section_info, macho_has_go_sections,
+};
 use binary_net::scan_binary_ips;
 use entitlements::extract_macho_entitlements;
 use imports::{extract_elf_imports, extract_macho_imports};
@@ -401,12 +404,14 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 
         // Extract wide strings for PE-like files (common in Windows binaries)
         if is_pe && !data.is_empty() {
-            strings.extend(extract_wide_strings(data, opts.min_length, None, &[]));
+            let empty_section_info = std::collections::HashMap::new();
+            strings.extend(extract_wide_strings(data, opts.min_length, None, &[], &empty_section_info));
         }
 
         // Raw scan for all unknown formats
         if !data.is_empty() {
-            strings.extend(extract_raw_strings(data, opts.min_length, None, &[]));
+            let empty_section_info = std::collections::HashMap::new();
+            strings.extend(extract_raw_strings(data, opts.min_length, None, &[], &empty_section_info));
         }
 
         // XOR string detection
@@ -575,6 +580,7 @@ pub fn extract_from_object(
     match object {
         Object::Mach(goblin::mach::Mach::Binary(macho)) => {
             let segments = collect_macho_segments(macho);
+            let section_info = collect_macho_section_info(macho);
             if macho_has_go_sections(macho) {
                 is_go_binary = true;
                 let extractor = GoStringExtractor::new(min_length);
@@ -591,7 +597,7 @@ pub fn extract_from_object(
                 let extractor = RustStringExtractor::new(min_length);
                 let rust_strings = extractor.extract_macho(macho, data);
                 if rust_strings.is_empty() {
-                    strings.extend(extract_raw_strings(data, min_length, None, &segments));
+                    strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
                 } else {
                     strings.extend(rust_strings);
                 }
@@ -644,10 +650,12 @@ pub fn extract_from_object(
             let mut is_go = false;
             let mut is_rust = false;
             let mut segments = Vec::new();
+            let mut section_info = std::collections::HashMap::new();
             let mut first_macho: Option<MachO> = None;
             for arch_result in fat {
                 if let Ok(goblin::mach::SingleArch::MachO(macho)) = arch_result {
                     segments = collect_macho_segments(&macho);
+                    section_info = collect_macho_section_info(&macho);
                     if macho_has_go_sections(&macho) {
                         is_go = true;
                         is_go_binary = true;
@@ -668,7 +676,7 @@ pub fn extract_from_object(
                     strings.extend(r2_strings);
                 }
                 // Also do raw scan to catch anything r2 missed
-                strings.extend(extract_raw_strings(data, min_length, None, &segments));
+                strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
             }
             // Skip stack string extraction for Go binaries
             if !is_go_binary {
@@ -721,6 +729,7 @@ pub fn extract_from_object(
         }
         Object::Elf(elf) => {
             let segments = collect_elf_segments(elf);
+            let section_info = collect_elf_section_info(elf);
 
             // Check for Go sections
             let has_go = elf.section_headers.iter().any(|sh| {
@@ -750,13 +759,13 @@ pub fn extract_from_object(
                 let extractor = RustStringExtractor::new(min_length);
                 let rust_strings = extractor.extract_elf(elf, data);
                 if rust_strings.is_empty() {
-                    strings.extend(extract_raw_strings(data, min_length, None, &segments));
+                    strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
                 } else {
                     strings.extend(rust_strings);
                 }
             }
             // Extract UTF-16LE wide strings (less common in ELF but can occur, especially in malware)
-            strings.extend(extract_wide_strings(data, min_length, None, &segments));
+            strings.extend(extract_wide_strings(data, min_length, None, &segments, &section_info));
 
             // Extract binary network data (IPs and ports in network byte order)
             strings.extend(scan_binary_ips(
@@ -794,7 +803,7 @@ pub fn extract_from_object(
             strings.extend(extract_overlay_strings(data, min_length));
         }
         Object::PE(pe) => {
-            // Collect PE section names
+            // Collect PE section names and metadata
             let segments: Vec<String> = pe
                 .sections
                 .iter()
@@ -804,6 +813,7 @@ pub fn extract_from_object(
                         .to_string()
                 })
                 .collect();
+            let section_info = collect_pe_section_info(pe);
 
             // Check for Go by looking for go.buildinfo section specifically
             let has_go = pe.sections.iter().any(|sec| {
@@ -823,7 +833,7 @@ pub fn extract_from_object(
             }
 
             // Extract UTF-16LE wide strings (common in Windows binaries)
-            strings.extend(extract_wide_strings(data, min_length, None, &segments));
+            strings.extend(extract_wide_strings(data, min_length, None, &segments, &section_info));
 
             // Extract binary network data (IPs and ports in network byte order)
             strings.extend(scan_binary_ips(
@@ -835,7 +845,7 @@ pub fn extract_from_object(
             ));
 
             // Raw scan for PE (catches strings missed by structure extraction)
-            strings.extend(extract_raw_strings(data, min_length, None, &segments));
+            strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
 
             // Skip stack string extraction for Go binaries
             if !is_go_binary {
@@ -851,7 +861,8 @@ pub fn extract_from_object(
                 strings.extend(r2_strings);
             }
             if strings.is_empty() && !data.is_empty() {
-                strings.extend(extract_raw_strings(data, min_length, None, &[]));
+                let empty_section_info = std::collections::HashMap::new();
+                strings.extend(extract_raw_strings(data, min_length, None, &[], &empty_section_info));
             }
             // Extract binary network data (IPs and ports in network byte order)
             // For unknown formats, use 0 (not M68000) to process normally
@@ -1079,6 +1090,7 @@ pub fn extract_from_macho(
     let min_length = opts.min_length;
     let mut strings = Vec::new();
     let segments = collect_macho_segments(macho);
+    let section_info = collect_macho_section_info(macho);
 
     if macho_has_go_sections(macho) {
         let extractor = GoStringExtractor::new(min_length);
@@ -1095,7 +1107,7 @@ pub fn extract_from_macho(
         let extractor = RustStringExtractor::new(min_length);
         let rust_strings = extractor.extract_macho(macho, data);
         if rust_strings.is_empty() {
-            strings.extend(extract_raw_strings(data, min_length, None, &segments));
+            strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
         } else {
             strings.extend(rust_strings);
         }
@@ -1170,6 +1182,7 @@ pub fn extract_from_elf(
     let min_length = opts.min_length;
     let mut strings = Vec::new();
     let segments = collect_elf_segments(elf);
+    let section_info = collect_elf_section_info(elf);
 
     // Check for Go sections
     let has_go = elf.section_headers.iter().any(|sh| {
@@ -1197,7 +1210,7 @@ pub fn extract_from_elf(
         let extractor = RustStringExtractor::new(min_length);
         let rust_strings = extractor.extract_elf(elf, data);
         if rust_strings.is_empty() {
-            strings.extend(extract_raw_strings(data, min_length, None, &segments));
+            strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
         } else {
             strings.extend(rust_strings);
         }
@@ -1254,7 +1267,7 @@ pub fn extract_from_pe(
     let min_length = opts.min_length;
     let mut strings = Vec::new();
 
-    // Collect PE section names
+    // Collect PE section names and metadata
     let segments: Vec<String> = pe
         .sections
         .iter()
@@ -1264,6 +1277,7 @@ pub fn extract_from_pe(
                 .to_string()
         })
         .collect();
+    let section_info = collect_pe_section_info(pe);
 
     // Check for Go
     let has_go = pe.sections.iter().any(|sec| {
@@ -1282,11 +1296,11 @@ pub fn extract_from_pe(
     }
 
     // Extract UTF-16LE wide strings (common in Windows binaries)
-    strings.extend(extract_wide_strings(data, min_length, None, &segments));
+    strings.extend(extract_wide_strings(data, min_length, None, &segments, &section_info));
 
     // Also do raw scan for PE (always, since structure extraction may miss many strings)
     if !data.is_empty() {
-        strings.extend(extract_raw_strings(data, min_length, None, &segments));
+        strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
     }
 
     // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)

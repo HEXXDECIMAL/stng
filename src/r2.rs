@@ -143,6 +143,9 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         method: StringMethod::R2String,
                         library: None,
                         fragments: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
                         kind,
                     });
                 } else if s.string.contains("fYzt") {
@@ -174,6 +177,9 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         kind: classify_r2_symbol(&s.r#type, &s.bind),
                         library: None,
                         fragments: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
                     });
                 }
             }
@@ -876,6 +882,7 @@ pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
                 },
                 library: Some("connect()".to_string()),
                 fragments: None,
+                ..Default::default()
             });
         }
     } else {
@@ -906,6 +913,7 @@ pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
                     },
                     library: Some("connect()".to_string()),
                     fragments: None,
+                    ..Default::default()
                 });
             }
         }

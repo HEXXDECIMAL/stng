@@ -74,6 +74,7 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
             // Extract ASCII strings
             let section = Some("overlay".to_string());
             let segment_names_set = HashSet::new();
+            let empty_section_info = std::collections::HashMap::new();
             let mut seen = HashSet::new();
             let initial_count = strings.len();
             extract_printable_runs(
@@ -81,6 +82,7 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
                 min_length,
                 &section,
                 &segment_names_set,
+                &empty_section_info,
                 &mut strings,
                 &mut seen,
             );
@@ -92,7 +94,7 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
 
             // Extract wide strings
             let wide_strings =
-                extract_wide_strings(overlay_data, min_length, Some("overlay".to_string()), &[]);
+                extract_wide_strings(overlay_data, min_length, Some("overlay".to_string()), &[], &empty_section_info);
             for mut s in wide_strings {
                 s.kind = StringKind::OverlayWide;
                 strings.push(s);

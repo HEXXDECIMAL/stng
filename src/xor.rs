@@ -532,6 +532,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                             kind,
                             library: Some(format!("key:{key_preview}")),
                             fragments: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -684,6 +685,7 @@ fn extract_custom_xor_strings_file_level_cycling(
                                 kind,
                                 library: Some(format!("key:{key_preview}@{key_offset}")),
                                 fragments: None,
+                                ..Default::default()
                             });
                         }
                     }
@@ -864,6 +866,7 @@ fn extract_xor_strings_from_hints(
                             kind,
                             library: Some(format!("key:{key_preview}@hint")),
                             fragments: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -1096,6 +1099,7 @@ fn extract_custom_xor_strings_pattern_based(
                         kind,
                         library: Some(format!("key:{key_preview}")),
                         fragments: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -1501,6 +1505,7 @@ pub fn extract_xor_strings(
                             kind,
                             library: Some(format!("0x{:02X}:16LE", info.key)),
                             fragments: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -1519,6 +1524,7 @@ pub fn extract_xor_strings(
                         kind,
                         library: Some(format!("0x{:02X}", info.key)),
                         fragments: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -1589,6 +1595,7 @@ pub fn extract_multikey_xor_strings(
                                 kind,
                                 library: Some(format!("key:{key_preview}")),
                                 fragments: None,
+                                ..Default::default()
                             });
                         }
                     }
@@ -1655,6 +1662,7 @@ fn scan_dotted_patterns(
                                 kind: StringKind::IP,
                                 library: Some(format!("0x{key:02X}")),
                                 fragments: None,
+                                ..Default::default()
                             });
                         }
                     }
@@ -1672,6 +1680,7 @@ fn scan_dotted_patterns(
                                 kind: StringKind::IPPort,
                                 library: Some(format!("0x{key:02X}")),
                                 fragments: None,
+                                ..Default::default()
                             });
                         }
                     }
@@ -1692,6 +1701,7 @@ fn scan_dotted_patterns(
                             kind: StringKind::Hostname,
                             library: Some(format!("0x{key:02X}")),
                             fragments: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -3530,6 +3540,9 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
             },
             ExtractedString {
                 value: "cstr.SomeString".to_string(),
@@ -3539,6 +3552,9 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
             },
             ExtractedString {
                 value: "ShortKey".to_string(),
@@ -3548,6 +3564,9 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
             },
             ExtractedString {
                 value: key_string.to_string(), // The actual key
@@ -3557,6 +3576,9 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
             },
         ];
 
@@ -3622,6 +3644,9 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
             },
             ExtractedString {
                 value: key_string.to_string(),
@@ -3631,6 +3656,9 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
             },
         ];
 
