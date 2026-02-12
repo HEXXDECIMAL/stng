@@ -375,6 +375,7 @@ fn main() -> Result<()> {
     }
 
     // Determine whether to use radare2
+    // Note: R2 module now handles large files intelligently (symbols only, no slow string scan)
     let use_r2 = if cli.no_r2 {
         false
     } else if cli.r2 {

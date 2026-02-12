@@ -986,7 +986,8 @@ pub fn extract_from_object(
     }
 
     // Extract IP addresses from connect() syscalls using radare2 (if enabled)
-    if opts.use_r2 {
+    // Skip for large files (>10MB) as even binary scan has diminishing returns
+    if opts.use_r2 && data.len() <= 10 * 1024 * 1024 {
         if let Some(ref path) = opts.path {
             let connect_addrs = r2::extract_connect_addrs(path, data);
             if !connect_addrs.is_empty() {

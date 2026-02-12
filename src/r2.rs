@@ -44,10 +44,17 @@ fn get_tool() -> Option<&'static str> {
 /// Returns offset and length of each string found by r2.
 /// These can be used as hints for XOR string extraction.
 ///
-/// Uses `izzj` (whole binary scan) instead of `izj` (data sections only)
-/// for better coverage, especially in Swift/Objective-C binaries.
+/// Uses `izzj` (whole binary scan) for files ≤10MB.
+/// For large files (>10MB), returns None to avoid slow scan.
 pub fn extract_string_boundaries(path: &str) -> Option<Vec<StringBoundary>> {
     let tool = get_tool()?;
+
+    // Check file size - skip for large files (izzj is too slow)
+    let file_size = std::fs::metadata(path).ok()?.len();
+    if file_size > 10 * 1024 * 1024 {
+        tracing::debug!("r2::extract_string_boundaries: skipping large file ({}MB)", file_size / 1024 / 1024);
+        return None;
+    }
 
     tracing::debug!("r2::extract_string_boundaries: extracting from {}", path);
 
@@ -82,24 +89,35 @@ pub fn extract_string_boundaries(path: &str) -> Option<Vec<StringBoundary>> {
 /// Extract strings using rizin or radare2.
 ///
 /// Uses `izz` (whole binary scan) for strings and `is` for symbols.
+/// For large files (>10MB), only extracts symbols/imports (fast mode) to avoid
+/// the very slow whole-binary string scan.
 /// Returns strings with R2String/R2Symbol methods for clear identification.
 pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedString>> {
     let tool = get_tool()?;
 
     // Get file size to filter out symbols with invalid offsets
     let file_size = std::fs::metadata(path).ok()?.len();
+    let is_large_file = file_size > 10 * 1024 * 1024;  // >10MB
+
     tracing::debug!(
-        "r2::extract_strings: file_size={} (0x{:x})",
+        "r2::extract_strings: file_size={} (0x{:x}), large_file={}",
         file_size,
-        file_size
+        file_size,
+        is_large_file
     );
 
-    // Run both commands in parallel
+    // For large files: only extract symbols (fast), skip slow string scan
+    // For small files: extract both strings and symbols
     let path_owned = path.to_string();
-    let (data_result, symbols_result) = rayon::join(
-        || run_tool_command(tool, &path_owned, "izzj"),
-        || run_tool_command(tool, &path_owned, "isj"),
-    );
+    let (data_result, symbols_result) = if is_large_file {
+        tracing::debug!("r2::extract_strings: large file, skipping izzj scan (slow), using symbols only");
+        (None, run_tool_command(tool, &path_owned, "isj"))
+    } else {
+        rayon::join(
+            || run_tool_command(tool, &path_owned, "izzj"),
+            || run_tool_command(tool, &path_owned, "isj"),
+        )
+    };
 
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -825,11 +843,20 @@ mod tests {
 ///
 /// Analyzes code to find `connect()` calls and extracts `sockaddr_in` structures
 /// built in-line (common in embedded malware). Returns IP:port strings.
+///
+/// For large files (>10MB), skips R2 analysis (very slow) and only scans binary directly.
 pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
     let tool = match get_tool() {
         Some(t) => t,
         None => return Vec::new(),
     };
+
+    // Check file size - skip R2 analysis for large files (aaa is very slow)
+    if data.len() > 10 * 1024 * 1024 {
+        tracing::debug!("extract_connect_addrs: large file, skipping R2 analysis, using binary scan only");
+        // Scan binary directly without R2 analysis
+        return scan_binary_for_connect_addrs(data);
+    }
 
     tracing::debug!("extract_connect_addrs: analyzing with {}", tool);
 
@@ -921,6 +948,48 @@ pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
 
     tracing::debug!(
         "extract_connect_addrs: found {} unique addresses",
+        results.len()
+    );
+    results
+}
+
+/// Fast version that scans binary directly without R2 analysis (for large files).
+fn scan_binary_for_connect_addrs(data: &[u8]) -> Vec<ExtractedString> {
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+
+    for sockaddr in find_sockaddr_in_binary(data) {
+        let ip_str = format!(
+            "{}.{}.{}.{}",
+            sockaddr.ip[0], sockaddr.ip[1], sockaddr.ip[2], sockaddr.ip[3]
+        );
+
+        let value = if sockaddr.port > 0 {
+            format!("{}:{}", ip_str, sockaddr.port)
+        } else {
+            ip_str
+        };
+
+        if seen.insert(value.clone()) {
+            results.push(ExtractedString {
+                value,
+                data_offset: sockaddr.offset,
+                section: Some(".text".to_string()),
+                method: StringMethod::InstructionPattern,
+                kind: if sockaddr.port > 0 {
+                    StringKind::IPPort
+                } else {
+                    StringKind::IP
+                },
+                library: Some("connect()".to_string()),
+                fragments: None,
+                ..Default::default()
+            });
+        }
+    }
+
+    tracing::debug!(
+        "scan_binary_for_connect_addrs: found {} unique addresses",
         results.len()
     );
     results

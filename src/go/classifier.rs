@@ -51,12 +51,19 @@ pub(super) fn classify_gopclntab_string(s: &str) -> StringKind {
 /// Classify a general string by its content.
 /// Note: Section names are detected via goblin, not pattern matching here.
 pub fn classify_string(s: &str) -> StringKind {
-    // Fast early exit for very short strings (but not env vars which can be short like A_B)
-    if s.len() < 3 {
+    let len = s.len();
+
+    // Fast early exit for very short strings
+    if len < 3 {
         return StringKind::Const;
     }
 
-    let len = s.len();
+    // Skip expensive classification for very long strings (>1000 chars)
+    // They're unlikely to be patterns we care about and are expensive to check
+    if len > 1000 {
+        return StringKind::Const;
+    }
+
     let bytes = s.as_bytes();
     let first = bytes[0];
 
@@ -85,8 +92,8 @@ pub fn classify_string(s: &str) -> StringKind {
         return kind;
     }
 
-    // Email addresses (often used in ransomware)
-    if s.contains('@') && s.contains('.') && len >= 6 {
+    // Email addresses (often used in ransomware) - use memchr for speed
+    if len >= 6 && memchr::memchr(b'@', bytes).is_some() && memchr::memchr(b'.', bytes).is_some() {
         let at_count = s.chars().filter(|&c| c == '@').count();
         if at_count == 1 {
             // Must be mostly ASCII (>95%) - reject garbage with non-ASCII chars
@@ -183,28 +190,35 @@ pub fn classify_string(s: &str) -> StringKind {
         return kind;
     }
 
-    // SQL injection patterns
-    if (s.contains("' OR '") || s.contains("1'='1"))
-        || (s.contains("UNION") && s.contains("SELECT"))
-        || s.contains("admin'--")
-    {
-        return StringKind::SQLInjection;
+    // SQL injection patterns - only check if contains ' or - which are key indicators
+    if memchr::memchr2(b'\'', b'-', bytes).is_some() || s.contains("UNION") {
+        if (s.contains("' OR '") || s.contains("1'='1"))
+            || (s.contains("UNION") && s.contains("SELECT"))
+            || s.contains("admin'--")
+        {
+            return StringKind::SQLInjection;
+        }
     }
 
-    // XSS payloads
-    if (s.contains("<script>") && s.contains("</script>"))
-        || (s.contains("onerror=") && s.contains("alert("))
-        || s.starts_with("javascript:")
-    {
-        return StringKind::XSSPayload;
+    // XSS payloads - only check if contains < or = which are key indicators
+    if first == b'j' || memchr::memchr2(b'<', b'=', bytes).is_some() {
+        if (s.contains("<script>") && s.contains("</script>"))
+            || (s.contains("onerror=") && s.contains("alert("))
+            || s.starts_with("javascript:")
+        {
+            return StringKind::XSSPayload;
+        }
     }
 
-    // Command injection patterns
-    if (s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
-        || (s.contains("| ") && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
-        || s.contains("$(")
-    {
-        return StringKind::CommandInjection;
+    // Command injection patterns - use byte checks for speed
+    // Only check if the string contains key indicator bytes
+    if memchr::memchr3(b';', b'|', b'$', bytes).is_some() {
+        if (s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
+            || (s.contains("| ") && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
+            || s.contains("$(")
+        {
+            return StringKind::CommandInjection;
+        }
     }
 
     // Backtick command substitution - must be mostly ASCII and contain command-like content
@@ -254,12 +268,14 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::RansomNote;
     }
 
-    // Cryptocurrency mining pools
-    if (s.contains("stratum+tcp://") || s.contains("stratum+ssl://"))
-        || ((s.contains("pool.") || s.contains("nanopool") || s.contains("minergate"))
-            && (s.contains(".com") || s.contains(".org") || s.contains(":")))
-    {
-        return StringKind::MiningPool;
+    // Cryptocurrency mining pools - only check if contains ':' or 'pool'
+    if first == b's' || memchr::memchr2(b':', b'p', bytes).is_some() {
+        if (s.contains("stratum+tcp://") || s.contains("stratum+ssl://"))
+            || ((s.contains("pool.") || s.contains("nanopool") || s.contains("minergate"))
+                && (s.contains(".com") || s.contains(".org") || s.contains(":")))
+        {
+            return StringKind::MiningPool;
+        }
     }
 
     // ===== ORIGINAL CLASSIFICATION CONTINUES =====
@@ -454,14 +470,26 @@ pub fn classify_string(s: &str) -> StringKind {
 
 /// Check if a string looks like a shell command
 fn is_shell_command(s: &str) -> bool {
-    // Must have some length and typically contain spaces
-    if s.len() < 4 {
+    let len = s.len();
+
+    // Must have some length
+    if len < 4 {
+        return false;
+    }
+
+    // Quick byte-level check: shell commands typically contain key indicators
+    // If none of these bytes are present, it's very unlikely to be a shell command
+    let bytes = s.as_bytes();
+    let has_shell_indicators = bytes.iter().any(|&b| {
+        matches!(b, b' ' | b'/' | b'$' | b'|' | b'&' | b'>' | b';' | b'`')
+    });
+    if !has_shell_indicators {
         return false;
     }
 
     // Fast path: shell commands almost always contain a space
     // Exceptions: paths like /bin/sh, command substitution $(...)
-    if !s.contains(' ') && !s.starts_with("/bin/") && !s.starts_with("$(") {
+    if !memchr::memchr(b' ', bytes).is_some() && !s.starts_with("/bin/") && !s.starts_with("$(") {
         return false;
     }
 
@@ -880,6 +908,11 @@ fn decode_unicode_escapes(s: &str) -> Vec<u8> {
 fn is_url_encoded(s: &str) -> bool {
     // Must be reasonably long
     if s.len() < 20 {
+        return false;
+    }
+
+    // Quick check: must contain '%' to be URL-encoded
+    if !s.as_bytes().contains(&b'%') {
         return false;
     }
 
