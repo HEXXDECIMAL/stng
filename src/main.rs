@@ -97,6 +97,14 @@ struct Cli {
     #[arg(long)]
     xorscan: bool,
 
+    /// Disable radare2/rizin result caching
+    #[arg(long)]
+    no_cache: bool,
+
+    /// Clear cached r2 results for this file before analysis
+    #[arg(long)]
+    flush_cache: bool,
+
     /// Enable debug logging
     #[arg(long)]
     debug: bool,
@@ -295,6 +303,13 @@ fn main() -> Result<()> {
             .init();
     }
 
+    // Handle cache flushing if requested
+    if cli.flush_cache {
+        if let Err(e) = stng::r2::flush_cache(&cli.target) {
+            eprintln!("Warning: failed to flush cache: {}", e);
+        }
+    }
+
     let path = Path::new(&cli.target);
     if !path.exists() {
         anyhow::bail!("File does not exist: {}", cli.target);
@@ -387,7 +402,9 @@ fn main() -> Result<()> {
     };
 
     // Extract strings with options
-    let mut opts = stng::ExtractOptions::new(cli.min_length).with_garbage_filter(!cli.unfiltered);
+    let mut opts = stng::ExtractOptions::new(cli.min_length)
+        .with_garbage_filter(!cli.unfiltered)
+        .with_cache(!cli.no_cache);
 
     if use_r2 {
         opts = opts.with_r2(&cli.target);

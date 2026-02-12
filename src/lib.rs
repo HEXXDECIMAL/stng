@@ -247,6 +247,8 @@ pub struct ExtractOptions {
     pub xor_min_length: usize,
     /// Enable advanced multi-byte XOR scanning with radare2/rizin (slow). Default: false.
     pub xorscan: bool,
+    /// Use r2 result caching (default: true). Disable with --no-cache flag.
+    pub use_cache: bool,
 }
 
 impl ExtractOptions {
@@ -261,6 +263,7 @@ impl ExtractOptions {
             xor_key: None,
             xor_min_length: xor::DEFAULT_XOR_MIN_LENGTH,
             xorscan: false,
+            use_cache: true, // Caching enabled by default
         }
     }
 
@@ -308,6 +311,13 @@ impl ExtractOptions {
     /// Requires radare2 or rizin to be installed.
     pub fn with_xorscan(mut self, enable: bool) -> Self {
         self.xorscan = enable;
+        self
+    }
+
+    /// Control r2/rizin result caching.
+    /// Default is true. Disable with --no-cache flag.
+    pub fn with_cache(mut self, use_cache: bool) -> Self {
+        self.use_cache = use_cache;
         self
     }
 }
@@ -1359,7 +1369,7 @@ fn get_r2_strings(opts: &ExtractOptions) -> Option<Vec<ExtractedString>> {
     // Otherwise run r2 if enabled
     if opts.use_r2 {
         if let Some(ref path) = opts.path {
-            return r2::extract_strings(path, opts.min_length);
+            return r2::extract_strings(path, opts.min_length, opts.use_cache);
         }
     }
     None

@@ -3,6 +3,9 @@
 //! Prefers rizin when available, falls back to radare2.
 //! Provides better differentiation between true strings and symbols.
 
+mod cache;
+
+use cache::R2Cache;
 use crate::go::classify_string;
 use crate::{ExtractedString, FunctionMetadata, StringKind, StringMethod};
 use std::collections::HashSet;
@@ -15,6 +18,12 @@ static TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
 /// Check if rizin or radare2 is available, preferring rizin.
 pub fn is_available() -> bool {
     get_tool().is_some()
+}
+
+/// Flush cached r2 results for a specific file.
+pub fn flush_cache(file_path: &str) -> Result<(), std::io::Error> {
+    let cache = R2Cache::new()?;
+    cache.clear(file_path)
 }
 
 /// Get the available tool name (rizin preferred, then radare2)
@@ -92,7 +101,7 @@ pub fn extract_string_boundaries(path: &str) -> Option<Vec<StringBoundary>> {
 /// For large files (>10MB), only extracts symbols/imports (fast mode) to avoid
 /// the very slow whole-binary string scan.
 /// Returns strings with R2String/R2Symbol methods for clear identification.
-pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedString>> {
+pub fn extract_strings(path: &str, min_length: usize, use_cache: bool) -> Option<Vec<ExtractedString>> {
     let tool = get_tool()?;
 
     // Get file size to filter out symbols with invalid offsets
@@ -111,11 +120,11 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
     let path_owned = path.to_string();
     let (data_result, symbols_result) = if is_large_file {
         tracing::debug!("r2::extract_strings: large file, skipping izzj scan (slow), using symbols only");
-        (None, run_tool_command(tool, &path_owned, "isj"))
+        (None, run_tool_command_with_cache(tool, &path_owned, "isj", use_cache))
     } else {
         rayon::join(
-            || run_tool_command(tool, &path_owned, "izzj"),
-            || run_tool_command(tool, &path_owned, "isj"),
+            || run_tool_command_with_cache(tool, &path_owned, "izzj", use_cache),
+            || run_tool_command_with_cache(tool, &path_owned, "isj", use_cache),
         )
     };
 
@@ -181,7 +190,7 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
     );
 
     // Extract function metadata (for files < 2MB)
-    let function_metadata = extract_function_metadata(path, file_size);
+    let function_metadata = extract_function_metadata(path, file_size, use_cache);
 
     // Process symbols
     if let Some(symbols) = symbols_result {
@@ -241,7 +250,7 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
 /// Extract function metadata using radare2/rizin analysis.
 /// Only runs for files < 2MB to avoid performance issues.
 /// Returns HashMap of function name -> metadata.
-pub fn extract_function_metadata(path: &str, file_size: u64) -> Option<std::collections::HashMap<String, FunctionMetadata>> {
+pub fn extract_function_metadata(path: &str, file_size: u64, use_cache: bool) -> Option<std::collections::HashMap<String, FunctionMetadata>> {
     // Only analyze functions for files < 2MB
     if file_size > 2 * 1024 * 1024 {
         tracing::debug!("r2::extract_function_metadata: skipping large file ({}MB)", file_size / 1024 / 1024);
@@ -254,7 +263,7 @@ pub fn extract_function_metadata(path: &str, file_size: u64) -> Option<std::coll
 
     // Run analysis and get function list as JSON
     // aaa = analyze all, aflj = list functions as JSON
-    let functions_json = run_tool_command(tool, path, "aaa; aflj")?;
+    let functions_json = run_tool_command_with_cache(tool, path, "aaa; aflj", use_cache)?;
 
     #[derive(serde::Deserialize)]
     struct R2Function {
@@ -303,13 +312,36 @@ pub fn extract_function_metadata(path: &str, file_size: u64) -> Option<std::coll
 }
 
 fn run_tool_command(tool: &str, path: &str, cmd: &str) -> Option<String> {
+    run_tool_command_with_cache(tool, path, cmd, true)
+}
+
+fn run_tool_command_with_cache(tool: &str, path: &str, cmd: &str, use_cache: bool) -> Option<String> {
+    // Try cache first if enabled
+    if use_cache {
+        if let Ok(cache) = R2Cache::new() {
+            if let Some(cached) = cache.get(path, cmd) {
+                return Some(cached);
+            }
+        }
+    }
+
+    // Cache miss or disabled - run command
     let output = Command::new(tool)
         .args(["-q", "-c", cmd, path])
         .output()
         .ok()?;
 
     if output.status.success() {
-        String::from_utf8(output.stdout).ok()
+        let result = String::from_utf8(output.stdout).ok()?;
+
+        // Store in cache for next time
+        if use_cache {
+            if let Ok(cache) = R2Cache::new() {
+                let _ = cache.set(path, cmd, &result);
+            }
+        }
+
+        Some(result)
     } else {
         None
     }
