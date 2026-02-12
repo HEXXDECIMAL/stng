@@ -87,6 +87,8 @@ pub fn extract_macho_entitlements(
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                         });
                     }
                 }
@@ -124,6 +126,8 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                 });
             }
 
@@ -152,6 +156,8 @@ fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Ve
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                 });
             }
 

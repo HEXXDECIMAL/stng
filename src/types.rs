@@ -62,6 +62,33 @@ pub struct ExtractedString {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub section_writable: Option<bool>,
+    /// Architecture (for Mach-O fat binaries: "x86_64", "arm64", etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub architecture: Option<String>,
+    /// Function metadata (for FuncName kind)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub function_meta: Option<FunctionMetadata>,
+}
+
+/// Metadata about a function (from binary analysis)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FunctionMetadata {
+    /// Function size in bytes
+    pub size: u64,
+    /// Number of basic blocks
+    pub basic_blocks: u64,
+    /// Number of branches/edges
+    pub branches: u64,
+    /// Number of instructions
+    pub instructions: u64,
+    /// Function signature (with args)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// Whether function returns
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub noreturn: Option<bool>,
 }
 
 impl Default for ExtractedString {
@@ -77,6 +104,8 @@ impl Default for ExtractedString {
             section_size: None,
             section_executable: None,
             section_writable: None,
+            architecture: None,
+            function_meta: None,
         }
     }
 }

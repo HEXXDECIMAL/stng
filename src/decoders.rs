@@ -80,6 +80,8 @@ fn decode_base64_string(s: &ExtractedString) -> Option<ExtractedString> {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
     })
 }
 
@@ -157,6 +159,8 @@ fn decode_hex_string(s: &ExtractedString) -> Option<ExtractedString> {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
     })
 }
 
@@ -205,6 +209,8 @@ fn decode_url_string(s: &ExtractedString) -> Option<ExtractedString> {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
     })
 }
 
@@ -252,6 +258,8 @@ fn decode_unicode_escape_string(s: &ExtractedString) -> Option<ExtractedString> 
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
     })
 }
 
@@ -442,6 +450,8 @@ fn decode_base32_string(s: &ExtractedString) -> Option<ExtractedString> {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
     })
 }
 
@@ -506,6 +516,8 @@ fn decode_base85_string(s: &ExtractedString) -> Option<ExtractedString> {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
     })
 }
 
@@ -736,6 +748,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         };
 
         let result = decode_base64_string(&input).unwrap();
@@ -756,6 +770,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         };
 
         let result = decode_hex_string(&input).unwrap();
@@ -776,6 +792,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         };
 
         let result = decode_url_string(&input).unwrap();
@@ -796,6 +814,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         };
 
         let result = decode_unicode_escape_string(&input).unwrap();
@@ -830,6 +850,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -850,6 +872,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -871,6 +895,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         };
 
         let result = decode_base32_string(&input).unwrap();

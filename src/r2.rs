@@ -4,7 +4,7 @@
 //! Provides better differentiation between true strings and symbols.
 
 use crate::go::classify_string;
-use crate::{ExtractedString, StringKind, StringMethod};
+use crate::{ExtractedString, FunctionMetadata, StringKind, StringMethod};
 use std::collections::HashSet;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -164,6 +164,8 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                         section_size: None,
                         section_executable: None,
                         section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                         kind,
                     });
                 } else if s.string.contains("fYzt") {
@@ -178,6 +180,9 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
         strings.len()
     );
 
+    // Extract function metadata (for files < 2MB)
+    let function_metadata = extract_function_metadata(path, file_size);
+
     // Process symbols
     if let Some(symbols) = symbols_result {
         if let Ok(json) = serde_json::from_str::<Vec<R2Symbol>>(&symbols) {
@@ -187,17 +192,39 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
                     continue;
                 }
                 if s.name.len() >= min_length && seen.insert(s.name.clone()) {
+                    let kind = classify_r2_symbol(&s.r#type, &s.bind);
+
+                    // Look up function metadata if this is a function
+                    let func_meta = if s.r#type == "FUNC" || s.r#type == "METH" {
+                        function_metadata.as_ref().and_then(|map: &std::collections::HashMap<String, FunctionMetadata>| {
+                            // Try exact match first
+                            map.get(&s.name).cloned()
+                                // Try without sym. prefix
+                                .or_else(|| {
+                                    let clean_name = s.name
+                                        .strip_prefix("sym.")
+                                        .or_else(|| s.name.strip_prefix("sym.imp."))
+                                        .unwrap_or(&s.name);
+                                    map.get(clean_name).cloned()
+                                })
+                        })
+                    } else {
+                        None
+                    };
+
                     strings.push(ExtractedString {
                         value: s.name,
                         data_offset: s.paddr,
                         section: s.section,
                         method: StringMethod::R2Symbol,
-                        kind: classify_r2_symbol(&s.r#type, &s.bind),
+                        kind,
                         library: None,
                         fragments: None,
                         section_size: None,
                         section_executable: None,
                         section_writable: None,
+                        architecture: None,
+                        function_meta: func_meta,
                     });
                 }
             }
@@ -209,6 +236,70 @@ pub fn extract_strings(path: &str, min_length: usize) -> Option<Vec<ExtractedStr
     } else {
         Some(strings)
     }
+}
+
+/// Extract function metadata using radare2/rizin analysis.
+/// Only runs for files < 2MB to avoid performance issues.
+/// Returns HashMap of function name -> metadata.
+pub fn extract_function_metadata(path: &str, file_size: u64) -> Option<std::collections::HashMap<String, FunctionMetadata>> {
+    // Only analyze functions for files < 2MB
+    if file_size > 2 * 1024 * 1024 {
+        tracing::debug!("r2::extract_function_metadata: skipping large file ({}MB)", file_size / 1024 / 1024);
+        return None;
+    }
+
+    let tool = get_tool()?;
+
+    tracing::debug!("r2::extract_function_metadata: analyzing functions for {}", path);
+
+    // Run analysis and get function list as JSON
+    // aaa = analyze all, aflj = list functions as JSON
+    let functions_json = run_tool_command(tool, path, "aaa; aflj")?;
+
+    #[derive(serde::Deserialize)]
+    struct R2Function {
+        name: String,
+        #[serde(default)]
+        size: u64,
+        #[serde(default)]
+        nbbs: u64,  // number of basic blocks
+        #[serde(default)]
+        edges: u64,  // number of branches
+        #[serde(default)]
+        ninstrs: u64,  // number of instructions
+        #[serde(default)]
+        signature: Option<String>,
+        #[serde(default)]
+        noreturn: bool,
+    }
+
+    let functions: Vec<R2Function> = serde_json::from_str(&functions_json).ok()?;
+
+    let mut metadata_map = std::collections::HashMap::new();
+    for func in functions {
+        // Clean up function name (remove sym. prefix if present)
+        let clean_name = func.name
+            .strip_prefix("sym.")
+            .or_else(|| func.name.strip_prefix("sym.imp."))
+            .unwrap_or(&func.name)
+            .to_string();
+
+        metadata_map.insert(
+            clean_name,
+            FunctionMetadata {
+                size: func.size,
+                basic_blocks: func.nbbs,
+                branches: func.edges,
+                instructions: func.ninstrs,
+                signature: func.signature,
+                noreturn: if func.noreturn { Some(true) } else { None },
+            },
+        );
+    }
+
+    tracing::debug!("r2::extract_function_metadata: extracted metadata for {} functions", metadata_map.len());
+
+    Some(metadata_map)
 }
 
 fn run_tool_command(tool: &str, path: &str, cmd: &str) -> Option<String> {

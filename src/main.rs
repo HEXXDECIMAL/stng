@@ -326,9 +326,11 @@ fn main() -> Result<()> {
                         kind: stng::classify_string(trimmed),
                         library: None,
                         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
+                        architecture: None,
+                        function_meta: None,
                     })
                 } else {
                     None
@@ -627,6 +629,7 @@ fn main() -> Result<()> {
 
         // Use sentinel to detect first section (distinguishes from "no section yet" vs "section is None")
         let mut current_section: Option<Option<&str>> = None;
+        let mut current_arch: Option<Option<&str>> = None;
 
         // Track section offsets (first string's offset in each section)
         let mut section_offsets: std::collections::HashMap<Option<String>, u64> = std::collections::HashMap::new();
@@ -636,9 +639,13 @@ fn main() -> Result<()> {
 
         for s in &strings {
             let section = s.section.as_deref();
+            let arch = s.architecture.as_deref();
 
-            // Print section header when section changes
-            if !cli.flat && current_section != Some(section) {
+            // Print section header when section or architecture changes
+            // Track as tuple (section, arch) to detect when either changes
+            let section_changed = current_section != Some(section);
+            let arch_changed = current_arch != Some(arch);
+            if !cli.flat && (section_changed || arch_changed) {
                 if current_section.is_some() {
                     println!();
                 }
@@ -655,7 +662,9 @@ fn main() -> Result<()> {
                 let section_offset = section_offsets.get(&section_key).copied().unwrap_or(0);
 
                 let section_name = section.unwrap_or("(analysis)");
-                let section_header = if let Some(sect) = section {
+
+                // Build section header with optional architecture
+                let mut section_header = if let Some(sect) = section {
                     // Try exact match first, then prefix match for section strings with trailing garbage
                     let metadata = section_metadata.get(sect)
                         .or_else(|| {
@@ -673,6 +682,11 @@ fn main() -> Result<()> {
                     section_name.to_string()
                 };
 
+                // Add architecture if present (for fat binaries)
+                if let Some(architecture) = arch {
+                    section_header = format!("{} ({})", section_header, architecture);
+                }
+
                 let offset_str = format!("{:>8x}", section_offset);
                 if use_color {
                     println!("{DIM}{} ── {} ──{RESET}", offset_str, section_header);
@@ -680,6 +694,7 @@ fn main() -> Result<()> {
                     println!("{} ── {} ──", offset_str, section_header);
                 }
                 current_section = Some(section);
+                current_arch = Some(arch);
             }
 
             print_string_line(s, use_color);
@@ -1080,6 +1095,48 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         }
     } else {
         value
+    };
+
+    // Add function metadata for interesting functions
+    let display_value = if s.kind == stng::StringKind::FuncName {
+        if let Some(ref meta) = s.function_meta {
+            // Check if function is "interesting" - worth showing metadata
+            let is_interesting = meta.basic_blocks >= 5  // Complex branching
+                || meta.branches >= 3                     // Multiple branches
+                || meta.size > 300                        // Large function
+                || meta.noreturn == Some(true);           // Never returns
+
+            if is_interesting {
+                let mut metadata_parts = Vec::new();
+
+                // Always show size and basic blocks for interesting functions
+                metadata_parts.push(format!("{}b", meta.size));
+                metadata_parts.push(format!("{}bb", meta.basic_blocks));
+
+                // Show branches if any
+                if meta.branches > 0 {
+                    metadata_parts.push(format!("{}br", meta.branches));
+                }
+
+                // Show noreturn flag
+                if meta.noreturn == Some(true) {
+                    metadata_parts.push("noret".to_string());
+                }
+
+                let metadata_str = metadata_parts.join("·");
+                if use_color {
+                    format!("{display_value} {DIM}[{metadata_str}]{RESET}")
+                } else {
+                    format!("{display_value} [{metadata_str}]")
+                }
+            } else {
+                display_value
+            }
+        } else {
+            display_value
+        }
+    } else {
+        display_value
     };
 
     if use_color {

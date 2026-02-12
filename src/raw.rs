@@ -82,6 +82,8 @@ pub fn extract_raw_strings(
                     section_size: sec_size,
                     section_executable: sec_exec,
                     section_writable: sec_write,
+                    architecture: None,
+                    function_meta: None,
                 });
             }
         }
@@ -156,6 +158,8 @@ pub fn extract_printable_runs(
                             section_size: sec_size,
                             section_executable: sec_exec,
                             section_writable: sec_write,
+                        architecture: None,
+                        function_meta: None,
                         });
                     }
                 }
@@ -198,6 +202,8 @@ pub fn extract_printable_runs(
                         section_size: sec_size,
                         section_executable: sec_exec,
                         section_writable: sec_write,
+                        architecture: None,
+                        function_meta: None,
                     });
                 }
             }
@@ -294,6 +300,8 @@ pub fn extract_wide_strings(
                         section_size: sec_size,
                         section_executable: sec_exec,
                         section_writable: sec_write,
+                        architecture: None,
+                        function_meta: None,
                     });
                 }
             }

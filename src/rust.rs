@@ -185,6 +185,8 @@ impl RustStringExtractor {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                     });
                 }
             }
@@ -413,6 +415,8 @@ impl RustStringExtractor {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                             });
                         }
                     }
@@ -606,6 +610,8 @@ impl RustStringExtractor {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         });
     }
 }

@@ -66,7 +66,7 @@ pub use overlay::{detect_elf_overlay, extract_overlay_strings};
 pub use rust::RustStringExtractor;
 pub use stack_strings::extract_stack_strings;
 pub use types::{
-    BinaryInfo, ExtractedString, OverlayInfo, Severity, StringKind, StringMethod, StringStruct,
+    BinaryInfo, ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod, StringStruct,
 };
 pub use validation::is_garbage;
 
@@ -105,6 +105,19 @@ fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf) 
     }
 }
 
+/// Convert Mach-O cputype to architecture string
+fn cputype_to_arch_string(cputype: u32) -> &'static str {
+    match cputype {
+        0x01000007 => "x86_64",
+        0x0100000C => "arm64",
+        0x00000007 => "x86",
+        0x0000000C => "arm",
+        0x00000012 => "ppc",
+        0x01000012 => "ppc64",
+        _ => "unknown",
+    }
+}
+
 /// Enrich strings with section information based on their file offsets (Mach-O)
 ///
 /// `base_offset` is the file offset where this architecture starts (0 for regular binaries,
@@ -114,6 +127,7 @@ fn enrich_macho_sections(
     macho: &goblin::mach::MachO,
     base_offset: u64,
 ) {
+    let arch_name = cputype_to_arch_string(macho.header.cputype);
     // Calculate Mach-O header regions (relative to architecture start)
     // Header is 32 bytes for 64-bit, 28 bytes for 32-bit
     let header_size: u64 = if macho.is_64 { 32 } else { 28 };
@@ -139,7 +153,8 @@ fn enrich_macho_sections(
         let needs_section = s.section.as_ref().map_or(true, |sec| sec.is_empty());
         if needs_section {
             // First check actual sections
-            // Section offsets are relative to architecture, so add base_offset
+            // Try both absolute and architecture-relative comparisons
+            // (radare2 on fat binaries returns architecture-relative offsets)
             let mut found = false;
             for segment in &macho.segments {
                 for (section, _data) in segment.into_iter().flatten() {
@@ -147,10 +162,21 @@ fn enrich_macho_sections(
                     if section.offset == 0 {
                         continue;
                     }
-                    let section_start = base_offset + u64::from(section.offset);
-                    let section_end = section_start + section.size;
-                    if s.data_offset >= section_start && s.data_offset < section_end {
+
+                    // Try absolute file offset comparison first
+                    let section_start_abs = base_offset + u64::from(section.offset);
+                    let section_end_abs = section_start_abs + section.size;
+
+                    // Try architecture-relative offset comparison second
+                    let section_start_rel = u64::from(section.offset);
+                    let section_end_rel = section_start_rel + section.size;
+
+                    let matches_absolute = s.data_offset >= section_start_abs && s.data_offset < section_end_abs;
+                    let matches_relative = s.data_offset >= section_start_rel && s.data_offset < section_end_rel;
+
+                    if matches_absolute || matches_relative {
                         s.section = Some(section.name().unwrap_or("(unknown)").to_string());
+                        s.architecture = Some(arch_name.to_string());
                         found = true;
                         break;
                     }
@@ -165,10 +191,12 @@ fn enrich_macho_sections(
                 if s.data_offset >= base_offset && s.data_offset < load_cmds_end {
                     // In header or load commands area
                     s.section = Some("load_commands".to_string());
+                    s.architecture = Some(arch_name.to_string());
                 } else if let Some((start, end)) = linkedit_range {
                     if s.data_offset >= start && s.data_offset < end {
                         // In LINKEDIT but not in a specific section (symbol/string tables)
                         s.section = Some("__LINKEDIT".to_string());
+                        s.architecture = Some(arch_name.to_string());
                     }
                 }
             }

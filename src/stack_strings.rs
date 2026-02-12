@@ -389,6 +389,8 @@ impl<'a> StackStringExtractor<'a> {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             };
 
             // We need to initialize 'current' with the first write
@@ -473,6 +475,8 @@ impl<'a> StackStringExtractor<'a> {
                         section_size: None,
                         section_executable: None,
                         section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                     };
                     current_end_disp = w.disp + w.string.len() as i64;
                 }
@@ -552,6 +556,8 @@ impl<'a> StackStringExtractor<'a> {
                 section_size: None,
                 section_executable: None,
                 section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             };
         }
 

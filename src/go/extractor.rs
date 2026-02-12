@@ -350,6 +350,8 @@ impl GoStringExtractor {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                     });
                 }
                 current.clear();
@@ -375,6 +377,8 @@ impl GoStringExtractor {
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
             });
         }
 

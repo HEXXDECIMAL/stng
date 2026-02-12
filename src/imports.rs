@@ -29,6 +29,8 @@ pub fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedS
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                 });
             }
         }
@@ -52,6 +54,8 @@ pub fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedS
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
                 });
             }
         }
@@ -120,6 +124,8 @@ pub fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> Vec<Ext
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
+                    architecture: None,
+                    function_meta: None,
         });
     }
 
