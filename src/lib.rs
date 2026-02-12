@@ -764,6 +764,7 @@ pub fn extract_from_object(
                 min_length,
                 elf.header.e_machine,
                 Some(elf),
+                None,
             ));
 
             // Skip stack string extraction for Go binaries (they don't use stack-based obfuscation)
@@ -830,6 +831,7 @@ pub fn extract_from_object(
                 min_length,
                 pe.header.coff_header.machine,
                 None,
+                Some(pe),
             ));
 
             // Raw scan for PE (catches strings missed by structure extraction)
@@ -853,7 +855,7 @@ pub fn extract_from_object(
             }
             // Extract binary network data (IPs and ports in network byte order)
             // For unknown formats, use 0 (not M68000) to process normally
-            strings.extend(scan_binary_ips(data, min_length, 0, None));
+            strings.extend(scan_binary_ips(data, min_length, 0, None, None));
             strings.extend(extract_stack_strings(data, min_length));
         }
     }

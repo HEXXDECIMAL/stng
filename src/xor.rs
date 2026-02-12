@@ -21,9 +21,9 @@ const SKIP_XOR_KEYS: &[u8] = &[0x20];
 /// Maximum file size for auto-detection of XOR keys (512 KB).
 pub const MAX_AUTO_DETECT_SIZE: usize = 512 * 1024;
 
-/// Maximum file size for single-byte XOR scanning (50 MB).
+/// Maximum file size for single-byte XOR scanning (5 MB).
 /// Larger files take too long to scan and rarely contain simple XOR obfuscation.
-pub const MAX_XOR_SCAN_SIZE: usize = 50 * 1024 * 1024;
+pub const MAX_XOR_SCAN_SIZE: usize = 5 * 1024 * 1024;
 
 /// Calculate Shannon entropy of a byte string.
 /// Returns a value between 0.0 (no entropy) and 8.0 (maximum entropy for bytes).

@@ -13,10 +13,19 @@ const EM_68K: u16 = 4;
 
 /// Checks if a section name indicates a data section (writable or relocatable)
 /// Real hardcoded C2 IPs should be in data sections, not code sections
-fn is_data_section(section: &str) -> bool {
+fn is_data_section_elf(section: &str) -> bool {
     matches!(
         section,
         ".data" | ".data.rel.ro" | ".rodata" | ".rodata.cst" | ".bss" | ".fini_array" | ".init_array"
+    )
+}
+
+/// Checks if a PE section name indicates a data section
+/// Real hardcoded C2 IPs should be in data sections like .data or .rdata, not .text (code)
+fn is_data_section_pe(section: &str) -> bool {
+    matches!(
+        section,
+        ".data" | ".rdata" | ".bss" | ".idata" | ".edata" | ".rsrc"
     )
 }
 
@@ -35,6 +44,7 @@ pub fn scan_binary_ips(
     min_length: usize,
     e_machine: u16,
     elf_opt: Option<&crate::goblin::elf::Elf>,
+    pe_opt: Option<&crate::goblin::pe::PE>,
 ) -> Vec<ExtractedString> {
     // Skip M68000 binaries - their instruction stream naturally contains 0x0002 patterns
     if e_machine == EM_68K {
@@ -56,8 +66,29 @@ pub fn scan_binary_ips(
                 if s.data_offset >= sh.sh_offset && s.data_offset < sh.sh_offset + sh.sh_size {
                     if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
                         // Accept if in a data section, reject if in code section
-                        return is_data_section(name);
+                        return is_data_section_elf(name);
                     }
+                }
+            }
+            // If section can't be determined, reject to be safe
+            false
+        });
+    }
+
+    // For PE binaries with section info, filter to only accept data sections
+    // Real hardcoded C2 IPs are in .data, .rdata, etc., not in .text (code)
+    if let Some(pe) = pe_opt {
+        results.retain(|s| {
+            // Find which section this offset belongs to
+            for section in &pe.sections {
+                let section_start = u64::from(section.pointer_to_raw_data);
+                let section_end = section_start + u64::from(section.size_of_raw_data);
+                if s.data_offset >= section_start && s.data_offset < section_end {
+                    let name = String::from_utf8_lossy(&section.name)
+                        .trim_end_matches('\0')
+                        .to_string();
+                    // Accept if in a data section, reject if in code section
+                    return is_data_section_pe(&name);
                 }
             }
             // If section can't be determined, reject to be safe
@@ -99,6 +130,21 @@ fn is_valid_ip(octets: &[u8; 4]) -> bool {
         return false;
     }
 
+    // Reject IPs ending in .255 (broadcast addresses)
+    if octets[3] == 255 {
+        return false;
+    }
+
+    // Reject IPs with last octet >= 250 (often artifacts/broadcast-like patterns)
+    if octets[3] >= 250 {
+        return false;
+    }
+
+    // Reject IPs with any octet == 255 (broadcast patterns)
+    if octets.iter().any(|&b| b == 255) {
+        return false;
+    }
+
     true
 }
 
@@ -106,9 +152,9 @@ fn scan_sockaddr_in(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
     let mut results = Vec::new();
 
     // Skip file headers (ELF, PE, Mach-O) which often contain similar byte patterns
-    // Use a modest skip of 256 bytes that covers most header structures without
-    // missing legitimate socket structures in the actual data
-    let start = if data.len() > 256 { 256 } else { 0 };
+    // Use 1024 byte skip to cover headers and metadata sections that often contain
+    // false positive patterns. Real sockaddr_in structs are in data sections further in.
+    let start = if data.len() > 1024 { 1024 } else { 0 };
 
     for i in start..data.len().saturating_sub(7) {
         // Check for AF_INET marker (value 2) in either endianness
@@ -125,6 +171,11 @@ fn scan_sockaddr_in(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
 
         // Skip port 0 (invalid)
         if port == 0 {
+            continue;
+        }
+
+        // Skip very high ports (>= 61000) - unlikely to be real C2, often artifacts
+        if port >= 61000 {
             continue;
         }
 
@@ -254,7 +305,7 @@ mod tests {
         data[54..58].copy_from_slice(&[0x0A, 0x14, 0x1E, 0x28]); // 10.20.30.40
 
         let elf_arm = 40; // EM_ARM from ELF header
-        let results = scan_binary_ips(&data, 4, elf_arm, None);
+        let results = scan_binary_ips(&data, 4, elf_arm, None, None);
 
         // Should find at least the two main structures (deduplication may occur)
         assert!(results.len() >= 2);
@@ -332,7 +383,7 @@ mod tests {
         data[274..278].copy_from_slice(&[0xC0, 0xA8, 0x01, 0x01]); // IP 192.168.1.1
 
         let elf_m68k = 4; // EM_68K from ELF header
-        let results = scan_binary_ips(&data, 4, elf_m68k, None);
+        let results = scan_binary_ips(&data, 4, elf_m68k, None, None);
 
         // Should return empty for M68000 binaries
         assert!(results.is_empty(), "Should skip all results for M68000 binaries");
@@ -358,7 +409,7 @@ mod tests {
         ];
 
         for (e_machine, arch_name) in arch_samples {
-            let results = scan_binary_ips(&data, 4, e_machine, None);
+            let results = scan_binary_ips(&data, 4, e_machine, None, None);
             assert!(!results.is_empty(), "Should process {} architecture", arch_name);
             assert!(
                 results.iter().any(|r| r.value.contains("192.168.1.1:8080")),
