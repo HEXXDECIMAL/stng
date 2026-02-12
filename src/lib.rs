@@ -336,36 +336,36 @@ fn method_priority(m: StringMethod) -> u8 {
     }
 }
 
-/// Deduplicate strings by keeping only the longest string at each offset.
-/// This handles cases where overlapping strings exist at the same offset.
-fn deduplicate_by_offset(strings: Vec<ExtractedString>) -> Vec<ExtractedString> {
-    use std::collections::HashMap;
-
-    let mut offset_map: HashMap<u64, Vec<ExtractedString>> = HashMap::new();
-    for s in strings {
-        offset_map.entry(s.data_offset).or_default().push(s);
+/// Deduplicate strings by keeping only the best string at each offset.
+/// Uses in-place sort-based deduplication to avoid allocating a large HashMap.
+/// When multiple strings exist at the same offset, keeps the one with:
+/// 1. Highest method priority (decoded > raw scan)
+/// 2. Longest value (if same priority)
+fn deduplicate_by_offset(mut strings: Vec<ExtractedString>) -> Vec<ExtractedString> {
+    if strings.is_empty() {
+        return strings;
     }
 
-    offset_map
-        .into_values()
-        .map(|mut strings_at_offset| {
-            if strings_at_offset.len() > 1 {
-                strings_at_offset.sort_by(|a, b| {
-                    // First compare by method priority (higher is better)
-                    let pa = method_priority(a.method);
-                    let pb = method_priority(b.method);
-                    match pb.cmp(&pa) {
-                        std::cmp::Ordering::Equal => {
-                            // Then by length (longer is better)
-                            b.value.len().cmp(&a.value.len())
-                        }
-                        other => other,
-                    }
-                });
-            }
-            strings_at_offset.into_iter().next().unwrap()
-        })
-        .collect()
+    // Sort by offset first, then by priority (best first), then by length (longest first)
+    strings.sort_by(|a, b| {
+        a.data_offset
+            .cmp(&b.data_offset)
+            .then_with(|| {
+                // Higher priority first (reverse comparison)
+                let pa = method_priority(a.method);
+                let pb = method_priority(b.method);
+                pb.cmp(&pa)
+            })
+            .then_with(|| {
+                // Longer strings first (reverse comparison)
+                b.value.len().cmp(&a.value.len())
+            })
+    });
+
+    // Remove duplicates at the same offset (keep first, which is best due to sort)
+    strings.dedup_by(|a, b| a.data_offset == b.data_offset);
+
+    strings
 }
 
 /// Extract strings with additional options.
