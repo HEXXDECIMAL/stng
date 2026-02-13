@@ -368,7 +368,9 @@ fn method_priority(m: StringMethod) -> u8 {
         | StringMethod::HexDecode
         | StringMethod::UrlDecode
         | StringMethod::UnicodeEscapeDecode
-        | StringMethod::CodeSignature => 2,
+        | StringMethod::CodeSignature
+        | StringMethod::Utf16LeDecode
+        | StringMethod::Utf16BeDecode => 2,
         StringMethod::Heuristic => 1,
         StringMethod::RawScan => 0,
     }
@@ -406,6 +408,65 @@ fn deduplicate_by_offset(mut strings: Vec<ExtractedString>) -> Vec<ExtractedStri
     strings
 }
 
+/// Extract strings from a UTF-16 encoded file (detected by BOM).
+///
+/// When a UTF-16 BOM is detected at the start of a file, this function:
+/// 1. Decodes the entire file from UTF-16 to UTF-8
+/// 2. Extracts strings from the decoded UTF-8 content
+/// 3. Marks all strings with the appropriate StringMethod (Utf16LeDecode or Utf16BeDecode)
+///
+/// This is common for JavaScript malware, PowerShell scripts, and other text files
+/// saved in UTF-16 encoding on Windows systems.
+fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian: bool) -> Vec<ExtractedString> {
+    let mut strings = Vec::new();
+
+    // Skip the 2-byte BOM and decode the rest
+    if data.len() < 2 {
+        return strings;
+    }
+
+    let utf16_data = &data[2..];
+
+    // Convert bytes to u16 code units
+    if utf16_data.len() % 2 != 0 {
+        // Odd number of bytes - can't be valid UTF-16, truncate last byte
+        tracing::warn!("UTF-16 file has odd byte count, truncating last byte");
+    }
+
+    let code_units: Vec<u16> = utf16_data
+        .chunks_exact(2)
+        .map(|chunk| {
+            if is_little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect();
+
+    // Decode UTF-16 to UTF-8
+    let decoded = String::from_utf16_lossy(&code_units);
+    let decoded_bytes = decoded.as_bytes();
+
+    // Extract strings from the decoded UTF-8 content
+    let empty_section_info = std::collections::HashMap::new();
+    let mut raw_strings = extract_raw_strings(decoded_bytes, opts.min_length, None, &[], &empty_section_info);
+
+    // Update the method for all extracted strings to indicate they came from UTF-16 decoding
+    let method = if is_little_endian {
+        StringMethod::Utf16LeDecode
+    } else {
+        StringMethod::Utf16BeDecode
+    };
+
+    for string in &mut raw_strings {
+        string.method = method;
+    }
+
+    strings.extend(raw_strings);
+    strings
+}
+
 /// Extract strings with additional options.
 ///
 /// Provides fine-grained control over the extraction process through the
@@ -428,9 +489,23 @@ fn deduplicate_by_offset(mut strings: Vec<ExtractedString>) -> Vec<ExtractedStri
 /// ```
 #[must_use]
 pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<ExtractedString> {
+    // Check for UTF-16 BOM first, before trying to parse as a binary format
+    // This ensures text files with UTF-16 encoding are handled correctly
+    if data.len() >= 2 {
+        let has_utf16le_bom = data[0] == 0xFF && data[1] == 0xFE;
+        let has_utf16be_bom = data[0] == 0xFE && data[1] == 0xFF;
+
+        if has_utf16le_bom || has_utf16be_bom {
+            tracing::debug!("Detected UTF-16{} BOM, decoding entire file",
+                if has_utf16le_bom { "LE" } else { "BE" });
+            return extract_from_utf16_file(data, opts, has_utf16le_bom);
+        }
+    }
+
     if let Ok(object) = Object::parse(data) {
         deduplicate_by_offset(extract_from_object(&object, data, opts))
     } else {
+
         // Unknown format - use r2 if available, otherwise raw scan
         let mut strings = Vec::new();
         if let Some(r2_strings) = get_r2_strings(opts) {

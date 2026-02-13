@@ -180,6 +180,10 @@ pub enum StringMethod {
     StackString,
     /// Found in Mach-O code signature (entitlements)
     CodeSignature,
+    /// Found via UTF-16LE whole-file decoding (BOM detected)
+    Utf16LeDecode,
+    /// Found via UTF-16BE whole-file decoding (BOM detected)
+    Utf16BeDecode,
 }
 
 /// Semantic kind of the extracted string.

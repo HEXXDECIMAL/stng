@@ -250,6 +250,75 @@ fn test_dissect_api_consumer_workflow() {
 }
 
 #[test]
+fn test_utf16le_bom_javascript_malware() {
+    // Real-world UTF-16LE encoded JavaScript malware sample (79197527.js)
+    // This file starts with UTF-16LE BOM (0xFF 0xFE) and contains obfuscated JavaScript
+    // that creates files, executes wscript.exe, and runs PowerShell commands
+
+    // First few lines of the malware encoded as UTF-16LE with BOM
+    let utf16le_js = b"\xFF\xFE\
+\r\x00\n\x00 \x00 \x00\r\x00\n\x00f\x00u\x00n\x00c\x00t\x00i\x00o\x00n\x00 \x00\
+v\x00f\x00v\x00t\x00w\x00(\x00 \x00u\x00f\x00z\x00m\x00u\x00,\x00 \x00B\x00h\x00\
+u\x00Q\x00T\x00 \x00)\x00 \x00{\x00\r\x00\n\x00 \x00 \x00v\x00a\x00r\x00 \x00\
+F\x00a\x00g\x00d\x00C\x00 \x00=\x00 \x00(\x00\"\x00\\\xAA\xDA\x02\xFD\xFF\
+\xDA\x02.\x00\xFD\xFF \x00\xBC\x05 \x00\xFD\xFF\xFD\xFF.\x00 \x00\x00%\xCE\t\
+\xFD\xFF \x00 \x00\xFD\xFF\x00%\xFD\xFF\xFD\xFF \x00.\x00\xFD\xFF\xFD\xFF.'%\x00\
+%\x00\x0C\xD8\x9D\xDD\x00% \x00\x01\xD8\"\xDD.\x00\x0C\xD8\xD3\xDD\x00%\x00\
+% \x00\x00%\xDA\x02\xFD\xFF \x00 \x00\xFD\xFF\xD9\x02\xFD\xFF\x00%\"\x00 \x00\
++\x00 \x00\"\x00>\x04=\x042\x040\x04A\x04\"\x00)\x00 \x00 \x00;\x00\r\x00\n\x00";
+
+    let opts = stng::ExtractOptions::new(4);
+    let strings = stng::extract_strings_with_options(utf16le_js, &opts);
+
+    // Should detect UTF-16LE BOM and decode the file
+    assert!(!strings.is_empty(), "Should extract strings from UTF-16LE encoded file");
+
+    // All strings should be marked as Utf16LeDecode
+    let utf16_decoded = strings.iter().filter(|s| s.method == StringMethod::Utf16LeDecode).count();
+    assert!(utf16_decoded > 0, "Should have Utf16LeDecode method strings");
+
+    // Should extract JavaScript function names and keywords
+    assert!(
+        strings.iter().any(|s| s.value.contains("function")),
+        "Should extract 'function' keyword"
+    );
+    assert!(
+        strings.iter().any(|s| s.value.contains("vfvtw")),
+        "Should extract function name 'vfvtw'"
+    );
+    assert!(
+        strings.iter().any(|s| s.value.contains("var")),
+        "Should extract 'var' keyword"
+    );
+    assert!(
+        strings.iter().any(|s| s.value.contains("FagdC")),
+        "Should extract variable name 'FagdC'"
+    );
+}
+
+#[test]
+fn test_utf16be_bom_detection() {
+    // UTF-16BE BOM (0xFE 0xFF) followed by "Hello World"
+    let utf16be_data = b"\xFE\xFF\
+\x00H\x00e\x00l\x00l\x00o\x00 \x00W\x00o\x00r\x00l\x00d";
+
+    let opts = stng::ExtractOptions::new(4);
+    let strings = stng::extract_strings_with_options(utf16be_data, &opts);
+
+    assert!(!strings.is_empty(), "Should extract strings from UTF-16BE encoded file");
+
+    // Should be marked as Utf16BeDecode
+    let utf16_decoded = strings.iter().filter(|s| s.method == StringMethod::Utf16BeDecode).count();
+    assert!(utf16_decoded > 0, "Should have Utf16BeDecode method strings");
+
+    // Should decode "Hello World"
+    assert!(
+        strings.iter().any(|s| s.value.contains("Hello")),
+        "Should decode UTF-16BE content"
+    );
+}
+
+#[test]
 fn test_dissect_vs_bare_options() {
     let data = std::fs::read("/Users/t/data/dissect/malware/typescript/2026.property-demo/webfonts/fa-brands-regular.woff2").unwrap();
     
