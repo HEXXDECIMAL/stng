@@ -5,6 +5,7 @@
 
 use crate::{ExtractedString, StringKind, StringMethod};
 use data_encoding::{BASE32, BASE32_NOPAD};
+use regex::Regex;
 
 /// Minimum length for base64 strings to attempt decoding
 pub const MIN_BASE64_LENGTH: usize = 16;
@@ -15,15 +16,94 @@ pub const MIN_HEX_LENGTH: usize = 16;
 /// Maximum size for decoded output (to prevent memory exhaustion)
 pub const MAX_DECODED_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
+/// Deobfuscate strings that use concatenation patterns.
+///
+/// Many malware samples split encoded strings using concatenation to evade detection:
+/// - JavaScript: `"ZnVu" + "Y3Rp" + "b24"`
+/// - Python: `'ZnVu' + 'Y3Rp' + 'b24'`
+/// - PHP: `'ZnVu' . 'Y3Rp' . 'b24'`
+/// - Obfuscated: `"ZnVu" + 'A' + "Y3Rp"` (junk inserted between chunks)
+///
+/// This function detects these patterns, extracts the quoted segments,
+/// and reassembles them into the original encoded string.
+pub fn deobfuscate_concatenation(s: &str) -> Option<String> {
+    // Check if the string contains common concatenation patterns
+    if !s.contains(" + ") && !s.contains(" . ") && !s.contains(" .. ") {
+        return None;
+    }
+
+    // Match quoted strings: 'text' or "text"
+    // This regex finds all single or double quoted strings
+    let quoted_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
+
+    let mut segments = Vec::new();
+
+    for cap in quoted_re.captures_iter(s) {
+        if let Some(content) = cap.get(1) {
+            segments.push(content.as_str());
+        }
+    }
+
+    // Need at least 2 segments to be concatenation
+    if segments.len() < 2 {
+        return None;
+    }
+
+    // Reassemble all segments
+    let reassembled = segments.join("");
+
+    // Only return if the result is different and potentially useful
+    // (longer strings, higher chance of being encoded data)
+    if reassembled.len() >= MIN_BASE64_LENGTH && reassembled != s {
+        Some(reassembled)
+    } else {
+        None
+    }
+}
+
 /// Decode base64-encoded strings from a list of extracted strings.
 ///
 /// Returns a vector of newly decoded strings with `StringMethod::Base64Decode`.
+/// Also attempts to deobfuscate concatenated strings first.
 pub fn decode_base64_strings(strings: &[ExtractedString]) -> Vec<ExtractedString> {
-    strings
-        .iter()
-        .filter(|s| s.kind == StringKind::Base64 || is_likely_base64(&s.value))
-        .filter_map(|s| decode_base64_string(s))
-        .collect()
+    let mut results = Vec::new();
+
+    for s in strings {
+        // Try normal base64 decoding first
+        if s.kind == StringKind::Base64 || is_likely_base64(&s.value) {
+            if let Some(decoded) = decode_base64_string(s) {
+                results.push(decoded);
+                continue;
+            }
+        }
+
+        // If that didn't work, try deobfuscating concatenation first
+        if let Some(deobfuscated) = deobfuscate_concatenation(&s.value) {
+            if is_likely_base64(&deobfuscated) {
+                // Create a temporary ExtractedString with deobfuscated content
+                let temp = ExtractedString {
+                    value: deobfuscated,
+                    data_offset: s.data_offset,
+                    section: s.section.clone(),
+                    method: s.method,
+                    kind: s.kind,
+                    library: None,
+                    fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
+                    architecture: None,
+                    function_meta: None,
+                };
+
+                if let Some(decoded) = decode_base64_string(&temp) {
+                    results.push(decoded);
+                }
+            }
+        }
+    }
+
+    results
 }
 
 /// Attempt to decode a single base64 string.

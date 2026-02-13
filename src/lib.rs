@@ -452,7 +452,18 @@ fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian:
     let empty_section_info = std::collections::HashMap::new();
     let mut raw_strings = extract_raw_strings(decoded_bytes, opts.min_length, None, &[], &empty_section_info);
 
+    // Apply decoders (base64, hex, URL-encoding, etc.) to the extracted strings
+    // This allows us to find base64-encoded PowerShell, hex-encoded URLs, etc.
+    let mut decoded_strings = Vec::new();
+    decoded_strings.extend(decoders::decode_base64_strings(&raw_strings));
+    decoded_strings.extend(decoders::decode_base32_strings(&raw_strings));
+    decoded_strings.extend(decoders::decode_base85_strings(&raw_strings));
+    decoded_strings.extend(decoders::decode_hex_strings(&raw_strings));
+    decoded_strings.extend(decoders::decode_url_strings(&raw_strings));
+    decoded_strings.extend(decoders::decode_unicode_escape_strings(&raw_strings));
+
     // Update the method for all extracted strings to indicate they came from UTF-16 decoding
+    // (but preserve the method for decoded strings - they should show Base64Decode, etc.)
     let method = if is_little_endian {
         StringMethod::Utf16LeDecode
     } else {
@@ -464,6 +475,7 @@ fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian:
     }
 
     strings.extend(raw_strings);
+    strings.extend(decoded_strings);
     strings
 }
 
