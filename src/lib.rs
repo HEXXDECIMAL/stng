@@ -488,7 +488,8 @@ fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian:
 
     strings.extend(raw_strings);
     strings.extend(decoded_strings);
-    strings
+
+    deduplicate_by_offset(strings)
 }
 
 /// Extract strings with additional options.
