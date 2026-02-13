@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::Path;
-use stng::{Severity, StringKind};
+use stng::{Severity, StringKind, StringMethod};
 
 #[derive(Parser, Debug)]
 #[command(name = "stng")]
@@ -287,6 +287,41 @@ fn decode_url_encoding(s: &str) -> Vec<u8> {
     result
 }
 
+/// Get priority for a string extraction method (higher = better)
+#[allow(clippy::match_same_arms)]
+fn method_priority(m: StringMethod) -> u8 {
+    match m {
+        // Highest priority: language-aware extraction and decoded content
+        StringMethod::Structure
+        | StringMethod::StackString
+        | StringMethod::InstructionPattern
+        | StringMethod::Base64ObfuscatedDecode => 3,
+
+        // High priority: decoded/extracted content
+        StringMethod::R2String
+        | StringMethod::R2Symbol
+        | StringMethod::WideString
+        | StringMethod::XorDecode
+        | StringMethod::Base64Decode
+        | StringMethod::Base32Decode
+        | StringMethod::Base85Decode
+        | StringMethod::HexDecode
+        | StringMethod::UrlDecode
+        | StringMethod::UnicodeEscapeDecode
+        | StringMethod::CodeSignature
+        | StringMethod::Utf16LeDecode
+        | StringMethod::Utf16BeDecode => 2,
+
+        // Medium priority: heuristics
+        StringMethod::Heuristic => 1,
+
+        // Lowest priority: raw scanning
+        StringMethod::RawScan => 0,
+
+        _ => 0, // Catchall for any future methods
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -448,13 +483,22 @@ fn main() -> Result<()> {
         if indices.len() == 1 {
             keep_indices.insert(indices[0]);
         } else {
-            // Multiple strings at same offset - keep the longest
-            let longest_idx = indices
+            // Multiple strings at same offset - prefer decoded strings, then longest
+            let best_idx = indices
                 .iter()
-                .max_by_key(|&&idx| strings[idx].value.len())
+                .max_by(|&&a, &&b| {
+                    let method_a = method_priority(strings[a].method);
+                    let method_b = method_priority(strings[b].method);
+
+                    // Higher priority method first
+                    method_a.cmp(&method_b)
+                        // Then longer string
+                        .then_with(|| strings[a].value.len().cmp(&strings[b].value.len()))
+                })
                 .copied()
                 .unwrap();
-            keep_indices.insert(longest_idx);
+
+            keep_indices.insert(best_idx);
         }
     }
 
@@ -903,10 +947,15 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         return;
     }
 
-    // Special handling for multi-line XOR-decoded strings
-    if s.method == stng::StringMethod::XorDecode && s.value.contains('\n') {
-        let kind = format!("xor/{}", s.kind.short_name());
-        // XOR-decoded content always uses bright yellow to stand out
+    // Special handling for multi-line decoded strings (XOR or obfuscated base64)
+    if (s.method == stng::StringMethod::XorDecode || s.method == stng::StringMethod::Base64ObfuscatedDecode)
+        && s.value.contains('\n') {
+        let kind = if s.method == stng::StringMethod::XorDecode {
+            format!("xor/{}", s.kind.short_name())
+        } else {
+            format!("b64+obf/{}", s.kind.short_name())
+        };
+        // Decoded content always uses bright yellow to stand out
         let (color, kind_color) = if use_color {
             (BRIGHT_YELLOW, BRIGHT_YELLOW)
         } else {
@@ -940,6 +989,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     let kind = if s.method == stng::StringMethod::XorDecode {
         // XOR-decoded strings get "xor/" prefix
         format!("xor/{}", s.kind.short_name())
+    } else if s.method == stng::StringMethod::Base64ObfuscatedDecode {
+        // Obfuscated base64 strings get "b64+obf/" prefix
+        format!("b64+obf/{}", s.kind.short_name())
     } else if s.method == stng::StringMethod::WideString && s.kind != stng::StringKind::OverlayWide
     {
         // Wide strings get ":16LE" suffix
@@ -950,8 +1002,8 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
     // Get color based on method and severity
     let (color, kind_color) = if use_color {
-        // XOR-decoded content always uses bright yellow to stand out
-        if s.method == stng::StringMethod::XorDecode {
+        // XOR-decoded and obfuscated base64 content uses bright yellow to stand out
+        if s.method == stng::StringMethod::XorDecode || s.method == stng::StringMethod::Base64ObfuscatedDecode {
             (BRIGHT_YELLOW, BRIGHT_YELLOW)
         } else if s.kind == stng::StringKind::Section {
             // Section names are rarely interesting - show in dim grey

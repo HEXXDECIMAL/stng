@@ -56,6 +56,7 @@ pub mod xor;
 
 // Decoders for encoded strings
 pub mod decoders;
+mod fuzzy_base64;
 
 // Re-export public API
 pub use binary::{is_go_binary, is_rust_binary};
@@ -357,7 +358,13 @@ pub fn extract_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
 
 fn method_priority(m: StringMethod) -> u8 {
     match m {
-        StringMethod::Structure | StringMethod::StackString | StringMethod::InstructionPattern => 3,
+        // Highest priority: language-aware extraction and obfuscated decoded content
+        StringMethod::Structure
+        | StringMethod::StackString
+        | StringMethod::InstructionPattern
+        | StringMethod::Base64ObfuscatedDecode => 3,
+
+        // High priority: decoded/extracted content
         StringMethod::R2String
         | StringMethod::R2Symbol
         | StringMethod::WideString
@@ -371,7 +378,11 @@ fn method_priority(m: StringMethod) -> u8 {
         | StringMethod::CodeSignature
         | StringMethod::Utf16LeDecode
         | StringMethod::Utf16BeDecode => 2,
+
+        // Medium priority: heuristics
         StringMethod::Heuristic => 1,
+
+        // Lowest priority: raw scanning
         StringMethod::RawScan => 0,
     }
 }
@@ -456,6 +467,7 @@ fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian:
     // This allows us to find base64-encoded PowerShell, hex-encoded URLs, etc.
     let mut decoded_strings = Vec::new();
     decoded_strings.extend(decoders::decode_base64_strings(&raw_strings));
+    decoded_strings.extend(fuzzy_base64::extract_fuzzy_base64(&raw_strings));
     decoded_strings.extend(decoders::decode_base32_strings(&raw_strings));
     decoded_strings.extend(decoders::decode_base85_strings(&raw_strings));
     decoded_strings.extend(decoders::decode_hex_strings(&raw_strings));
@@ -659,6 +671,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
         tracing::debug!("Running decoders on {} strings", strings.len());
         let mut decoded = Vec::new();
         decoded.extend(decoders::decode_base64_strings(&strings));
+        decoded.extend(fuzzy_base64::extract_fuzzy_base64(&strings));
         decoded.extend(decoders::decode_base32_strings(&strings));
         decoded.extend(decoders::decode_base85_strings(&strings));
         decoded.extend(decoders::decode_hex_strings(&strings));
@@ -1178,6 +1191,7 @@ pub fn extract_from_object(
     // This happens BEFORE garbage filtering so we can decode potentially-garbage-looking encodings
     let mut decoded = Vec::new();
     decoded.extend(decoders::decode_base64_strings(&strings));
+    decoded.extend(fuzzy_base64::extract_fuzzy_base64(&strings));
     decoded.extend(decoders::decode_base32_strings(&strings));
     decoded.extend(decoders::decode_base85_strings(&strings));
     decoded.extend(decoders::decode_hex_strings(&strings));
