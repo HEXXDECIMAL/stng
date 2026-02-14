@@ -362,31 +362,33 @@ fn main() -> Result<()> {
     // Handle text files by extracting and classifying strings from lines
     if stng::is_text_file(&data) {
         let content = String::from_utf8_lossy(&data);
-        let mut strings: Vec<stng::ExtractedString> = content
-            .lines()
-            .enumerate()
-            .filter_map(|(idx, line)| {
-                let trimmed = line.trim();
-                if trimmed.len() >= cli.min_length {
-                    Some(stng::ExtractedString {
-                        value: trimmed.to_string(),
-                        data_offset: idx as u64,
-                        section: None,
-                        method: stng::StringMethod::RawScan,
-                        kind: stng::classify_string(trimmed),
-                        library: None,
-                        fragments: None,
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
+
+        // Track byte offset for each line
+        let mut byte_offset = 0u64;
+        let mut strings: Vec<stng::ExtractedString> = Vec::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.len() >= cli.min_length {
+                strings.push(stng::ExtractedString {
+                    value: trimmed.to_string(),
+                    data_offset: byte_offset,
+                    section: None,
+                    method: stng::StringMethod::RawScan,
+                    kind: stng::classify_string(trimmed),
+                    library: None,
+                    fragments: None,
+                    section_size: None,
+                    section_executable: None,
+                    section_writable: None,
+                    architecture: None,
+                    function_meta: None,
+                });
+            }
+            // Advance byte offset: line length + newline character
+            // Note: lines() strips the newline, so we add +1 for it
+            byte_offset += line.len() as u64 + 1;
+        }
 
         // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
         let mut decoded = Vec::new();
