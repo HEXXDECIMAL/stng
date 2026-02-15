@@ -43,10 +43,20 @@ fn test_bin_ls_clean() {
         .filter(|s| s.kind == StringKind::Base32)
         .count();
 
-    // /bin/ls should have no XOR-encoded strings
+    let base64_count = strings.iter()
+        .filter(|s| s.kind == StringKind::Base64)
+        .count();
+
+    // /bin/ls should have ZERO XOR false positives
+    if xor_count > 0 {
+        eprintln!("Found {} XOR strings in /bin/ls:", xor_count);
+        for s in strings.iter().filter(|s| s.method == stng::StringMethod::XorDecode) {
+            eprintln!("  offset={} kind={:?} value={:?}", s.data_offset, s.kind, s.value);
+        }
+    }
     assert_eq!(
         xor_count, 0,
-        "Clean binary should have no XOR strings, found {}", xor_count
+        "Clean binary should have NO XOR strings, found {}", xor_count
     );
 
     // Base85 should not trigger on normal strings
@@ -75,6 +85,33 @@ fn test_bin_ls_clean() {
     assert_eq!(
         xor_key_count, 0,
         "Clean binary should have no detected XOR keys, found {}", xor_key_count
+    );
+
+    // Base64: /bin/ls contains legitimate base64 in code signature (CD hashes)
+    // These are SHA-1 hashes in <data> tags inside the code signature blob
+    // They should be categorized as CodeSignature method, not generic base64
+    let codesig_base64_count = strings.iter()
+        .filter(|s| s.kind == StringKind::Base64 && s.method == stng::StringMethod::CodeSignature)
+        .count();
+
+    if base64_count > 0 {
+        eprintln!("Found {} base64 strings in /bin/ls:", base64_count);
+        for s in strings.iter().filter(|s| s.kind == StringKind::Base64) {
+            eprintln!("  offset=0x{:x} method={:?} section={:?} value={:?}",
+                     s.data_offset, s.method, s.section, s.value);
+        }
+    }
+
+    // All base64 should be code signature hashes (in __LINKEDIT)
+    assert_eq!(
+        base64_count, codesig_base64_count,
+        "All base64 should be CodeSignature method, found {} base64 but only {} with CodeSignature method",
+        base64_count, codesig_base64_count
+    );
+
+    assert!(
+        base64_count <= 2,
+        "Clean binary should have minimal base64 (code sig hashes), found {}", base64_count
     );
 }
 

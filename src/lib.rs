@@ -87,6 +87,104 @@ use entitlements::extract_macho_entitlements;
 use imports::{extract_elf_imports, extract_macho_imports};
 use raw::{extract_raw_strings, extract_wide_strings};
 
+/// Check if a string looks like a bundle ID (reverse domain notation).
+/// Examples: com.apple.ls, org.example.app, net.something.tool
+fn is_bundle_id(s: &str) -> bool {
+    // Must contain at least 2 dots (e.g., com.apple.ls)
+    let dot_count = s.chars().filter(|&c| c == '.').count();
+    if dot_count < 2 {
+        return false;
+    }
+
+    // Must start with known TLD
+    if !s.starts_with("com.") && !s.starts_with("org.") &&
+       !s.starts_with("net.") && !s.starts_with("io.") &&
+       !s.starts_with("app.") && !s.starts_with("dev.") {
+        return false;
+    }
+
+    // All parts should be alphanumeric + hyphen/underscore
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+
+    for part in parts {
+        if part.is_empty() {
+            return false;
+        }
+        if !part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Check if a string looks like it's part of an X.509 certificate.
+/// Certificates are embedded in the code signature blob and contain:
+/// - Distinguished Names (DN): "Apple Inc.1", "Apple Certification Authority1"
+/// - ASN.1 dates: "111024173941Z", "261024173941Z0"
+/// - CRL URLs: "http://crl.apple.com/codesigning.crl0"
+/// - Policy text: "This certificate is to be used exclusively for..."
+fn is_certificate_string(s: &str) -> bool {
+    // Certificate Authority names
+    if s.contains("Certification Authority") ||
+       s.contains("Certificate Authority") ||
+       s.contains("Root CA") {
+        return true;
+    }
+
+    // Code signing related
+    if s.contains("Code Signing") ||
+       s.contains("Software Signing") {
+        return true;
+    }
+
+    // CRL (Certificate Revocation List) URLs
+    if s.contains("crl.apple.com") ||
+       s.contains("appleca") ||
+       (s.contains(".crl") && s.contains("http")) {
+        return true;
+    }
+
+    // ASN.1 date format: YYMMDDHHMMSSZ or YYYYMMDDHHMMSSZ
+    // Examples: "111024173941Z", "261024173941Z0", "201029183238Z"
+    if s.len() >= 13 && s.ends_with('Z') {
+        let without_z = &s[..s.len()-1];
+        if without_z.chars().all(|c| c.is_ascii_digit()) &&
+           (without_z.len() == 12 || without_z.len() == 14) {
+            return true;
+        }
+    }
+    // Sometimes has trailing digits/chars after Z
+    if s.len() >= 14 && s.contains('Z') {
+        if let Some(z_pos) = s.find('Z') {
+            if z_pos >= 12 {
+                let before_z = &s[..z_pos];
+                if before_z.chars().rev().take(12).all(|c| c.is_ascii_digit()) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Certificate policy text
+    if s.contains("certificate is to be used") ||
+       s.contains("Reliance on this certificate") ||
+       s.contains("terms and conditions") {
+        return true;
+    }
+
+    // Apple Inc. and related organizational units (but not just "Apple")
+    if (s.contains("Apple Inc.") || s.contains("Apple Software")) &&
+       s.len() < 50 { // Keep it short to avoid false positives
+        return true;
+    }
+
+    false
+}
+
 /// Enrich strings with section information based on their file offsets (ELF)
 fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf) {
     for s in strings {
@@ -1186,6 +1284,50 @@ pub fn extract_from_object(
         }
         Object::PE(pe) => enrich_pe_sections(&mut strings, pe),
         _ => {}
+    }
+
+    // Upgrade strings in __LINKEDIT section related to code signatures
+    // __LINKEDIT contains symbol tables AND the code signature blob
+    // This must happen AFTER section enrichment so section names are populated
+    for s in &mut strings {
+        if let Some(ref section) = s.section {
+            if section == "__LINKEDIT" {
+                // Base64 strings in __LINKEDIT are CD hashes
+                if s.kind == StringKind::Base64 {
+                    s.kind = StringKind::CodeSignatureHash;
+                    s.method = StringMethod::CodeSignature;
+                }
+
+                // XML/plist strings in __LINKEDIT are part of code signature
+                // (entitlements or code signature metadata like cdhashes)
+                if s.kind == StringKind::Const && (
+                    s.value.starts_with("<?xml") ||
+                    s.value.starts_with("<!DOCTYPE plist") ||
+                    s.value.starts_with("<plist") ||
+                    s.value.starts_with("<dict") ||
+                    s.value.starts_with("</dict>") ||
+                    s.value.starts_with("</plist>") ||
+                    s.value.starts_with("<key>") ||
+                    s.value.starts_with("<array>") ||
+                    s.value.starts_with("</array>") ||
+                    s.value.starts_with("<data>") ||
+                    s.value.starts_with("</data>")
+                ) {
+                    s.method = StringMethod::CodeSignature;
+                }
+
+                // Certificate-related strings in __LINKEDIT (X.509 certificate chain)
+                // These are Distinguished Names, dates, CRL URLs, and policy text
+                if s.kind == StringKind::Const && is_certificate_string(&s.value) {
+                    s.method = StringMethod::CodeSignature;
+                }
+
+                // Bundle IDs (reverse domain notation) in __LINKEDIT are often app identifiers
+                if s.kind == StringKind::Const && is_bundle_id(&s.value) {
+                    s.kind = StringKind::AppId;
+                }
+            }
+        }
     }
 
     // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)

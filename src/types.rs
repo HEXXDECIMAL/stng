@@ -240,6 +240,8 @@ pub enum StringKind {
     Registry,
     /// Base64-encoded data
     Base64,
+    /// Code signature hash (CD hash in Mach-O __LINKEDIT section)
+    CodeSignatureHash,
     /// Hex-encoded ASCII data (each byte as two hex chars)
     HexEncoded,
     /// Unicode escape sequences (\xXX, \uXXXX format)
@@ -389,6 +391,7 @@ impl StringKind {
             StringKind::SuspiciousPath => "sus",
             StringKind::Registry => "registry",
             StringKind::Base64 => "base64",
+            StringKind::CodeSignatureHash => "hash",
             StringKind::HexEncoded => "hex",
             StringKind::UnicodeEscaped => "unicode",
             StringKind::UrlEncoded => "urlenc",

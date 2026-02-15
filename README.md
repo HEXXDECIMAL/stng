@@ -2,6 +2,12 @@
 
 **stng** — Language-aware string extraction for binary malware analysis. Extract indicators, hardcoded credentials, C2 addresses, and obfuscated strings from any binary.
 
+## Screenshot
+
+Demonstrating the automatic XOR-decoding capabilities on an AMOS malware sample (macOS):
+
+![screenshot](media/screenshot.png)
+
 ## Quick Start
 
 ```bash

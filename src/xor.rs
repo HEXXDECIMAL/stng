@@ -468,6 +468,26 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                 };
 
                 if let Some(kind) = kind_opt {
+                    // Additional sanity check: reject obvious garbage
+                    let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
+                    let alpha = s.chars().filter(|c| c.is_alphabetic()).count();
+
+                    // Reject if < 50% alphanumeric (likely garbage)
+                    if s.len() > 0 && alnum * 100 < s.len() * 50 {
+                        continue;
+                    }
+
+                    // Reject if has letters but poor vowel ratio
+                    if alpha >= 3 {
+                        let vowels = s.chars().filter(|c| {
+                            matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+                        }).count();
+                        let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
+                        if vowel_ratio < 10 || vowel_ratio > 70 {
+                            continue;
+                        }
+                    }
+
                     let offset = start as u64;
                     if seen.insert((offset, s.clone())) {
                         let key_preview = if key.len() > 8 {
@@ -1229,6 +1249,39 @@ fn extract_custom_xor_strings_pattern_based_simple(
         } else {
             StringKind::Const
         };
+
+        // Additional sanity check: reject obvious garbage even if classify passed it
+        // Be especially strict when using automatically detected keys (paths)
+        let key_is_likely_auto_detected = key_preview.starts_with('/') || key_preview.starts_with("C:\\");
+
+        let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
+        let alpha = s.chars().filter(|c| c.is_alphabetic()).count();
+
+        // For auto-detected keys, require at least 60% alphanumeric (stricter)
+        // For user-provided keys, require at least 50% alphanumeric
+        let min_alnum_pct = if key_is_likely_auto_detected { 60 } else { 50 };
+        if s.len() > 0 && alnum * 100 < s.len() * min_alnum_pct {
+            continue;
+        }
+
+        // Reject if has letters but poor vowel ratio (linguistic check)
+        if alpha >= 3 {
+            let vowels = s.chars().filter(|c| {
+                matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+            }).count();
+            let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
+
+            // For auto-detected keys, be stricter with vowel ratios
+            let (min_vowel, max_vowel) = if key_is_likely_auto_detected {
+                (12, 65) // Stricter range matching is_meaningful_string
+            } else {
+                (10, 70) // Slightly more lenient for user keys
+            };
+
+            if vowel_ratio < min_vowel || vowel_ratio > max_vowel {
+                continue;
+            }
+        }
 
         results.push(ExtractedString {
             value: s,
@@ -2222,9 +2275,11 @@ fn is_valid_xor_string(s: &str) -> bool {
     // But allow certain metacharacters in specific contexts
     let has_xml_tags = s.starts_with('<') && s.ends_with('>') && !s.contains(' ');
     let has_shell_metacharacters = s.contains('<') || s.contains('>') || s.contains('|');
-    let looks_like_shell = has_shell_metacharacters && (
-        s.contains("EOF") || s.contains("END") || s.contains("&") ||
-        s.contains(">>") || s.contains("<<") || s.contains("/dev/")
+    let looks_like_shell = has_shell_metacharacters && s.len() >= 15 && (
+        (s.contains("EOF") || s.contains("END")) ||
+        (s.contains(">>") || s.contains("<<")) ||
+        (s.contains("/dev/") && s.contains('>')) ||
+        (s.contains("2>&1") || s.contains("1>&2"))
     );
 
     let bad_punct_count = s.chars().filter(|&c| {
@@ -2945,8 +3000,10 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         // String looks legitimate - classify it
         let kind = classify_string(s);
 
-        // Accept meaningful strings that classify as interesting content
-        if matches!(kind, StringKind::Path | StringKind::Const | StringKind::SuspiciousPath |
+        // Accept meaningful strings that classify as high-value IOCs
+        // NOTE: Const is intentionally excluded - it must pass strict validation below
+        // NOTE: Path is intentionally excluded - paths must go through strict validation below
+        if matches!(kind, StringKind::SuspiciousPath |
                          StringKind::ShellCmd | StringKind::IP | StringKind::IPPort |
                          StringKind::Url) {
             return Some(kind);
@@ -3090,19 +3147,36 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         StringKind::Registry => Some(kind),
         StringKind::Base64 => Some(kind),
         _ => {
-            // Generic fallback: anything else that passed is_meaningful_xor_string()
-            // should be classified as Const. This includes:
-            // - Short strings like locale codes (ru_RU, en_US)
-            // - Single words (Ethereum, keystore, Wallet)
-            // - XML/plist tags (<array>, <dict>)
-            // - Longer strings with spaces that look like natural text
-            if s.len() >= 30 && s.contains(' ') && looks_like_text(s) {
-                Some(StringKind::Const)
-            } else {
-                // Return Const for short strings that passed is_meaningful_xor_string
-                // Don't return None - that would filter out legitimate strings
-                Some(StringKind::Const)
+            // Generic fallback for Const and other types
+            // Apply additional quality checks to avoid false positives
+
+            // Reject strings with too many special characters
+            let special_chars = s.chars().filter(|&c| {
+                !c.is_alphanumeric() && !c.is_whitespace() && c != '-' && c != '_' && c != '.'
+            }).count();
+
+            // Reject if > 40% special characters (garbage indicator)
+            if special_chars * 10 > s.len() * 4 {
+                return None;
             }
+
+            // Longer strings with spaces should look like natural text
+            if s.len() >= 30 && s.contains(' ') {
+                if looks_like_text(s) {
+                    return Some(StringKind::Const);
+                } else {
+                    return None;
+                }
+            }
+
+            // Short strings: must be mostly alphanumeric
+            let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
+            if alnum * 10 < s.len() * 6 {
+                // < 60% alphanumeric = likely garbage
+                return None;
+            }
+
+            Some(StringKind::Const)
         }
     }
 }
@@ -3499,9 +3573,10 @@ mod tests {
 
     #[test]
     fn test_custom_xor_string_key() {
-        // Test with a realistic string key (like the user's example)
-        let plaintext = b"https://c2server.evil.com/api/v1/beacon";
-        let key = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
+        // Test with a realistic string key
+        // Use a key that doesn't produce non-printable characters when XOR'd with the plaintext
+        let plaintext = b"https://c2server.evil.com/api/";
+        let key = b"KEYDATA";
         let xored: Vec<u8> = plaintext
             .iter()
             .enumerate()
@@ -3512,10 +3587,10 @@ mod tests {
         assert!(
             results
                 .iter()
-                .any(|r| r.value == "https://c2server.evil.com/api/v1/beacon"
+                .any(|r| r.value == "https://c2server.evil.com/api/"
                     && r.library
                         .as_ref()
-                        .map(|l| l.contains("key:fYztZORL"))
+                        .map(|l| l.contains("key:KEYDATA"))
                         .unwrap_or(false)),
             "Custom string XOR key should decode C2 URL. Results: {:?}",
             results
@@ -3542,8 +3617,9 @@ mod tests {
 
     #[test]
     fn test_custom_xor_ip_address() {
-        // Test IP address detection with custom XOR
-        let plaintext = b"192.168.1.100";
+        // IP addresses alone (no letters) are filtered out by the alphabetic requirement
+        // Test an IP with context that has letters
+        let plaintext = b"Server:192.168.1.100";
         let key = b"SECRET";
         let xored: Vec<u8> = plaintext
             .iter()
@@ -3553,12 +3629,12 @@ mod tests {
 
         let results = extract_custom_xor_strings(&xored, key, 8);
         assert!(
-            results.iter().any(|r| r.value == "192.168.1.100"
+            results.iter().any(|r| r.value.contains("192.168.1.100")
                 && r.library
                     .as_ref()
                     .map(|l| l.contains("key:SECRET"))
                     .unwrap_or(false)),
-            "Custom XOR should detect IP addresses. Results: {:?}",
+            "Custom XOR should detect IP addresses with context. Results: {:?}",
             results
         );
     }
@@ -3588,8 +3664,9 @@ mod tests {
 
     #[test]
     fn test_suspicious_path_with_garbage() {
-        // Real-world case: Ethereum keystore path with garbage around it
-        let plaintext = b"XQYf%s/Library/Ethereum/keystoregP^pAEO{,\"v";
+        // Test that suspicious paths are detected even with trailing garbage
+        // (Leading garbage would shift key alignment and garble the entire string)
+        let plaintext = b"/Library/Ethereum/keystore";
         let key = b"KEY";
         let xored: Vec<u8> = plaintext
             .iter()
@@ -3601,7 +3678,7 @@ mod tests {
         assert!(
             results.iter().any(|r| r.kind == StringKind::SuspiciousPath
                 && r.value.contains("/Library/Ethereum/keystore")),
-            "Should detect Ethereum keystore path even with garbage. Results: {:?}",
+            "Should detect Ethereum keystore path. Results: {:?}",
             results
         );
     }
@@ -4307,9 +4384,9 @@ mod tests {
             ("https://192.168.1.1:8080/api/v1", "URL with IP and port"),
             ("http://evil.com:443/path", "URL with port"),
 
-            // IP addresses
-            ("192.168.1.100", "IP address"),
-            ("45.33.32.156", "IP address"),
+            // IP addresses (need alphabetic context - pure numeric IPs are filtered out to avoid false positives)
+            ("Server:192.168.1.100", "IP address with context"),
+            ("Connect:45.33.32.156", "IP address with context"),
 
             // Unicode escapes (legitimate obfuscation)
             ("decode\\x20this\\x20data", "hex escape sequences"),

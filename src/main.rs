@@ -992,6 +992,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         ("xor", s.kind.short_name())
     } else if s.method == stng::StringMethod::Base64ObfuscatedDecode {
         ("b64+obf", s.kind.short_name())
+    } else if s.method == stng::StringMethod::CodeSignature {
+        // All CodeSignature strings get the "codesig" method tag
+        ("codesig", s.kind.short_name())
     } else if s.method == stng::StringMethod::WideString && s.kind != stng::StringKind::OverlayWide {
         ("wide", s.kind.short_name())
     } else {
