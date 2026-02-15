@@ -372,12 +372,13 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
         return Vec::new();
     }
 
-    // For multi-byte keys, try both approaches and merge results
-    // 1. Pattern-based: each string XOR'd independently from key[0]
-    // 2. File-level cycling: entire file XOR'd at all key offsets
-    // Cycling now: skips up to 4 consecutive nulls, removes embedded null bytes
+    // Simplified decode.py-style extraction:
+    // - Pattern-based XOR only (each string starts from key[0])
+    // - Scan EVERY offset without skipping
+    // - Deduplicate by string content only
+    // - Apply classification AFTER extraction
     if key.len() > 1 {
-        let mut all_results = extract_custom_xor_strings_pattern_based(
+        let all_results = extract_custom_xor_strings_pattern_based_simple(
             data,
             key,
             min_length,
@@ -385,88 +386,26 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
             &excluded_ranges,
         );
 
-        // Also try file-level cycling (like single-byte XOR but at all key offsets)
-        // This catches strings embedded in continuous XOR'd blocks
-        all_results.extend(extract_custom_xor_strings_file_level_cycling(
-            data,
-            key,
-            min_length,
-            apply_filters,
-            &excluded_ranges,
-        ));
-
-        // Deduplicate by (offset, value)
+        // Deduplicate by string content (like decode.py does)
+        // This handles the case where same string appears at multiple offsets
         let dedup_start = std::time::Instant::now();
-        let mut seen: HashSet<(u64, String)> = HashSet::new();
-        all_results.retain(|s| seen.insert((s.data_offset, s.value.clone())));
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut final_results = Vec::new();
+
+        for result in all_results {
+            if seen.insert(result.value.clone()) {
+                final_results.push(result);
+            }
+        }
+
         tracing::debug!(
-            "Dedup by (offset, value): {} -> {} strings in {:.2}s",
-            all_results.len() + seen.len(),
-            all_results.len(),
+            "Dedup by content: {} -> {} strings in {:.2}s",
+            final_results.len() + seen.len(),
+            final_results.len(),
             dedup_start.elapsed().as_secs_f64()
         );
 
-        // Remove overlapping strings - keep the higher quality one
-        // Sort by quality (score) descending, then by offset
-        let sort_start = std::time::Instant::now();
-        all_results.sort_by(|a, b| {
-            let score_a = string_quality_score(a);
-            let score_b = string_quality_score(b);
-            score_b
-                .cmp(&score_a)
-                .then(a.data_offset.cmp(&b.data_offset))
-        });
-        tracing::debug!(
-            "Final sorting {} strings took {:.2}s",
-            all_results.len(),
-            sort_start.elapsed().as_secs_f64()
-        );
-
-        let overlap_start = std::time::Instant::now();
-        let result_count = all_results.len();
-        let mut final_results: Vec<ExtractedString> = Vec::new();
-        // Cache trimmed ranges to avoid recalculating trim_*_garbage() repeatedly
-        let mut trimmed_ranges: Vec<(usize, usize)> = Vec::new(); // (trimmed_start, trimmed_end)
-
-        for result in all_results {
-            let start = result.data_offset as usize;
-            let _end = start + result.value.len();
-
-            // Trim both leading and trailing garbage for overlap checking
-            let trimmed_leading = trim_leading_garbage(&result.value);
-            let leading_offset = result.value.len() - trimmed_leading.len();
-            let trimmed_both = trim_trailing_garbage(trimmed_leading);
-            let trimmed_start = start + leading_offset;
-            let trimmed_end = trimmed_start + trimmed_both.len();
-
-            // Check if this overlaps with any previously accepted string (using trimmed ranges)
-            let mut overlaps = false;
-            for &(prev_trimmed_start, prev_trimmed_end) in &trimmed_ranges {
-                if !(trimmed_end <= prev_trimmed_start || trimmed_start >= prev_trimmed_end) {
-                    overlaps = true;
-                    break;
-                }
-            }
-
-            // Only add if it doesn't overlap (higher quality strings are checked first)
-            if !overlaps {
-                trimmed_ranges.push((trimmed_start, trimmed_end));
-
-                // Store the trimmed string with adjusted offset
-                let mut trimmed_result = result.clone();
-                trimmed_result.value = trimmed_both.to_string();
-                trimmed_result.data_offset = trimmed_start as u64;
-                final_results.push(trimmed_result);
-            }
-        }
-        tracing::debug!(
-            "Final overlap checking took {:.2}s, kept {} of {} strings",
-            overlap_start.elapsed().as_secs_f64(),
-            final_results.len(),
-            result_count
-        );
-
-        // Re-sort by offset for consistent output
+        // Sort by offset for consistent output
         final_results.sort_by_key(|s| s.data_offset);
 
         // Merge with hint results
@@ -550,6 +489,7 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
 /// This is the most common approach in malware (e.g., DPRK samples).
 /// Extract strings using file-level cycling XOR (exhaustive key offset search).
 /// Tries `XORing` the entire file with the key starting at each possible offset (`0..key.len()`).
+#[allow(dead_code)]
 fn extract_custom_xor_strings_file_level_cycling(
     data: &[u8],
     key: &[u8],
@@ -1005,6 +945,7 @@ fn is_xor_key_artifact(s: &str, key: &[u8]) -> bool {
 ///
 /// Scans every position in the file as a potential string start, XOR-decodes forward,
 /// and keeps strings that pass filtering.
+#[allow(dead_code)]
 fn extract_custom_xor_strings_pattern_based(
     data: &[u8],
     key: &[u8],
@@ -1125,6 +1066,7 @@ fn extract_custom_xor_strings_pattern_based(
 
 /// Try to decode an XOR'd string starting at a specific position.
 /// Returns the decoded string if it looks valid.
+#[allow(dead_code)]
 fn try_decode_xor_string_at(
     data: &[u8],
     pos: usize,
@@ -1203,6 +1145,114 @@ fn try_decode_xor_string_at(
     }
 
     Some((decoded_str, pos, end))
+}
+
+/// Simplified pattern-based extraction matching decode.py behavior.
+/// Scans every offset, no overlap skipping, minimal filtering.
+fn extract_custom_xor_strings_pattern_based_simple(
+    data: &[u8],
+    key: &[u8],
+    min_length: usize,
+    apply_filters: bool,
+    excluded_ranges: &[(usize, usize)],
+) -> Vec<ExtractedString> {
+    let start_time = std::time::Instant::now();
+    tracing::info!(
+        "Pattern-based XOR scan (decode.py style): {} bytes with {} byte key",
+        data.len(),
+        key.len()
+    );
+
+    let mut results = Vec::new();
+    let mut checked = 0;
+
+    // Pre-compute key preview (same for all strings)
+    let key_preview = if key.len() > 8 {
+        format!("{}...", String::from_utf8_lossy(&key[..8]))
+    } else {
+        String::from_utf8_lossy(key).to_string()
+    };
+
+    // Scan every position like decode.py does
+    for pos in 0..data.len().saturating_sub(min_length) {
+        checked += 1;
+        if checked % 100000 == 0 {
+            tracing::debug!(
+                "  Scanned {} positions, found {} strings",
+                checked,
+                results.len()
+            );
+        }
+
+        // Skip if this position is in an excluded range (from radare2 hints)
+        let in_excluded_range = excluded_ranges
+            .iter()
+            .any(|&(ex_start, ex_end)| pos >= ex_start && pos < ex_end);
+        if in_excluded_range {
+            continue;
+        }
+
+        // Try to decode a string starting at this position
+        // Pattern-based: data[pos+j] ^ key[j % len(key)]
+        let mut decoded = Vec::new();
+        for j in 0..std::cmp::min(1024, data.len() - pos) {
+            let byte = data[pos + j] ^ key[j % key.len()];
+
+            // decode.py uses Python's string.printable
+            if is_printable_byte_for_file_xor(byte) {
+                decoded.push(byte);
+            } else {
+                break;
+            }
+        }
+
+        if decoded.len() < min_length {
+            continue;
+        }
+
+        // Try to convert to UTF-8
+        let Ok(s) = String::from_utf8(decoded) else {
+            continue;
+        };
+
+        // decode.py requires: any(c.isalpha() for c in s)
+        if !s.chars().any(|c| c.is_alphabetic()) {
+            continue;
+        }
+
+        // Apply classification if filtering enabled (only call once!)
+        let kind = if apply_filters {
+            if let Some(classified_kind) = classify_xor_string(&s) {
+                classified_kind
+            } else {
+                // classify_xor_string returned None, skip this string
+                continue;
+            }
+        } else {
+            StringKind::Const
+        };
+
+        results.push(ExtractedString {
+            value: s,
+            data_offset: pos as u64,
+            section: None,
+            method: StringMethod::XorDecode,
+            kind,
+            library: Some(format!("key:{}", key_preview)),
+            fragments: None,
+            ..Default::default()
+        });
+    }
+
+    let elapsed = start_time.elapsed();
+    tracing::info!(
+        "Pattern-based scan found {} strings in {:.2}s ({:.0} pos/sec)",
+        results.len(),
+        elapsed.as_secs_f64(),
+        checked as f64 / elapsed.as_secs_f64()
+    );
+
+    results
 }
 
 /// Expand a multi-byte XOR'd string from a match position.
@@ -2233,6 +2283,31 @@ fn is_valid_xor_string(s: &str) -> bool {
     true
 }
 
+/// Common English words and computing terms that indicate legitimate text.
+/// Used to boost confidence that decoded text is real vs garbage.
+const COMMON_WORDS: &[&str] = &[
+    // Very common English words (3-5 letters)
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was", "one",
+    "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now", "old",
+    "see", "two", "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too",
+    "use", "your", "into", "just", "like", "make", "many", "over", "such", "take", "than",
+    "them", "then", "these", "think", "through", "time", "very", "when", "work", "would",
+    // System/Path words
+    "Users", "Library", "Application", "Support", "Local", "Storage", "AppData", "Program",
+    "Files", "System", "Windows", "Containers", "Cache", "Temp", "private", "public",
+    "Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos",
+    // Common file extensions (targets for exfiltration)
+    "plist", "json", "conf", "config", "sqlite", "wallet", "keystore", "screenshot",
+    "Bookmarks", "Cookies", "History", "Preferences",
+    // Application names
+    "Safari", "Chrome", "Firefox", "Telegram", "Discord", "Slack",
+    // Crypto/Security (exfiltration targets)
+    "Wallet", "Wallets", "Ethereum", "Exodus", "Electrum", "Monero", "Bitcoin",
+    "password", "passwd", "token", "session", "cookie", "credential", "secret",
+];
+
+/// Check if a string looks like well-formed text using linguistic patterns.
+/// This recognizes legitimate English/computing text without hardcoded keyword lists.
 fn is_meaningful_string(s: &str) -> bool {
     if s.is_empty() {
         return false;
@@ -2245,6 +2320,7 @@ fn is_meaningful_string(s: &str) -> bool {
     let mut upper = 0usize;
     let mut lower = 0usize;
     let mut punct = 0usize;
+    let mut spaces = 0usize;
 
     for c in s.chars() {
         if c.is_ascii_alphabetic() {
@@ -2261,35 +2337,128 @@ fn is_meaningful_string(s: &str) -> bool {
             digit += 1;
         } else if c.is_ascii_punctuation() {
             punct += 1;
+        } else if c == ' ' {
+            spaces += 1;
         }
     }
 
     let alnum = alpha + digit;
 
-    if len > 0 && alnum * 100 / len < 60 {
+    // Must be at least 50% alphanumeric (relaxed from 60% to catch "Bookmarks.plist")
+    if len > 0 && alnum * 100 / len < 50 {
         return false;
     }
 
-    if alpha > 5 {
+    // Check for common file extensions (exfiltration targets)
+    let has_file_extension = s.contains(".plist") || s.contains(".json") || s.contains(".conf") ||
+        s.contains(".sqlite") || s.contains(".jpg") || s.contains(".png") || s.contains(".txt") ||
+        s.contains(".log") || s.contains(".xml") || s.contains(".db") || s.contains(".dat") ||
+        s.contains(".wallet") || s.contains(".keystore");
+
+    if has_file_extension {
+        // File paths are high value - just check basic quality
+        if alpha >= 5 && vowel > 0 {
+            return true;
+        }
+    }
+
+    // Check if string contains common words (case-insensitive matching)
+    let lower_s = s.to_ascii_lowercase();
+    let word_matches = COMMON_WORDS.iter()
+        .filter(|&word| {
+            let word_lower = word.to_ascii_lowercase();
+            lower_s.contains(&word_lower)
+        })
+        .count();
+
+    // Strong signal: 2+ common words = likely legitimate
+    if word_matches >= 2 {
+        return true;
+    }
+
+    // Medium signal: 1 common word + reasonable quality
+    if word_matches >= 1 {
+        if alpha >= 5 {
+            let vowel_ratio = if alpha > 0 { vowel * 100 / alpha } else { 0 };
+            // Very lenient with common words present
+            if vowel_ratio >= 8 {
+                return true;
+            }
+        }
+    }
+
+    // Linguistic analysis for strings without known words
+    if alpha >= 5 {
         let vowel_ratio = vowel * 100 / alpha;
-        if vowel_ratio < 15 {
+
+        // English text typically has 35-45% vowels
+        // Be lenient: accept 12-65%
+        if vowel_ratio < 12 || vowel_ratio > 65 {
             return false;
         }
 
-        if upper > 0 && lower == 0 && alpha > 6 && punct == 0 && digit == 0 {
+        // Check for word-like structure (not random letters)
+        // Count consonant clusters (more than 4 consecutive consonants is suspicious)
+        let chars: Vec<char> = s.chars().collect();
+        let mut max_consonant_run = 0;
+        let mut consonant_run = 0;
+
+        for &c in &chars {
+            if c.is_ascii_alphabetic() && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u') {
+                consonant_run += 1;
+                max_consonant_run = max_consonant_run.max(consonant_run);
+            } else {
+                consonant_run = 0;
+            }
+        }
+
+        // English rarely has >5 consecutive consonants (e.g., "catchphrase" has 4)
+        if max_consonant_run > 6 {
             return false;
         }
 
+        // Check case consistency (Title Case, lowercase, UPPERCASE, or camelCase are OK)
+        // Random case mixing like "rAnDoM" is suspicious
+        if alpha > 8 && upper > 0 && lower > 0 {
+            // If we have mixed case, check if it's structured
+            let has_spaces_or_separators = spaces > 0 || s.contains('/') || s.contains('.') || s.contains('_');
+
+            // Title Case or camelCase with separators is fine
+            // Random mixing without structure is bad
+            if !has_spaces_or_separators {
+                // Check if it's camelCase (starts lowercase, has capitals mid-word)
+                let starts_lower = chars[0].is_ascii_lowercase();
+                let has_mid_caps = chars.windows(2).any(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase());
+
+                if !starts_lower && !has_mid_caps {
+                    // Not Title, not camel, not consistent - likely garbage
+                    let upper_ratio = upper * 100 / alpha;
+                    // Reject if 20-80% uppercase (random mixing)
+                    if (20..=80).contains(&upper_ratio) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // Reject all-caps with no punctuation/digits (likely garbage like "ABCDEFGH")
+        if upper > 0 && lower == 0 && alpha > 6 && punct == 0 && digit == 0 && spaces == 0 {
+            return false;
+        }
+
+        // Reject all-lowercase with no vowels (like "bcdfghjk")
         if lower > 0 && upper == 0 && vowel == 0 && alpha > 4 {
             return false;
         }
     }
 
+    // Check character diversity (reject repetitive strings like "aaaaaaa")
     let unique: HashSet<char> = s.chars().collect();
     if unique.len() * 3 < len && len > 10 {
         return false;
     }
 
+    // Reject strings with too many backslashes (path separators are OK, but not excessive)
     let backslash_count = s.chars().filter(|&c| c == '\\').count();
     if backslash_count > 3 && backslash_count * 4 > len {
         return false;
@@ -2384,6 +2553,37 @@ const SUSPICIOUS_PATHS: &[&str] = &[
     "/Keychain",
     "/wallet.dat",
     "/Library/Cookies",
+    // Crypto wallet directories commonly targeted by malware
+    "Wallets/Guarda",
+    "Wallets/atomic",
+    "Wallets/BitPay",
+    "Wallets/Ethereum",
+    "Wallets/Electrum",
+    "Wallets/Electrum-LTC",
+    "Wallets/ElectronCash",
+    "Wallets/Sparrow",
+    "Wallets/Monero",
+    "Wallets/Jaxx",
+    "Wallets/MyMonero",
+    "Wallets/Coinomi",
+    "Wallets/Daedalus",
+    "Wallets/Wasabi",
+    "Wallets/Blockstream",
+    "Wallets/",
+    "Exodus/exodus.wallet",
+    "Exodus/exodus.conf",
+    ".electrum/wallets",
+    ".electrum-ltc/wallets",
+    ".electron-cash/wallets",
+    ".sparrow/wallets",
+    "Monero/wallets",
+    ".walletwasabi/",
+    "Neon/storage/userWallet",
+    "Daedalus Mainnet/wallets",
+    "Blockstream/Green/Wallets",
+    "com.bitpay.wallet",
+    "/trezor.txt",
+    "/specter.txt",
 ];
 
 /// Trim trailing garbage from extracted strings.
@@ -2705,6 +2905,32 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         }
     }
 
+    // Check for AppleScript syntax (common in macOS malware)
+    let applescript_indicators = [
+        "set ", "tell application", "path to desktop", "path to documents",
+        "every file of", "whose name extension", "posix file", "end tell",
+        "do shell script", "display dialog", "choose file", "choose folder",
+    ];
+
+    for indicator in &applescript_indicators {
+        if lower.contains(indicator) {
+            return Some(StringKind::ShellCmd);
+        }
+    }
+
+    // Check for browser/app data exfiltration targets
+    let exfil_indicators = [
+        "extension settings", "local storage", "cookies", "bookmarks",
+        "history", "preferences", "session", "cache", "telegram", "discord",
+        "slack", "signal", "whatsapp", "tdata", "desktop folder", "documents folder",
+    ];
+
+    for indicator in &exfil_indicators {
+        if lower.contains(indicator) {
+            return Some(StringKind::SuspiciousPath);
+        }
+    }
+
     // Quick check for URLs/IPs before strict filtering
     if lower.contains("http://") || lower.contains("https://") || lower.contains("://") {
         // Likely a URL, allow through
@@ -2728,12 +2954,26 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         }
     }
 
-    // SECOND: Apply strict filtering for everything else
+    // SECOND: Check if string looks like well-formed text
+    // If it passes linguistic validation, trust it
+    if is_meaningful_string(s) {
+        // String looks legitimate - classify it
+        let kind = classify_string(s);
+
+        // Accept meaningful strings that classify as interesting content
+        if matches!(kind, StringKind::Path | StringKind::Const | StringKind::SuspiciousPath |
+                         StringKind::ShellCmd | StringKind::IP | StringKind::IPPort |
+                         StringKind::Url) {
+            return Some(kind);
+        }
+    }
+
+    // THIRD: For strings that don't pass linguistic checks, apply strict filtering
     if !is_valid_xor_string(s) {
         return None;
     }
 
-    // THIRD: Classify remaining strings normally
+    // Classify remaining strings that passed strict validation
     let kind = classify_string(s);
 
     match kind {
