@@ -372,9 +372,11 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
         return Vec::new();
     }
 
-    // Pattern-based XOR extraction:
-    // - Scan every offset (each string starts from key[0])
-    // - Remove byte-range overlaps (keep longest)
+    // Simplified decode.py-style extraction:
+    // - Pattern-based XOR only (each string starts from key[0])
+    // - Scan EVERY offset without skipping
+    // - Deduplicate by string content only
+    // - Apply classification AFTER extraction
     if key.len() > 1 {
         let mut all_results = extract_custom_xor_strings_pattern_based_simple(
             data,
@@ -384,45 +386,59 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
             &excluded_ranges,
         );
 
-        // Remove byte-range overlaps: keep longest strings
-        // Sort by length descending so we check longest first
-        all_results.sort_by_key(|s| std::cmp::Reverse(s.value.len()));
+        // Remove overlapping strings - keep longer/higher quality ones
+        // (same string at different offsets is useful, so no content dedup)
+        let overlap_start = std::time::Instant::now();
+        all_results.sort_by(|a, b| {
+            // Sort by: length (desc), then offset (asc)
+            b.value.len().cmp(&a.value.len())
+                .then(a.data_offset.cmp(&b.data_offset))
+        });
 
+        let original_count = all_results.len();
         let mut kept = Vec::new();
+        let debug_offset = 0x4b1ad;  // Debug specific offset
+
         for candidate in all_results {
             let cand_start = candidate.data_offset as usize;
             let cand_end = cand_start + candidate.value.len();
+            let debug_this = cand_start == debug_offset;
 
-            // Check if this byte range overlaps with any kept string
-            let overlaps = kept.iter().any(|k: &ExtractedString| {
-                let k_start = k.data_offset as usize;
-                let k_end = k_start + k.value.len();
-                !(cand_end <= k_start || cand_start >= k_end)
+            // Check if this overlaps with any already-kept string
+            let mut overlap_with = None;
+            let overlaps = kept.iter().any(|kept_str: &ExtractedString| {
+                let kept_start = kept_str.data_offset as usize;
+                let kept_end = kept_start + kept_str.value.len();
+
+                // Check byte range overlap - ANY overlap is bad
+                let does_overlap = !(cand_end <= kept_start || cand_start >= kept_end);
+                if does_overlap && debug_this {
+                    overlap_with = Some((kept_start, kept_end, kept_str.value.clone()));
+                }
+                does_overlap
             });
 
             if !overlaps {
+                }
                 kept.push(candidate);
+                if let Some((kept_start, kept_end, kept_val)) = overlap_with {
+                    eprintln!("[DEDUP]   Overlaps with 0x{:x}-0x{:x}: {:?}", kept_start, kept_end, &kept_val[..kept_val.len().min(40)]);
+                }
             }
         }
 
-        // Merge with hint results and apply overlap removal to them too
-        for hint in hint_results {
-            let hint_start = hint.data_offset as usize;
-            let hint_end = hint_start + hint.value.len();
+        tracing::debug!(
+            "Overlap dedup: {} -> {} strings in {:.2}s",
+            original_count,
+            kept.len(),
+            overlap_start.elapsed().as_secs_f64()
+        );
 
-            // Check if this hint overlaps with any kept string
-            let overlaps = kept.iter().any(|k: &ExtractedString| {
-                let k_start = k.data_offset as usize;
-                let k_end = k_start + k.value.len();
-                !(hint_end <= k_start || hint_start >= k_end)
-            });
+        // Sort by offset for consistent output
+        kept.sort_by_key(|s| s.data_offset);
 
-            if !overlaps {
-                kept.push(hint);
-            }
-        }
-
-        // Sort by offset for output
+        // Merge with hint results
+        kept.extend(hint_results);
         kept.sort_by_key(|s| s.data_offset);
 
         return kept;
@@ -495,250 +511,6 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
     }
 
     results
-}
-
-/// Extract strings XOR'd with a multi-byte key using brute-force position scanning.
-/// Each string is XOR'd independently starting from key[0], not cycling from file offset 0.
-/// This is the most common approach in malware (e.g., DPRK samples).
-/// Extract strings using file-level cycling XOR (exhaustive key offset search).
-/// Tries `XORing` the entire file with the key starting at each possible offset (`0..key.len()`).
-#[allow(dead_code)]
-fn extract_custom_xor_strings_file_level_cycling(
-    data: &[u8],
-    key: &[u8],
-    min_length: usize,
-    apply_filters: bool,
-    excluded_ranges: &[(usize, usize)],
-) -> Vec<ExtractedString> {
-    let start_time = std::time::Instant::now();
-    tracing::info!(
-        "File-level cycling XOR: {} bytes with {} byte key ({} offsets)",
-        data.len(),
-        key.len(),
-        key.len()
-    );
-
-    let mut all_candidates = Vec::new();
-    let mut seen: HashSet<(u64, String)> = HashSet::new();
-
-    // Try each possible key offset
-    for key_offset in 0..key.len() {
-        // Decode entire file with key starting at this offset
-        let mut decoded: Vec<u8> = Vec::with_capacity(data.len());
-        for (i, &byte) in data.iter().enumerate() {
-            decoded.push(byte ^ key[(i + key_offset) % key.len()]);
-        }
-
-        // Extract printable strings from decoded data
-        let mut start = 0;
-        while start < decoded.len() {
-            // Skip non-printable
-            while start < decoded.len() && !is_printable_byte_for_file_xor(decoded[start]) {
-                start += 1;
-            }
-
-            if start >= decoded.len() {
-                break;
-            }
-
-            // Skip if this position is in an excluded range (from radare2 hints)
-            let in_excluded_range = excluded_ranges
-                .iter()
-                .any(|&(ex_start, ex_end)| start >= ex_start && start < ex_end);
-            if in_excluded_range {
-                // Skip to end of excluded range
-                if let Some(&(_, ex_end)) = excluded_ranges
-                    .iter()
-                    .find(|&&(ex_start, ex_end)| start >= ex_start && start < ex_end)
-                {
-                    start = ex_end;
-                    continue;
-                }
-            }
-
-            // Skip if we're in a null byte region in the original data
-            // (these just produce the key)
-            if start < data.len() {
-                let mut null_count = 0;
-                for i in start..data.len().min(start + key.len()) {
-                    if data[i] == 0x00 {
-                        null_count += 1;
-                    }
-                }
-                if null_count >= key.len() / 2 {
-                    start += key.len();
-                    continue;
-                }
-            }
-
-            // Collect printable run
-            let mut end = start;
-            let mut consecutive_nulls = 0;
-            let mut after_null_printables = Vec::new();
-            while end < decoded.len() && is_printable_byte_for_file_xor(decoded[end]) {
-                // Track consecutive nulls in source data
-                if end < data.len() && data[end] == 0x00 {
-                    consecutive_nulls += 1;
-                    // If we hit many consecutive nulls, that's likely a real boundary
-                    if consecutive_nulls >= 4 {
-                        break;
-                    }
-                    // Save position after single null to potentially resume
-                    after_null_printables.push(end);
-                } else {
-                    consecutive_nulls = 0;
-                }
-                end += 1;
-            }
-
-            // Check length
-            if end - start >= min_length {
-                // Remove embedded null bytes from decoded string (artifacts from XOR cycling)
-                let mut cleaned = Vec::new();
-                for &byte in &decoded[start..end] {
-                    if byte != 0x00 {
-                        cleaned.push(byte);
-                    }
-                }
-
-                if let Ok(s) = String::from_utf8(cleaned) {
-                    // Verify length after removing nulls
-                    if s.len() < min_length {
-                        start = end;
-                        continue;
-                    }
-
-                    // Skip XOR key artifacts (key fragments from XORing null bytes)
-                    if apply_filters && is_xor_key_artifact(&s, key) {
-                        start = end;
-                        continue;
-                    }
-
-                    let offset = start as u64;
-                    if seen.insert((offset, s.clone())) {
-                        // Classify the string
-                        let kind_opt = if apply_filters {
-                            classify_xor_string(&s)
-                        } else {
-                            Some(StringKind::Const)
-                        };
-
-                        if let Some(kind) = kind_opt {
-                            let key_preview = if key.len() > 8 {
-                                format!("{}...", String::from_utf8_lossy(&key[..8]))
-                            } else {
-                                String::from_utf8_lossy(key).to_string()
-                            };
-
-                            all_candidates.push(ExtractedString {
-                                value: s,
-                                data_offset: offset,
-                                section: None,
-                                method: StringMethod::XorDecode,
-                                kind,
-                                library: Some(format!("key:{key_preview}@{key_offset}")),
-                                fragments: None,
-                                ..Default::default()
-                            });
-                        }
-                    }
-                }
-            }
-
-            start = end;
-        }
-    }
-
-    let collection_time = start_time.elapsed();
-    tracing::debug!(
-        "File-level cycling collected {} candidates in {:.2}s",
-        all_candidates.len(),
-        collection_time.as_secs_f64()
-    );
-
-    tracing::info!(
-        "File-level cycling collected {} candidate strings across {} offsets",
-        all_candidates.len(),
-        key.len()
-    );
-
-    // Remove overlapping strings - keep the higher quality one
-    // Sort by quality (score) descending, then by offset
-    let dedup_start = std::time::Instant::now();
-    all_candidates.sort_by(|a, b| {
-        let score_a = string_quality_score(a);
-        let score_b = string_quality_score(b);
-        score_b
-            .cmp(&score_a)
-            .then(a.data_offset.cmp(&b.data_offset))
-    });
-    tracing::debug!(
-        "Sorting {} candidates took {:.2}s",
-        all_candidates.len(),
-        dedup_start.elapsed().as_secs_f64()
-    );
-
-    let candidate_count = all_candidates.len();
-    let mut final_results: Vec<ExtractedString> = Vec::new();
-    // Cache trimmed ranges to avoid recalculating trim_*_garbage() repeatedly
-    let mut trimmed_ranges: Vec<(usize, usize)> = Vec::new(); // (trimmed_start, trimmed_end)
-
-    for result in all_candidates {
-        let start = result.data_offset as usize;
-        let _end = start + result.value.len();
-
-        // Trim both leading and trailing garbage for overlap checking
-        let trimmed_leading = trim_leading_garbage(&result.value);
-        let leading_offset = result.value.len() - trimmed_leading.len();
-        let trimmed_both = trim_trailing_garbage(trimmed_leading);
-        let trimmed_start = start + leading_offset;
-        let trimmed_end = trimmed_start + trimmed_both.len();
-
-        // Check if this overlaps with any previously accepted string (using trimmed ranges)
-        let mut overlaps = false;
-        for &(prev_trimmed_start, prev_trimmed_end) in &trimmed_ranges {
-            // Only consider it an overlap if it overlaps with the trimmed (legitimate) part
-            if !(trimmed_end <= prev_trimmed_start || trimmed_start >= prev_trimmed_end) {
-                overlaps = true;
-                break;
-            }
-        }
-
-        // Only add if it doesn't overlap (higher quality strings are checked first)
-        if !overlaps {
-            trimmed_ranges.push((trimmed_start, trimmed_end));
-
-            // Store the trimmed string with adjusted offset
-            let mut trimmed_result = result.clone();
-            trimmed_result.value = trimmed_both.to_string();
-            trimmed_result.data_offset = trimmed_start as u64;
-            final_results.push(trimmed_result);
-        }
-    }
-
-    let overlap_time = dedup_start.elapsed();
-    tracing::debug!(
-        "Overlap checking took {:.2}s, kept {} of {} strings",
-        overlap_time.as_secs_f64(),
-        final_results.len(),
-        candidate_count
-    );
-
-    // Re-sort by offset for consistent output
-    final_results.sort_by_key(|s| s.data_offset);
-
-    let total_time = start_time.elapsed();
-    tracing::debug!(
-        "File-level cycling total: {:.2}s",
-        total_time.as_secs_f64()
-    );
-
-    tracing::info!(
-        "File-level cycling complete: {} strings after quality-based deduplication",
-        final_results.len()
-    );
-
-    final_results
 }
 
 /// Check if a byte is printable for file-level XOR extraction
@@ -842,72 +614,6 @@ fn is_high_quality_string(s: &ExtractedString) -> bool {
         || s.value.len() >= 30 // Long strings are usually significant
 }
 
-/// Score a string's quality for deduplication purposes.
-/// Higher score = higher quality = prefer keeping this string.
-fn string_quality_score(s: &ExtractedString) -> i32 {
-    let mut score = 0;
-
-    // Score based on string kind (higher value = more interesting)
-    match s.kind {
-        StringKind::ShellCmd => score += 100,
-        StringKind::SuspiciousPath => score += 90,
-        StringKind::Url => score += 80,
-        StringKind::IP | StringKind::IPPort => score += 70,
-        StringKind::Hostname => score += 60,
-        StringKind::Registry => score += 50,
-        StringKind::Path => score += 40,
-        StringKind::Base64 => score += 30,
-        StringKind::FuncName => score += 20,
-        StringKind::Const => score += 10,
-        _ => {}
-    }
-
-    // Bonus for longer strings (more context)
-    score += (s.value.len() / 10).min(20) as i32;
-
-    // Bonus for specific high-value terms
-    let lower = s.value.to_ascii_lowercase();
-    if lower.contains("http://") || lower.contains("https://") {
-        score += 60; // URLs with explicit protocol are very valuable
-    }
-    if lower.contains("osascript") || lower.contains("/bin/sh") || lower.contains("2>&1") {
-        score += 50;
-    }
-    if lower.contains("ethereum") || lower.contains("wallet") || lower.contains("keystore") {
-        score += 40;
-    }
-    if lower.contains("xattr") || lower.contains("screencapture") || lower.contains("launchagents")
-    {
-        score += 30;
-    }
-    // Bonus for IP addresses (likely C2 infrastructure)
-    if s.value.chars().filter(|&c| c == '.').count() == 3 {
-        // Check if it looks like an IP address (4 segments with dots)
-        let segments: Vec<&str> = s.value.split('.').collect();
-        if segments.len() == 4
-            && segments
-                .iter()
-                .all(|seg| seg.chars().take_while(char::is_ascii_digit).count() > 0)
-        {
-            score += 35; // Likely an IP address
-        }
-    }
-
-    // Penalty for strings that look like garbage
-    // But don't be too harsh - legitimate strings like XML tags have many special chars
-    let special_count = s
-        .value
-        .chars()
-        .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
-        .count();
-    if !s.value.is_empty() && special_count * 100 / s.value.len() > 60 {
-        // Only penalize if >60% special characters (very extreme)
-        score -= 20;
-    }
-
-    score
-}
-
 /// Check if a decoded string is likely just the XOR key itself (or fragments).
 /// This happens when `XORing` null bytes with the key.
 fn is_xor_key_artifact(s: &str, key: &[u8]) -> bool {
@@ -955,212 +661,79 @@ fn is_xor_key_artifact(s: &str, key: &[u8]) -> bool {
     false
 }
 
-///
-/// Scans every position in the file as a potential string start, XOR-decodes forward,
-/// and keeps strings that pass filtering.
-#[allow(dead_code)]
-fn extract_custom_xor_strings_pattern_based(
-    data: &[u8],
-    key: &[u8],
-    min_length: usize,
-    apply_filters: bool,
-    excluded_ranges: &[(usize, usize)],
-) -> Vec<ExtractedString> {
-    let start_time = std::time::Instant::now();
-    tracing::info!(
-        "Multi-byte XOR brute-force scan: {} bytes with {} byte key",
-        data.len(),
-        key.len()
-    );
+/// Trim garbage suffix from XOR-decoded strings.
+/// Detects where string quality drops off (e.g., "userWallet.jsongCZoFTTxA" -> "userWallet.json")
+fn trim_garbage_suffix(s: &str) -> String {
+    if s.len() <= 10 {
+        return s.to_string();
+    }
 
-    let mut results = Vec::new();
-    let mut seen: HashSet<(u64, String)> = HashSet::new();
-    // Track used byte ranges to avoid overlapping strings
-    let mut used_ranges: Vec<(usize, usize)> = Vec::new();
+    // Common file extensions that mark natural endpoints
+    let extensions = [".json", ".txt", ".xml", ".html", ".js", ".py", ".dll", ".exe", ".so", ".dylib"];
 
-    // Brute-force scan: try every position as a potential string start
-    // Step by 1 for thorough scanning - we need to catch strings at any offset
-    // The overlap detection will handle deduplication
-    let step = 1;
-    let mut checked = 0;
-
-    for pos in (0..data.len()).step_by(step) {
-        checked += 1;
-        if checked % 10000 == 0 {
-            tracing::debug!(
-                "  Scanned {} positions, found {} strings",
-                checked,
-                results.len()
-            );
-        }
-
-        // Skip if this position is within an already-extracted string
-        let overlaps_existing = used_ranges
-            .iter()
-            .any(|&(start, end)| pos >= start && pos < end);
-        if overlaps_existing {
-            continue;
-        }
-
-        // Skip if this position is in an excluded range (from radare2 hints)
-        let in_excluded_range = excluded_ranges
-            .iter()
-            .any(|&(ex_start, ex_end)| pos >= ex_start && pos < ex_end);
-        if in_excluded_range {
-            continue;
-        }
-
-        // Try to decode a string starting at this position
-        if let Some((decoded, start, end)) = try_decode_xor_string_at(data, pos, key, min_length) {
-            // Check if this decoded string would overlap with an existing one
-            let would_overlap = used_ranges
-                .iter()
-                .any(|&(used_start, used_end)| !(end <= used_start || start >= used_end));
-
-            if would_overlap {
+    // Find the last file extension and check if what follows looks like garbage
+    for ext in &extensions {
+        if let Some(pos) = s.rfind(ext) {
+            let after_ext = pos + ext.len();
+            if after_ext >= s.len() {
                 continue;
             }
 
-            // Skip XOR key artifacts (key fragments from XORing null bytes)
-            if apply_filters && is_xor_key_artifact(&decoded, key) {
-                continue;
+            let suffix = &s[after_ext..];
+            // Check if suffix looks like garbage (has weird chars or mixed case gibberish)
+            let has_lower = suffix.chars().any(|c| c.is_lowercase());
+            let has_upper = suffix.chars().any(|c| c.is_uppercase());
+            let weird_chars = suffix.chars().filter(|c| !c.is_alphanumeric()).count();
+
+            // If suffix has mixed case or weird chars, it's probably garbage
+            if (has_lower && has_upper) || weird_chars > 0 || suffix.len() <= 2 {
+                return s[..after_ext].to_string();
             }
+        }
+    }
 
-            // Classify the string (or use Const if filtering disabled)
-            let kind_opt = if apply_filters {
-                classify_xor_string(&decoded)
-            } else {
-                Some(StringKind::Const)
-            };
+    // Scan forward to find where gibberish starts
+    // Pattern: after a word ending in lowercase/digit, sudden uppercase followed by mixed case
+    // Examples: "falseaTrsJg", "BrowserSbWq", "ChromenC"
+    let chars: Vec<char> = s.chars().collect();
 
-            if let Some(kind) = kind_opt {
-                let offset = start as u64;
-                if seen.insert((offset, decoded.clone())) {
-                    let key_preview = if key.len() > 8 {
-                        format!("{}...", String::from_utf8_lossy(&key[..8]))
-                    } else {
-                        String::from_utf8_lossy(key).to_string()
-                    };
+    for i in 5..chars.len() {
+        let curr = chars[i];
 
-                    // Mark this range as used
-                    used_ranges.push((start, end));
+        // Check for pattern: lowercase/digit -> Uppercase -> (mixed case or weird)
+        if i > 0 && (chars[i-1].is_lowercase() || chars[i-1].is_ascii_digit()) && curr.is_uppercase() {
+            // Look ahead 2-4 chars to see if it's gibberish
+            if i + 2 < chars.len() {
+                let next_few = &chars[i+1..chars.len().min(i+5)];
 
-                    results.push(ExtractedString {
-                        value: decoded,
-                        data_offset: offset,
-                        section: None,
-                        method: StringMethod::XorDecode,
-                        kind,
-                        library: Some(format!("key:{key_preview}")),
-                        fragments: None,
-                        ..Default::default()
-                    });
+                // Gibberish indicators:
+                // - Has both upper and lower (but not standard camelCase)
+                // - Has weird non-alphanumeric chars
+                // - Short random sequence
+                let has_lower = next_few.iter().any(|c| c.is_lowercase());
+                let has_upper = next_few.iter().any(|c| c.is_uppercase());
+                let has_weird = next_few.iter().any(|c| !c.is_alphanumeric() && !matches!(c, ' ' | '/' | '-' | '_' | '.'));
+
+                // If mixed case or weird chars after the suspicious uppercase, trim here
+                if (has_lower && has_upper) || has_weird || next_few.len() < 3 {
+                    return chars[..i].iter().collect();
                 }
+            } else {
+                // Very short suffix after uppercase, likely garbage
+                return chars[..i].iter().collect();
             }
         }
+
+        // Also check for weird characters (symbols we don't expect in paths/commands)
+        if !curr.is_alphanumeric() && !matches!(curr, ' ' | '/' | '-' | '_' | '.' | ':' | '%' | ',') {
+            return chars[..i].iter().collect();
+        }
     }
 
-    let elapsed = start_time.elapsed();
-    tracing::debug!(
-        "Pattern-based scanning: checked {} positions, found {} strings in {:.2}s",
-        checked,
-        results.len(),
-        elapsed.as_secs_f64()
-    );
-
-    tracing::info!(
-        "Multi-byte XOR scan complete: checked {} positions, found {} unique strings",
-        checked,
-        results.len()
-    );
-
-    results
+    s.to_string()
 }
 
-/// Try to decode an XOR'd string starting at a specific position.
-/// Returns the decoded string if it looks valid.
-#[allow(dead_code)]
-fn try_decode_xor_string_at(
-    data: &[u8],
-    pos: usize,
-    key: &[u8],
-    min_length: usize,
-) -> Option<(String, usize, usize)> {
-    // Skip if we're starting in a region of null bytes (these decode to the key itself)
-    if data[pos] == 0x00 {
-        // Count consecutive nulls
-        let mut null_count = 0;
-        let mut check_pos = pos;
-        while check_pos < data.len() && data[check_pos] == 0x00 {
-            null_count += 1;
-            check_pos += 1;
-        }
-        // If we have many consecutive nulls (>= key length), skip this region
-        if null_count >= key.len() {
-            return None;
-        }
-    }
-
-    let max_len = 200;
-    let mut end = pos;
-    let mut decoded_bytes = Vec::new();
-    let mut consecutive_nulls = 0;
-
-    // Try to decode forward from this position
-    while end < data.len() && (end - pos) < max_len {
-        let key_idx = (end - pos) % key.len();
-        let decoded_byte = data[end] ^ key[key_idx];
-
-        // Track consecutive null bytes in the encoded data
-        if data[end] == 0x00 {
-            consecutive_nulls += 1;
-            // Null bytes in XOR'd data decode to the key byte
-            // Stop if we hit consecutive nulls
-            if consecutive_nulls >= 2 {
-                break;
-            }
-        } else {
-            consecutive_nulls = 0;
-        }
-
-        // For multi-byte XOR, allow newlines and common whitespace in addition to printable chars
-        // Note: \r (carriage return) terminates the string, only \n (newline) is allowed for multi-line strings
-        let is_valid = decoded_byte.is_ascii_graphic()
-            || decoded_byte == b' '
-            || decoded_byte == b'\t'
-            || decoded_byte == b'\n';
-
-        if is_valid {
-            decoded_bytes.push(decoded_byte);
-            end += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Must have minimum length
-    if decoded_bytes.len() < min_length {
-        return None;
-    }
-
-    // Try to convert to UTF-8
-    let decoded_str = String::from_utf8(decoded_bytes).ok()?;
-
-    // Quick sanity check: must have some meaningful content
-    // (at least 3 alphanumeric chars total, not necessarily consecutive)
-    let alnum_count = decoded_str
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .count();
-
-    if alnum_count < 3 {
-        return None;
-    }
-
-    Some((decoded_str, pos, end))
-}
-
-/// Simplified pattern-based extraction matching decode.py behavior.
+/// Optimized pattern-based extraction with buffer reuse and early termination.
 /// Scans every offset, no overlap skipping, minimal filtering.
 fn extract_custom_xor_strings_pattern_based_simple(
     data: &[u8],
@@ -1170,65 +743,153 @@ fn extract_custom_xor_strings_pattern_based_simple(
     excluded_ranges: &[(usize, usize)],
 ) -> Vec<ExtractedString> {
     let start_time = std::time::Instant::now();
+    tracing::info!(
+        "Pattern-based XOR scan (optimized): {} bytes with {} byte key",
+        data.len(),
+        key.len()
+    );
 
+    let mut results = Vec::new();
+    let mut checked = 0;
+    let mut skipped_nulls = 0;
+    let mut skipped_early_term = 0;
+
+    // Pre-compute key preview (same for all strings)
     let key_preview = if key.len() > 8 {
         format!("{}...", String::from_utf8_lossy(&key[..8]))
     } else {
         String::from_utf8_lossy(key).to_string()
     };
 
-    let mut results = Vec::new();
+    // OPTIMIZATION: Reuse decode buffer instead of allocating every time
+    let mut decode_buffer = Vec::with_capacity(1024);
 
-    // Scan every position (like decode.py)
-    for pos in 0..data.len().saturating_sub(min_length) {
-        // Skip excluded ranges
-        if excluded_ranges.iter().any(|&(start, end)| pos >= start && pos < end) {
+    // Scan every position
+    let mut pos = 0;
+    while pos < data.len().saturating_sub(min_length) {
+        checked += 1;
+        if checked % 100000 == 0 {
+            tracing::debug!(
+                "  Scanned {} positions, found {} strings (skipped {} nulls, {} early-term)",
+                checked,
+                results.len(),
+                skipped_nulls,
+                skipped_early_term
+            );
+        }
+
+        // Skip if this position is in an excluded range (from radare2 hints)
+        let in_excluded_range = excluded_ranges
+            .iter()
+            .any(|&(ex_start, ex_end)| pos >= ex_start && pos < ex_end);
+        if in_excluded_range {
+            }
+            pos += 1;
             continue;
         }
 
-        // XOR decode while printable: data[pos+j] ^ key[j % len(key)]
-        let mut decoded = Vec::new();
+        // OPTIMIZATION 1: Skip large null regions (8+ consecutive nulls)
+        // This is a fast skip for completely null padding areas
+        if pos + 8 <= data.len() && data[pos..pos + 8].iter().all(|&b| b == 0) {
+            }
+            pos += 8;
+            skipped_nulls += 8;
+            continue;
+        }
 
-        for j in 0..std::cmp::min(1024, data.len() - pos) {
-            // Stop at null AFTER first byte (nulls are natural string terminators)
-            // Allow j==0 to be null so we can decode strings starting with key[0]
-            if data[pos + j] == 0 && j > 0 {
+        // OPTIMIZATION 2: Early termination - check if first 4 bytes are printable
+        // This rejects most positions immediately without allocation
+        let lookahead = 4.min(data.len() - pos);
+        let mut all_printable = true;
+        for j in 0..lookahead {
+            let byte = data[pos + j] ^ key[j % key.len()];
+            if !is_printable_byte_for_file_xor(byte) {
+                all_printable = false;
                 break;
+            }
+        }
+
+        if !all_printable {
+            }
+            pos += 1;
+            skipped_early_term += 1;
+            continue;
+        }
+
+        // Now do full decode (reusing buffer)
+        decode_buffer.clear();
+        let mut consecutive_nulls = 0;
+        for j in 0..std::cmp::min(1024, data.len() - pos) {
+            // Track consecutive nulls in source data
+            // If we hit 2+ nulls, stop decoding (would produce key artifacts)
+            if data[pos + j] == 0 {
+                consecutive_nulls += 1;
+                if consecutive_nulls >= 2 {
+                    }
+                    break;
+                }
+            } else {
+                consecutive_nulls = 0;
             }
 
             let byte = data[pos + j] ^ key[j % key.len()];
 
             if is_printable_byte_for_file_xor(byte) {
-                decoded.push(byte);
+                decode_buffer.push(byte);
             } else {
+                if debug_this && j < 10 {
+                    eprintln!("[DEBUG] At 0x{:x}: decode stopped at j={} due to non-printable byte 0x{:02x}", pos, j, byte);
+                }
                 break;
             }
         }
 
-        // Check minimum length
-        if decoded.len() < min_length {
+        if decode_buffer.len() < min_length {
+            }
+            pos += 1;
             continue;
         }
 
-        // Convert to string
-        let Ok(s) = String::from_utf8(decoded) else {
+        }
+
+        // Try to convert to UTF-8
+        let Ok(s) = String::from_utf8(decode_buffer.clone()) else {
+            }
+            pos += 1;
             continue;
         };
 
-        // Must have at least one letter
+        // decode.py requires: any(c.isalpha() for c in s)
         if !s.chars().any(|c| c.is_alphabetic()) {
+            }
+            pos += 1;
             continue;
         }
 
-        // Apply classification/filtering if requested
+        // Trim garbage suffix (detect quality drop-off)
+        let s = trim_garbage_suffix(&s);
+        if s.len() < min_length {
+            }
+            pos += 1;
+            continue;
+        }
+
+        // Apply classification if filtering enabled (only call once!)
         let kind = if apply_filters {
-            match classify_xor_string(&s) {
-                Some(k) => k,
-                None => continue, // Filter rejected this string
+            if let Some(classified_kind) = classify_xor_string(&s) {
+                }
+                classified_kind
+            } else {
+                // classify_xor_string returned None, skip this string
+                }
+                pos += 1;
+                continue;
             }
         } else {
             StringKind::Const
         };
+
+        }
 
         results.push(ExtractedString {
             value: s,
@@ -1240,12 +901,18 @@ fn extract_custom_xor_strings_pattern_based_simple(
             fragments: None,
             ..Default::default()
         });
+
+        pos += 1;
     }
 
+    let elapsed = start_time.elapsed();
     tracing::info!(
-        "XOR scan: {} strings in {:.2}s",
+        "Pattern-based scan found {} strings in {:.2}s ({:.0} pos/sec, skipped {} nulls, {} early-term)",
         results.len(),
-        start_time.elapsed().as_secs_f64()
+        elapsed.as_secs_f64(),
+        checked as f64 / elapsed.as_secs_f64(),
+        skipped_nulls,
+        skipped_early_term
     );
 
     results
@@ -2582,205 +2249,6 @@ const SUSPICIOUS_PATHS: &[&str] = &[
     "/specter.txt",
 ];
 
-/// Trim trailing garbage from extracted strings.
-/// This removes characters at the end that don't look like legitimate content.
-fn trim_trailing_garbage(s: &str) -> &str {
-    // First, check for common shell redirections and terminators that mark natural endpoints
-    let natural_endpoints = [
-        "2>&1",
-        "2>/dev/null",
-        ">/dev/null",
-        ">&1",
-        ">&2",
-        " &",
-        "EOD",
-        "EOF",
-    ];
-
-    // Find the last occurrence of any natural endpoint
-    let mut natural_end: Option<usize> = None;
-    for endpoint in &natural_endpoints {
-        if let Some(pos) = s.rfind(endpoint) {
-            let candidate_end = pos + endpoint.len();
-            natural_end = Some(natural_end.map_or(candidate_end, |prev| prev.max(candidate_end)));
-        }
-    }
-
-    // If we found a natural endpoint, trim there
-    if let Some(end_pos) = natural_end {
-        return &s[..end_pos];
-    }
-
-    // Check for file extensions as natural endpoints (e.g., .php, .exe, .dll, .so)
-    let file_extensions = [
-        ".php", ".exe", ".dll", ".so", ".dylib", ".js", ".py", ".rb", ".pl", ".sh", ".html",
-        ".xml", ".json", ".txt", ".log", ".conf", ".cfg",
-    ];
-    for ext in &file_extensions {
-        if let Some(pos) = s.rfind(ext) {
-            let candidate_end = pos + ext.len();
-            natural_end = Some(natural_end.map_or(candidate_end, |prev| prev.max(candidate_end)));
-        }
-    }
-
-    if let Some(end_pos) = natural_end {
-        return &s[..end_pos];
-    }
-
-    // Otherwise, work backwards from the end looking for the last legitimate character
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = chars.len();
-
-    while i > 0 {
-        i -= 1;
-        let c = chars[i];
-
-        // Stop at clear delimiters
-        if c == '"' || c == '\'' || c == ')' || c == ']' || c == '}' || c == '>' {
-            return s.char_indices().nth(i + 1).map_or(s, |(pos, _)| &s[..pos]);
-        }
-
-        // Stop at alphanumeric followed by whitespace or punctuation that suggests a boundary
-        if c.is_ascii_alphanumeric() {
-            // Check if the next character (if exists) suggests this is the end
-            if i + 1 < chars.len() {
-                let next = chars[i + 1];
-                // If followed by unusual characters, this might be the real end
-                if !next.is_ascii_alphanumeric()
-                    && next != '/'
-                    && next != '.'
-                    && next != '-'
-                    && next != '_'
-                {
-                    return s.char_indices().nth(i + 1).map_or(s, |(pos, _)| &s[..pos]);
-                }
-            } else {
-                // Last character is alphanumeric - keep whole string
-                return s;
-            }
-        }
-    }
-
-    s
-}
-
-/// Trim leading garbage from extracted strings.
-/// This removes characters at the beginning that don't look like legitimate content.
-fn trim_leading_garbage(s: &str) -> &str {
-    if s.is_empty() {
-        return s;
-    }
-
-    // Strip leading single-byte XOR key artifacts (from null bytes in original data)
-    // Check if removing the first character reveals a known command or pattern
-    if s.len() >= 2 {
-        let without_first = &s[1..];
-
-        // Known commands that might have a garbage prefix
-        let known_starts = [
-            "launchctl",
-            "screencapture",
-            "osascript",
-            "open ",
-            "curl ",
-            "wget ",
-            "/bin/",
-            "/usr/",
-            "/Library/",
-            "/etc/",
-            "/var/",
-            "~/",
-        ];
-
-        for pattern in &known_starts {
-            if without_first.starts_with(pattern) {
-                return without_first;
-            }
-        }
-    }
-
-    // Strip single non-alphanumeric, non-whitespace garbage bytes
-    // ONLY if they're truly garbage (not legitimate content)
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() >= 2 {
-        let first = chars[0];
-        let second = chars[1];
-
-        // If first char is not alphanumeric and not a legitimate prefix character
-        // and second char starts a legitimate word, then it's likely garbage
-        let is_legitimate_prefix = matches!(
-            first,
-            '$' | '@' | '~' | '%' | '"' | '\'' | '(' | '[' | '{' | '<' | '/' | '\\' | '.'
-        );
-
-        if !first.is_alphanumeric()
-            && !is_legitimate_prefix
-            && !first.is_whitespace()
-            && second.is_ascii_alphabetic()
-        {
-            // Only strip one byte
-            return &s[first.len_utf8()..];
-        }
-    }
-
-    // Check for URLs - they should start with http:// or https://
-    if let Some(pos) = s.find("http://") {
-        return &s[pos..];
-    }
-    if let Some(pos) = s.find("https://") {
-        return &s[pos..];
-    }
-
-    // Check for common path prefixes
-    if let Some(pos) = s.find("/Library/") {
-        // Look backwards from /Library/ to see if there's a %s or other legitimate prefix
-        if pos > 0 {
-            let prefix = &s[..pos];
-            // If prefix contains %s or similar format specifiers, keep them
-            if prefix.contains("%s") || prefix.contains("%d") {
-                // Find the last format specifier
-                if let Some(fmt_pos) = prefix.rfind("%s").or_else(|| prefix.rfind("%d")) {
-                    return &s[fmt_pos..];
-                }
-            }
-        }
-        return &s[pos..];
-    }
-
-    // Check for Windows paths
-    if let Some(pos) = s.find("C:\\") {
-        return &s[pos..];
-    }
-
-    // Check for common file paths
-    if let Some(pos) = s.find("~/.") {
-        return &s[pos..];
-    }
-
-    // Check for absolute Unix paths (but not /Library which we already handled)
-    // Look for patterns like /bin/, /usr/, /etc/, /var/, /opt/, /home/
-    // BUT: only trim if there's actual garbage before the path, not legitimate commands
-    for path_prefix in &["/bin/", "/usr/", "/etc/", "/var/", "/opt/", "/home/"] {
-        if let Some(pos) = s.find(path_prefix) {
-            if pos > 0 {
-                let prefix = &s[..pos];
-                // Check if prefix looks like a legitimate command (starts with alphanumeric or whitespace)
-                // If so, keep it rather than trimming to just the path
-                let first_char = prefix.chars().next().unwrap_or('\0');
-                if first_char.is_ascii_alphabetic() || first_char.is_whitespace() {
-                    // Prefix looks legitimate, keep the whole string
-                    continue;
-                }
-                // Otherwise, prefix is garbage - trim it
-            }
-            return &s[pos..];
-        }
-    }
-
-    // No recognizable pattern found, return as-is
-    s
-}
-
 /// Well-known shell commands and tools (for lenient matching with trailing garbage).
 const SHELL_COMMANDS: &[&str] = &[
     "screencapture",
@@ -2866,8 +2334,6 @@ const KNOWN_PATH_PREFIXES: &[&str] = &[
     "%USERPROFILE%",
 ];
 
-/// Trim obvious garbage from the end of XOR-decoded strings.
-/// Check progressively longer suffixes for mixed-case garbage.
 /// Classify an XOR-decoded string. Returns None if it doesn't look interesting.
 fn classify_xor_string(s: &str) -> Option<StringKind> {
     let lower = s.to_ascii_lowercase();
@@ -2900,6 +2366,19 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
     for keyword in CREDENTIAL_KEYWORDS {
         if lower.contains(keyword) {
             return Some(StringKind::SuspiciousPath);
+        }
+    }
+
+    // Check for AppleScript syntax (common in macOS malware)
+    let applescript_indicators = [
+        "set ", "tell application", "path to desktop", "path to documents",
+        "every file of", "whose name extension", "posix file", "end tell",
+        "do shell script", "display dialog", "choose file", "choose folder",
+    ];
+
+    for indicator in &applescript_indicators {
+        if lower.contains(indicator) {
+            return Some(StringKind::ShellCmd);
         }
     }
 
@@ -2964,7 +2443,7 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
     match kind {
         StringKind::IP | StringKind::IPPort => Some(kind),
         StringKind::Url => Some(kind),
-        StringKind::ShellCmd | StringKind::AppleScript => {
+        StringKind::ShellCmd => {
             // Reject obvious garbage that starts with backtick but no valid command
             if s.starts_with('`')
                 && !s[1..]

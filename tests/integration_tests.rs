@@ -894,7 +894,7 @@ mod r2_tests {
             return;
         }
 
-        let result = stng::r2::extract_strings(path, 4);
+        let result = stng::r2::extract_strings(path, 4, true);
         assert!(result.is_some(), "r2 should extract strings from /bin/ls");
 
         let strings = result.unwrap();
@@ -918,7 +918,7 @@ mod r2_tests {
             return;
         }
 
-        let result = stng::r2::extract_strings("/nonexistent/path/to/binary", 4);
+        let result = stng::r2::extract_strings("/nonexistent/path/to/binary", 4, true);
         assert!(
             result.is_none(),
             "r2 should return None for nonexistent file"
@@ -957,7 +957,7 @@ mod r2_tests {
             return;
         }
 
-        let result = stng::r2::extract_strings(path, 4);
+        let result = stng::r2::extract_strings(path, 4, true);
         if let Some(strings) = result {
             // r2 strings should have R2String or R2Symbol method
             for s in &strings {

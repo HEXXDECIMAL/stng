@@ -49,7 +49,7 @@ mod stack_strings;
 
 // Language-specific extractors
 mod go;
-mod instr;
+pub mod instr;
 pub mod r2;
 mod rust;
 pub mod xor;

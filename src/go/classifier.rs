@@ -314,6 +314,11 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::ShellCmd;
     }
 
+    // Check for AppleScript syntax (common in macOS malware)
+    if is_applescript(s) {
+        return StringKind::AppleScript;
+    }
+
     // IP addresses and IP:port - only if starts with digit
     if first.is_ascii_digit() {
         if let Some(kind) = classify_ip(s) {
@@ -466,6 +471,28 @@ pub fn classify_string(s: &str) -> StringKind {
     }
 
     StringKind::Const
+}
+
+/// Check if a string looks like AppleScript code
+fn is_applescript(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+
+    // AppleScript indicators
+    let applescript_patterns = [
+        "set ", "tell application", "path to desktop", "path to documents",
+        "every file of", "whose name extension", "posix file", "end tell",
+        "do shell script", " dialog", "choose file", "choose folder",
+        "duplicate ", " to posix file", "repeat with", "end repeat",
+        " as alias", " with replacing",
+    ];
+
+    for pattern in &applescript_patterns {
+        if lower.contains(pattern) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Check if a string looks like a shell command
@@ -1046,8 +1073,15 @@ fn is_base58(s: &str) -> bool {
     let mut has_upper = false;
     let mut has_lower = false;
     let mut has_digit = false;
+    let mut camel_case_transitions = 0;
+    let mut consecutive_upper_at_start = 0;
+    let mut found_non_upper = false;
+    let mut prev_was_lower = false;
 
     for &b in bytes {
+        let is_upper = matches!(b, b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z');
+        let is_lower = matches!(b, b'a'..=b'k' | b'm'..=b'z');
+
         match b {
             b'1'..=b'9' => has_digit = true,
             b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' => has_upper = true,
@@ -1055,10 +1089,50 @@ fn is_base58(s: &str) -> bool {
             // Invalid characters for Base58 (0, O, I, l)
             _ => return false,
         }
+
+        // Detect CamelCase/PascalCase patterns
+        if prev_was_lower && is_upper {
+            camel_case_transitions += 1;
+        }
+
+        // Track consecutive uppercase letters at the START only
+        // (characteristic of class names like "NSKnown", "XMLParser", "UIViewController")
+        if !found_non_upper {
+            if is_upper {
+                consecutive_upper_at_start += 1;
+            } else {
+                found_non_upper = true;
+            }
+        }
+
+        prev_was_lower = is_lower;
     }
 
-    // Base58 typically has all three types
-    has_upper && has_lower && has_digit
+    // Base58 must have all three types
+    if !(has_upper && has_lower && has_digit) {
+        return false;
+    }
+
+    // Reject strings that look like class names/identifiers:
+    // 1. Long uppercase prefixes (3+) indicate framework prefixes (NSU*, HTTP*, XML*)
+    if consecutive_upper_at_start >= 3 {
+        return false;
+    }
+
+    // 2. Two-letter prefixes with CamelCase = class names (NS*, UI*, CA*)
+    //    e.g., "NSKnownKeysDictionary1"
+    if consecutive_upper_at_start >= 2 && camel_case_transitions >= 2 {
+        return false;
+    }
+
+    // 3. Single uppercase start + many transitions = structured identifier
+    //    e.g., "TheQuickBrownFoxJumpsOverTheLazyDog1"
+    //    Use 7+ to avoid false positives on crypto addresses (some have 6 by chance)
+    if consecutive_upper_at_start == 1 && camel_case_transitions >= 7 {
+        return false;
+    }
+
+    true
 }
 
 /// Calculate string quality score (0-100). Higher scores = better quality text.
@@ -1660,6 +1734,67 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_string_applescript_detection() {
+        // AppleScript code should be classified as AppleScript
+        assert_eq!(
+            classify_string("set desktopFolder to path to desktop folder"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("tell application \"Finder\""),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("every file of desktopFolder whose name extension is in"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("duplicate aFile to POSIX file \"/tmp/backup\""),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("path to documents folder"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("end tell"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("repeat with aFile in allFiles"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("do shell script \"ls -la\""),
+            StringKind::AppleScript
+        );
+
+        // Additional AppleScript patterns from real malware
+        assert_eq!(
+            classify_string("play dialog \"macOS needs to access System"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("ile \"%s\" as alias) with replacing"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("set tf to POSIX file \"%s\" as ali"),
+            StringKind::AppleScript
+        );
+
+        // Regular shell commands should NOT be AppleScript
+        assert_ne!(
+            classify_string("curl http://example.com"),
+            StringKind::AppleScript
+        );
+        assert_ne!(
+            classify_string("cat /etc/passwd"),
+            StringKind::AppleScript
+        );
+    }
+
+    #[test]
     fn test_is_hex_encoded_valid() {
         // Valid hex-encoded strings (from actual malware samples)
         // "const _0x1c31000=_0x2330d;"
@@ -1962,39 +2097,133 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base58_valid() {
-        // Bitcoin address
+    fn test_is_base58_valid_cryptocurrency_addresses() {
+        // Bitcoin P2PKH address (starts with 1)
         assert!(is_base58("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
 
-        // Monero address (partial, for testing)
+        // Bitcoin P2SH address (starts with 3)
+        assert!(is_base58("3J98t1WpEZ73CNmYviecrnyiWrnqRhWNLy"));
+
+        // Bitcoin mainnet address
+        assert!(is_base58("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"));
+
+        // Litecoin address (starts with L)
+        assert!(is_base58("LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvL"));
+
+        // Monero address fragment (for testing, partial)
         assert!(is_base58("4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV"));
 
-        // Generic Base58
-        assert!(is_base58("3J98t1WpEZ73CNmYviecrnyiWrnqRhWNLy"));
+        // Generic Base58 with good entropy
+        assert!(is_base58("5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"));
     }
 
     #[test]
-    fn test_is_base58_invalid() {
+    fn test_is_base58_invalid_alphabet_violations() {
         // Too short
         assert!(!is_base58("1A1zP1eP5Q"));
+        assert!(!is_base58("short"));
 
-        // Contains 0 (not valid Base58)
+        // Contains 0 (zero) - not in Base58 alphabet
         assert!(!is_base58("1A1zP1eP5QGefi2DMP0fTL5SLmv7DivfNa"));
+        assert!(!is_base58("10000000000000000000"));
 
-        // Contains O (not valid Base58)
+        // Contains O (capital O) - not in Base58 alphabet
         assert!(!is_base58("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfOa"));
+        assert!(!is_base58("OOOOOOOOOOOOOOOOOOOO"));
 
-        // Contains I (not valid Base58)
+        // Contains I (capital I) - not in Base58 alphabet
         assert!(!is_base58("1A1zP1eP5QGefi2DMPIfTL5SLmv7DivfNa"));
+        assert!(!is_base58("IIIIIIIIIIIIIIIIIIII"));
 
-        // Contains l (lowercase L, not valid Base58)
+        // Contains l (lowercase L) - not in Base58 alphabet
         assert!(!is_base58("1A1zP1eP5QGefi2DMPlTL5SLmv7DivfNa"));
+        assert!(!is_base58("llllllllllllllllllll"));
 
-        // All uppercase (no mixed case)
+        // Mixed invalid characters
+        assert!(!is_base58("1A1zP1eP5QGefi2DMP0IfTL5SLmv7DivfOa"));
+    }
+
+    #[test]
+    fn test_is_base58_invalid_missing_character_types() {
+        // All uppercase (no lowercase or digits)
         assert!(!is_base58("ABCDEFGHJKMNPQRSTUVWXYZ"));
+        assert!(!is_base58("THEQUICKBRWNFXJUMPS"));
 
-        // Plain text
-        assert!(!is_base58("HelloWorldThisIsTest"));
+        // All lowercase (no uppercase or digits)
+        assert!(!is_base58("abcdefghjkmnpqrstuvwxyz"));
+        assert!(!is_base58("thequickbrwnfxjumps"));
+
+        // All digits (no letters)
+        assert!(!is_base58("12345678912345678912"));
+
+        // Only uppercase + digits (missing lowercase)
+        assert!(!is_base58("ABC123DEF456GHJ789MN"));
+
+        // Only lowercase + digits (missing uppercase)
+        assert!(!is_base58("abc123def456ghj789mn"));
+
+        // Only uppercase + lowercase (missing digits)
+        assert!(!is_base58("ABCdefGHJmnpQRStuv"));
+    }
+
+    #[test]
+    fn test_is_base58_invalid_class_names_objc() {
+        // Objective-C class names (NS prefix with CamelCase)
+        assert!(!is_base58("NSKnownKeysMappingStrategy1"));
+        assert!(!is_base58("NSKnownKeysDictionary1"));
+        assert!(!is_base58("NSMutableAttributedString1"));
+        assert!(!is_base58("NSURLSessionConfiguration1"));
+        assert!(!is_base58("NSUserNotificationCenter1"));
+
+        // iOS/macOS classes (UI/CA/CG prefixes)
+        assert!(!is_base58("UIViewControllerTransition1"));
+        assert!(!is_base58("CABasicAnimationDelegate1"));
+        assert!(!is_base58("CGAffineTransformMakeScale1"));
+    }
+
+    #[test]
+    fn test_is_base58_invalid_class_names_other() {
+        // Java/C# class names (XML, HTTP, SQL prefixes)
+        assert!(!is_base58("XMLHttpRequestFactory1"));
+        assert!(!is_base58("HTTPConnectionManager1"));
+        assert!(!is_base58("SQLDatabaseConnectionPool1"));
+
+    }
+
+    #[test]
+    fn test_is_base58_invalid_plain_text() {
+        // Plain English text with many CamelCase transitions (7+)
+        assert!(!is_base58("TheQuickBrownFoxJumpsOverTheLazyDog1"));
+        assert!(!is_base58("ThisIsAVeryLongStringWithManyCamelCaseWordsForTesting1"));
+
+        // Code-like text with many transitions
+        assert!(!is_base58("thisIsAVariableNameWithManyWordsInCamelCase1"));
+    }
+
+    #[test]
+    fn test_is_base58_edge_cases_should_pass() {
+        // Random-looking Base58 with numbers at start (like Bitcoin addresses)
+        assert!(is_base58("1Qqwerty2Asdfgh3Zxcvbn4Mjkuyt5Pqazwsx"));
+
+        // Base58 with high entropy (random mix)
+        assert!(is_base58("5Km2kuu7vtFDPpxywn4u3NLpbr5jKpTB3TXKWTNFyqn"));
+
+        // One CamelCase transition is OK (not a class name pattern)
+        assert!(is_base58("1234567aBcdefghJkmnpqrstuvwxyz"));
+
+        // Starts with single uppercase (not multi-char prefix)
+        assert!(is_base58("A1bcdefgh2Jkmnpqrs3tuvwxyz4"));
+    }
+
+    #[test]
+    fn test_is_base58_edge_cases_borderline() {
+        // Two uppercase at start but only 1 CamelCase transition = OK
+        // (not enough transitions to be a class name)
+        assert!(is_base58("AB1cdefgh2Jkmnpqrs3tuvwxyz4"));
+
+        // Three CamelCase transitions but starts lowercase = OK
+        // (class names typically start with uppercase)
+        assert!(is_base58("a1BcD2eFg3HjK4mnp5qrs6tuv7wxyz8"));
     }
 
     #[test]

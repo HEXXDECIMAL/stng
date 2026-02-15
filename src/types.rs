@@ -232,6 +232,8 @@ pub enum StringKind {
     Hostname,
     /// Shell command (pipes, redirects, common commands)
     ShellCmd,
+    /// AppleScript code (common in macOS malware)
+    AppleScript,
     /// Suspicious path (hidden dirs, rootkit locations, persistence)
     SuspiciousPath,
     /// Windows registry path
@@ -414,6 +416,7 @@ impl StringKind {
             StringKind::GUID => "guid",
             StringKind::RansomNote => "ransom",
             StringKind::LDAPPath => "ldap",
+            StringKind::AppleScript => "applescript",
         }
     }
 }
@@ -604,6 +607,8 @@ mod tests {
             section_size: None,
             section_executable: None,
             section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let cloned = s.clone();

@@ -952,10 +952,10 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     // Special handling for multi-line decoded strings (XOR or obfuscated base64)
     if (s.method == stng::StringMethod::XorDecode || s.method == stng::StringMethod::Base64ObfuscatedDecode)
         && s.value.contains('\n') {
-        let kind = if s.method == stng::StringMethod::XorDecode {
-            format!("xor/{}", s.kind.short_name())
+        let (method, classification) = if s.method == stng::StringMethod::XorDecode {
+            ("xor", s.kind.short_name())
         } else {
-            format!("b64+obf/{}", s.kind.short_name())
+            ("b64+obf", s.kind.short_name())
         };
         // Decoded content always uses bright yellow to stand out
         let (color, kind_color) = if use_color {
@@ -973,10 +973,10 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
             if use_color {
                 println!(
-                    "  {DIM}{offset}{RESET} {kind_color}{kind:<12}{RESET} {color}{clean_line}{RESET}"
+                    "  {DIM}{offset}{RESET} {kind_color}{method:<8}{RESET} {kind_color}{classification:<12}{RESET} {color}{clean_line}{RESET}"
                 );
             } else {
-                println!("  {offset} {kind:<12} {clean_line}");
+                println!("  {offset} {method:<8} {classification:<12} {clean_line}");
             }
 
             // Update offset for next line (line length + newline)
@@ -987,19 +987,15 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
     let offset = format!("{:>8x}", s.data_offset);
 
-    // Build kind string with prefixes for special methods
-    let kind = if s.method == stng::StringMethod::XorDecode {
-        // XOR-decoded strings get "xor/" prefix
-        format!("xor/{}", s.kind.short_name())
+    // Split method/encoding from classification for separate columns
+    let (method, classification) = if s.method == stng::StringMethod::XorDecode {
+        ("xor", s.kind.short_name())
     } else if s.method == stng::StringMethod::Base64ObfuscatedDecode {
-        // Obfuscated base64 strings get "b64+obf/" prefix
-        format!("b64+obf/{}", s.kind.short_name())
-    } else if s.method == stng::StringMethod::WideString && s.kind != stng::StringKind::OverlayWide
-    {
-        // Wide strings get ":16LE" suffix
-        format!("{}:16LE", s.kind.short_name())
+        ("b64+obf", s.kind.short_name())
+    } else if s.method == stng::StringMethod::WideString && s.kind != stng::StringKind::OverlayWide {
+        ("wide", s.kind.short_name())
     } else {
-        s.kind.short_name().to_string()
+        ("", s.kind.short_name())
     };
 
     // Get color based on method and severity
@@ -1212,9 +1208,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
     if use_color {
         println!(
-            "  {DIM}{offset}{RESET} {kind_color}{kind:<12}{RESET} {color}{display_value}{RESET}"
+            "  {DIM}{offset}{RESET} {kind_color}{method:<8}{RESET} {kind_color}{classification:<12}{RESET} {color}{display_value}{RESET}"
         );
     } else {
-        println!("  {offset} {kind:<12} {display_value}");
+        println!("  {offset} {method:<8} {classification:<12} {display_value}");
     }
 }

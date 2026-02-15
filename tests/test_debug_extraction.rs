@@ -1,4 +1,4 @@
-use stng::{ExtractOptions, StringMethod};
+use stng::ExtractOptions;
 
 #[test]
 fn debug_what_gets_extracted() {

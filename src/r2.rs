@@ -3,7 +3,7 @@
 //! Prefers rizin when available, falls back to radare2.
 //! Provides better differentiation between true strings and symbols.
 
-mod cache;
+pub mod cache;
 
 use cache::R2Cache;
 use crate::go::classify_string;
@@ -858,7 +858,7 @@ mod tests {
 
     #[test]
     fn test_extract_strings_nonexistent_file() {
-        let result = extract_strings("/nonexistent/file/path", 4);
+        let result = extract_strings("/nonexistent/file/path", 4, false);
         // Should return None for non-existent files
         assert!(result.is_none());
     }
@@ -909,7 +909,7 @@ mod tests {
             return;
         }
         // Use /bin/ls which exists on all Unix systems
-        let result = extract_strings("/bin/ls", 4);
+        let result = extract_strings("/bin/ls", 4, false);
         if let Some(strings) = result {
             // /bin/ls is typically < 200KB, virtual addresses would be > 0x100000000
             let max_reasonable_offset = 0x100000; // 1MB - generous upper bound
