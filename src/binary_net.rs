@@ -112,10 +112,10 @@ pub fn scan_binary_ips(
 ///
 /// Skips the first 256 bytes to avoid false positives from ELF/PE/Mach-O file headers
 /// that happen to contain sockaddr_in-like byte sequences.
-fn is_valid_ip(octets: &[u8; 4]) -> bool {
+fn is_valid_ip(octets: [u8; 4]) -> bool {
     // Reject if any octet is 0 (including first, last, or middle)
     // Real IPs don't have 0 octets, 0.x.x.x is invalid, x.x.x.0 is network address
-    if octets.iter().any(|&b| b == 0) {
+    if octets.contains(&0) {
         return false;
     }
 
@@ -141,7 +141,7 @@ fn is_valid_ip(octets: &[u8; 4]) -> bool {
     }
 
     // Reject IPs with any octet == 255 (broadcast patterns)
-    if octets.iter().any(|&b| b == 255) {
+    if octets.contains(&255) {
         return false;
     }
 
@@ -182,7 +182,7 @@ fn scan_sockaddr_in(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
         let octets = [data[i + 4], data[i + 5], data[i + 6], data[i + 7]];
 
         // Skip if IP is invalid
-        if !is_valid_ip(&octets) {
+        if !is_valid_ip(octets) {
             continue;
         }
 

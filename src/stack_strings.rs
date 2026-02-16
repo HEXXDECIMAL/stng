@@ -173,7 +173,7 @@ impl<'a> StackStringExtractor<'a> {
                     let reg_op = (modrm >> 3) & 7;
                     if reg_op == 0 {
                         let (op_len, base, disp) = self.decode_modrm(opcode_start + 1, rex);
-                        if op_len > 0 && opcode_start + 1 + op_len + 1 <= self.data.len() {
+                        if op_len > 0 && opcode_start + 1 + op_len < self.data.len() {
                             let imm_offset = opcode_start + 1 + op_len;
                             let b = self.data[imm_offset];
 

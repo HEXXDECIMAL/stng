@@ -1,5 +1,6 @@
 //! Detection and extraction of overlay/appended data after binary boundaries.
 
+use crate::go::classifier::classify_string;
 use crate::raw::{extract_printable_runs, extract_wide_strings};
 use crate::types::{ExtractedString, OverlayInfo, StringKind};
 use std::collections::HashSet;
@@ -9,9 +10,8 @@ use std::collections::HashSet;
 /// Malware often appends encrypted payloads or configuration after the ELF structure.
 /// This function identifies data beyond the normal ELF boundaries.
 pub fn detect_elf_overlay(data: &[u8]) -> Option<OverlayInfo> {
-    let elf = match goblin::elf::Elf::parse(data) {
-        Ok(e) => e,
-        Err(_) => return None,
+    let Ok(elf) = goblin::elf::Elf::parse(data) else {
+        return None;
     };
 
     // Find the highest file offset used by any program or section header
@@ -80,16 +80,43 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
             extract_printable_runs(
                 overlay_data,
                 min_length,
-                &section,
+                section.as_ref(),
                 &segment_names_set,
                 &empty_section_info,
                 &mut strings,
                 &mut seen,
             );
 
-            // Mark all newly added strings as overlay and adjust offsets
+            // Classify overlay strings and adjust offsets
             for s in &mut strings[initial_count..] {
-                s.kind = StringKind::Overlay;
+                // Classify the string - if it's something highly specific and interesting
+                // (encoded data, crypto, network indicators), keep that classification.
+                // Otherwise mark as generic Overlay.
+                let classified_kind = classify_string(&s.value);
+                s.kind = match classified_kind {
+                    // Keep highly specific/interesting classifications
+                    StringKind::Base32
+                    | StringKind::Base58
+                    | StringKind::Base64
+                    | StringKind::Base85
+                    | StringKind::CryptoWallet
+                    | StringKind::MiningPool
+                    | StringKind::IP
+                    | StringKind::IPPort
+                    | StringKind::Hostname
+                    | StringKind::Url
+                    | StringKind::Email
+                    | StringKind::TorAddress
+                    | StringKind::ShellCmd
+                    | StringKind::SuspiciousPath
+                    | StringKind::XorKey
+                    | StringKind::HexEncoded
+                    | StringKind::APIKey
+                    | StringKind::JWT
+                    | StringKind::CTFFlag => classified_kind,
+                    // Everything else stays as Overlay
+                    _ => StringKind::Overlay,
+                };
                 s.data_offset += start as u64;
             }
 
@@ -97,7 +124,32 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
             let wide_strings =
                 extract_wide_strings(overlay_data, min_length, Some("overlay".to_string()), &[], &empty_section_info);
             for mut s in wide_strings {
-                s.kind = StringKind::OverlayWide;
+                // Classify wide overlay strings - keep highly specific classifications
+                let classified_kind = classify_string(&s.value);
+                s.kind = match classified_kind {
+                    // Keep highly specific/interesting classifications
+                    StringKind::Base32
+                    | StringKind::Base58
+                    | StringKind::Base64
+                    | StringKind::Base85
+                    | StringKind::CryptoWallet
+                    | StringKind::MiningPool
+                    | StringKind::IP
+                    | StringKind::IPPort
+                    | StringKind::Hostname
+                    | StringKind::Url
+                    | StringKind::Email
+                    | StringKind::TorAddress
+                    | StringKind::ShellCmd
+                    | StringKind::SuspiciousPath
+                    | StringKind::XorKey
+                    | StringKind::HexEncoded
+                    | StringKind::APIKey
+                    | StringKind::JWT
+                    | StringKind::CTFFlag => classified_kind,
+                    // Everything else stays as OverlayWide
+                    _ => StringKind::OverlayWide,
+                };
                 s.data_offset += start as u64;
                 strings.push(s);
             }

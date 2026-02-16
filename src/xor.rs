@@ -459,60 +459,87 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
 
         // Extract and validate the string
         if end - start >= min_length {
-            if let Ok(s) = String::from_utf8(decoded[start..end].to_vec()) {
-                // Use same filtering as multi-byte XOR: classify + validation::is_garbage() in lib.rs
-                let kind_opt = if apply_filters {
-                    classify_xor_string(&s)
-                } else {
-                    Some(StringKind::Const)
-                };
+            // Check for double-null in original data (at same positions as decoded range)
+            let mut double_null_pos = None;
+            for offset in 0..(end - start).saturating_sub(1) {
+                let raw_pos = start + offset;
+                if raw_pos + 1 < data.len() && data[raw_pos] == 0 && data[raw_pos + 1] == 0 {
+                    double_null_pos = Some(offset);
+                    break;
+                }
+            }
 
-                if let Some(kind) = kind_opt {
-                    // Additional sanity check: reject obvious garbage
-                    let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
-                    let alpha = s.chars().filter(|c| c.is_alphabetic()).count();
+            // Trim at double-null position if found
+            let actual_end = if let Some(trim_pos) = double_null_pos {
+                start + trim_pos
+            } else {
+                end
+            };
 
-                    // Reject if < 50% alphanumeric (likely garbage)
-                    // Use character count for proper Unicode support
-                    let char_count = s.chars().count();
-                    if char_count > 0 && alnum * 100 < char_count * 50 {
-                        continue;
-                    }
+            // Re-check minimum length after trimming
+            if actual_end - start >= min_length {
+                if let Ok(s) = String::from_utf8(decoded[start..actual_end].to_vec()) {
+                    // Use same filtering as multi-byte XOR: classify + validation::is_garbage() in lib.rs
+                    let kind_opt = if apply_filters {
+                        classify_xor_string(&s)
+                    } else {
+                        Some(StringKind::Const)
+                    };
 
-                    // Reject if has letters but poor vowel ratio (English-specific check)
-                    // Only apply to ASCII text - skip for international text (Russian, Chinese, etc.)
-                    if alpha >= 3 {
-                        let has_non_ascii = s.chars().any(|c| !c.is_ascii());
-                        if !has_non_ascii {
-                            // Only check vowels for ASCII/English text
-                            let vowels = s.chars().filter(|c| {
-                                matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
-                            }).count();
-                            let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
-                            if vowel_ratio < 10 || vowel_ratio > 70 {
-                                continue;
+                    if let Some(kind) = kind_opt {
+                        // Additional sanity check: reject obvious garbage
+                        let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
+                        let alpha = s.chars().filter(|c| c.is_alphabetic()).count();
+
+                        // Reject if < 50% alphanumeric (likely garbage)
+                        // Use character count for proper Unicode support
+                        let char_count = s.chars().count();
+                        if char_count > 0 && alnum * 100 < char_count * 50 {
+                            continue;
+                        }
+
+                        // Reject if has letters but poor vowel ratio (English-specific check)
+                        // Only apply to ASCII text - skip for international text (Russian, Chinese, etc.)
+                        if alpha >= 3 {
+                            let has_non_ascii = s.chars().any(|c| !c.is_ascii());
+                            if !has_non_ascii {
+                                // Only check vowels for ASCII/English text
+                                let vowels = s.chars().filter(|c| {
+                                    matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+                                }).count();
+                                let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
+                                if vowel_ratio < 10 || vowel_ratio > 70 {
+                                    continue;
+                                }
                             }
                         }
-                    }
 
-                    let offset = start as u64;
-                    if seen.insert((offset, s.clone())) {
-                        let key_preview = if key.len() > 8 {
-                            format!("{}...", String::from_utf8_lossy(&key[..8]))
-                        } else {
-                            String::from_utf8_lossy(key).to_string()
-                        };
+                        let offset = start as u64;
+                        if seen.insert((offset, s.clone())) {
+                            let key_preview = if key.len() > 8 {
+                                format!("{}...", String::from_utf8_lossy(&key[..8]))
+                            } else {
+                                String::from_utf8_lossy(key).to_string()
+                            };
 
-                        results.push(ExtractedString {
-                            value: s,
-                            data_offset: offset,
-                            section: None,
-                            method: StringMethod::XorDecode,
-                            kind,
-                            library: Some(format!("key:{key_preview}")),
-                            fragments: None,
-                            ..Default::default()
-                        });
+                            // Clean up URLs by removing trailing garbage
+                            let cleaned_value = if matches!(kind, StringKind::Url) {
+                                clean_url_trailing_garbage(&s)
+                            } else {
+                                s.clone()
+                            };
+
+                            results.push(ExtractedString {
+                                value: cleaned_value,
+                                data_offset: offset,
+                                section: None,
+                                method: StringMethod::XorDecode,
+                                kind,
+                                library: Some(format!("key:{key_preview}")),
+                                fragments: None,
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
             }
@@ -1223,11 +1250,19 @@ fn extract_custom_xor_strings_pattern_based_simple(
         // XOR decode while printable: data[pos+j] ^ key[j % len(key)]
         let mut decoded = Vec::new();
 
+        // Track positions of single nulls in raw data (potential garbage boundaries)
+        let mut null_positions = Vec::new();
+
         for j in 0..std::cmp::min(1024, data.len() - pos) {
-            // Stop at null AFTER first byte (nulls are natural string terminators)
-            // Allow j==0 to be null so we can decode strings starting with key[0]
-            if data[pos + j] == 0 && j > 0 {
+            // Check for consecutive nulls in raw data (indicates end of actual string data)
+            if pos + j + 1 < data.len() && data[pos + j] == 0 && data[pos + j + 1] == 0 {
+                // Stop decoding at first double-null to avoid garbage from zero-filled memory
                 break;
+            }
+
+            // Track single nulls as potential garbage boundaries
+            if data[pos + j] == 0 {
+                null_positions.push(j);
             }
 
             let byte = data[pos + j] ^ key[j % key.len()];
@@ -1239,14 +1274,66 @@ fn extract_custom_xor_strings_pattern_based_simple(
             }
         }
 
-        // Check minimum length
+        // Trim at null boundaries if we detect garbage (consonant clusters)
+        // Check all nulls, trim at the first one followed by garbage
+        // Skip null at position 0 (start of string) as it's not a garbage boundary
+        let mut trim_at: Option<usize> = None;
+        for &null_pos in &null_positions {
+            if null_pos == 0 {
+                continue; // Don't trim at start of string
+            }
+            if null_pos < decoded.len() {
+                let after_null = &decoded[null_pos..];
+                // Need at least 2 chars after null to detect garbage (e.g., "aTr")
+                if after_null.len() >= 2 {
+                    let s_after = String::from_utf8_lossy(after_null);
+
+                    // Count consonants in first 4 chars (or all if less than 4)
+                    let check_len = after_null.len().min(4);
+                    let consonant_run = s_after.chars()
+                        .take(check_len)
+                        .filter(|c| c.is_ascii_alphabetic() && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u'))
+                        .count();
+
+
+                    // If we have 3+ consonants in the checked chars, it's likely garbage
+                    // Trim at this null position
+                    if consonant_run >= 3 {
+                        trim_at = Some(null_pos);
+                        break; // Trim at first garbage boundary
+                    }
+                }
+            }
+        }
+
+        if let Some(trim_pos) = trim_at {
+            decoded.truncate(trim_pos);
+        }
+
+        // Check minimum length after trimming
         if decoded.len() < min_length {
             continue;
         }
 
-        // Convert to string
-        let Ok(s) = String::from_utf8(decoded) else {
-            continue;
+        // Convert to string - if full conversion fails, try to salvage valid UTF-8 prefix
+        let s = match String::from_utf8(decoded.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                // UTF-8 conversion failed - try to salvage the valid prefix
+                // This handles cases where valid ASCII/UTF-8 data is followed by garbage
+                let valid_up_to = e.utf8_error().valid_up_to();
+                if valid_up_to >= min_length {
+                    // We have enough valid UTF-8 data - use it
+                    decoded.truncate(valid_up_to);
+                    match String::from_utf8(decoded) {
+                        Ok(s) => s,
+                        Err(_) => continue, // Still invalid, skip
+                    }
+                } else {
+                    // Not enough valid data
+                    continue;
+                }
+            }
         };
 
         // Must have at least one letter
@@ -1254,9 +1341,18 @@ fn extract_custom_xor_strings_pattern_based_simple(
             continue;
         }
 
+        // Apply early trimming before classification to remove obvious garbage
+        // This ensures classification sees clean strings
+        let trimmed_s = trim_consonant_clusters(&s);
+
+        // Re-check minimum length after consonant cluster trimming
+        if trimmed_s.len() < min_length {
+            continue;
+        }
+
         // Apply classification/filtering if requested
         let kind = if apply_filters {
-            match classify_xor_string(&s) {
+            match classify_xor_string(&trimmed_s) {
                 Some(k) => k,
                 None => continue, // Filter rejected this string
             }
@@ -1268,13 +1364,13 @@ fn extract_custom_xor_strings_pattern_based_simple(
         // Be especially strict when using automatically detected keys (paths)
         let key_is_likely_auto_detected = key_preview.starts_with('/') || key_preview.starts_with("C:\\");
 
-        let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
-        let alpha = s.chars().filter(|c| c.is_alphabetic()).count();
+        let alnum = trimmed_s.chars().filter(|c| c.is_alphanumeric()).count();
+        let alpha = trimmed_s.chars().filter(|c| c.is_alphabetic()).count();
 
         // For auto-detected keys, require at least 60% alphanumeric (stricter)
         // For user-provided keys, require at least 50% alphanumeric
         // Use character count for proper Unicode support
-        let char_count = s.chars().count();
+        let char_count = trimmed_s.chars().count();
         let min_alnum_pct = if key_is_likely_auto_detected { 60 } else { 50 };
         if char_count > 0 && alnum * 100 < char_count * min_alnum_pct {
             continue;
@@ -1283,10 +1379,10 @@ fn extract_custom_xor_strings_pattern_based_simple(
         // Reject if has letters but poor vowel ratio (linguistic check)
         // Only apply to ASCII/English text - skip for international text (Russian, Chinese, etc.)
         if alpha >= 3 {
-            let has_non_ascii = s.chars().any(|c| !c.is_ascii());
+            let has_non_ascii = trimmed_s.chars().any(|c| !c.is_ascii());
             if !has_non_ascii {
                 // Only check vowels for ASCII/English text
-                let vowels = s.chars().filter(|c| {
+                let vowels = trimmed_s.chars().filter(|c| {
                     matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
                 }).count();
                 let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
@@ -1304,8 +1400,20 @@ fn extract_custom_xor_strings_pattern_based_simple(
             }
         }
 
+        // Apply category-specific fine-tuning after consonant cluster trimming
+        let cleaned_value = if matches!(kind, StringKind::Url) {
+            clean_url_trailing_garbage(&trimmed_s)
+        } else if matches!(kind, StringKind::SuspiciousPath) && is_locale_string(&trimmed_s) {
+            clean_locale_trailing_garbage(&trimmed_s)
+        } else if matches!(kind, StringKind::ShellCmd) {
+            // For shell commands and AppleScript, use the existing trimmer
+            trim_trailing_garbage(&trimmed_s).to_string()
+        } else {
+            trimmed_s
+        };
+
         results.push(ExtractedString {
-            value: s,
+            value: cleaned_value,
             data_offset: pos as u64,
             section: None,
             method: StringMethod::XorDecode,
@@ -1323,6 +1431,160 @@ fn extract_custom_xor_strings_pattern_based_simple(
     );
 
     results
+}
+
+/// Trim trailing garbage from XOR-decoded strings by detecting quality drops.
+///
+/// XOR decoding can produce garbage at the end when decoding past the actual string data.
+/// This happens when null bytes or padding in raw data decode to printable characters.
+///
+/// This function detects quality drops by looking for:
+/// - Sudden decrease in alphanumeric ratio
+/// - Loss of vowel ratio in alphabetic sequences
+/// - Transition from structured text to random characters
+///
+/// Examples:
+/// - `set volume output muted truegtZh` -> `set volume output muted true`
+/// - `%s/.electron-cash/wallets8gkqyY]x` -> `%s/.electron-cash/wallets`
+/// Trim at consonant clusters that indicate garbage.
+///
+/// XOR-decoded strings often have trailing consonant clusters (e.g., "gtZh", "kqyY")
+/// that occur when null bytes or padding decode to random letters.
+/// This function detects runs of 4+ consonants and trims before them.
+///
+/// Examples:
+/// - `set volume output muted truegtZh` -> `set volume output muted true`
+/// - `wallet.dat8gkqyY]x` -> `wallet.dat`
+fn trim_consonant_clusters(s: &str) -> String {
+    if s.len() < 8 {
+        return s.to_string();
+    }
+
+    let chars: Vec<char> = s.chars().collect();
+    let mut consonant_run = 0;
+    let mut trim_pos = None;
+
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_ascii_alphabetic() {
+            let is_vowel = matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u');
+            if is_vowel {
+                consonant_run = 0;
+            } else {
+                consonant_run += 1;
+                // If we hit 4+ consonants in a row, mark this as potential trim point
+                if consonant_run >= 4 && trim_pos.is_none() {
+                    // Trim before the start of this consonant run
+                    trim_pos = Some(i - 3);
+                }
+            }
+        } else {
+            // Non-letter resets the count
+            consonant_run = 0;
+        }
+    }
+
+    if let Some(pos) = trim_pos {
+        // Make sure we're trimming at a reasonable boundary (at least 10 chars into the string)
+        if pos >= 10 {
+            return chars[..pos].iter().collect();
+        }
+    }
+
+    s.to_string()
+}
+
+/// Clean trailing garbage from locale strings extracted via XOR decoding.
+///
+/// Locale strings often have trailing garbage after the last valid locale code.
+/// This function trims them to prevent overlaps with adjacent strings.
+///
+/// Examples:
+/// - `hy_AM;be_BY;kk_KZ;ru_RU;uk_UA;ffYztZORL` -> `hy_AM;be_BY;kk_KZ;ru_RU;uk_UA;`
+fn clean_locale_trailing_garbage(s: &str) -> String {
+    // Find the last valid locale separator (';' or ',')
+    if let Some(last_sep) = s.rfind(|c| c == ';' || c == ',') {
+        // Include the separator in the result
+        let clean_len = last_sep + 1;
+        if clean_len < s.len() {
+            return s[..clean_len].to_string();
+        }
+    }
+
+    // No separator found or nothing to trim
+    s.to_string()
+}
+
+/// Clean trailing garbage from URLs extracted via XOR decoding.
+///
+/// URLs often have trailing garbage characters that pass printability checks
+/// but aren't part of the actual URL. This function trims them to prevent
+/// overlaps with adjacent strings.
+///
+/// Examples:
+/// - `http://46.30.191.141n;uJ` -> `http://46.30.191.141`
+/// - `https://evil.com/path?foo=barn;X` -> `https://evil.com/path?foo=bar`
+fn clean_url_trailing_garbage(url: &str) -> String {
+    // For URLs with embedded IPs: trim after the last IP octet
+    if let Some(proto_end) = url.find("://") {
+        let after_proto = &url[proto_end + 3..];
+
+        // Check if it starts with an IP address
+        if after_proto.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            // Find the end of the IP (last digit of last octet)
+            let mut ip_end = 0;
+            let mut dots = 0;
+
+            for (i, c) in after_proto.chars().enumerate() {
+                if c.is_ascii_digit() {
+                    ip_end = i + 1;
+                } else if c == '.' {
+                    dots += 1;
+                    if dots > 3 {
+                        break; // Too many dots, not a valid IP
+                    }
+                } else if c == ':' && dots == 3 {
+                    // Port number after IP - find end of port
+                    let port_start = i + 1;
+                    if let Some(port_end_offset) = after_proto[port_start..].find(|c: char| !c.is_ascii_digit()) {
+                        ip_end = port_start + port_end_offset;
+                    } else {
+                        ip_end = after_proto.len();
+                    }
+                    break;
+                } else {
+                    // Non-IP character
+                    break;
+                }
+            }
+
+            // If we found a valid IP (3 dots), trim after it
+            if dots == 3 && ip_end > 0 {
+                let clean_len = proto_end + 3 + ip_end;
+                if clean_len < url.len() {
+                    return url[..clean_len].to_string();
+                }
+            }
+        } else {
+            // Domain-based URL: trim after last alphanumeric/slash/common URL chars
+            let valid_url_chars: Vec<usize> = after_proto
+                .char_indices()
+                .filter(|(_, c)| {
+                    c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '?' | '=' | '&' | '%' | '#' | '+')
+                })
+                .map(|(i, _)| i)
+                .collect();
+
+            if let Some(&last_valid) = valid_url_chars.last() {
+                let clean_len = proto_end + 3 + last_valid + 1;
+                if clean_len < url.len() {
+                    return url[..clean_len].to_string();
+                }
+            }
+        }
+    }
+
+    // No cleanup needed or couldn't parse
+    url.to_string()
 }
 
 /// Expand a multi-byte XOR'd string from a match position.
@@ -2897,6 +3159,8 @@ const SHELL_COMMANDS: &[&str] = &[
     "wget ",
     "bash ",
     "sh ",
+    "sleep ",
+    "rm -rf",
     "python ",
     "perl ",
     "ruby ",
@@ -2975,6 +3239,55 @@ const KNOWN_PATH_PREFIXES: &[&str] = &[
 ];
 
 /// Trim obvious garbage from the end of XOR-decoded strings.
+/// Check if a string contains locale codes (language_COUNTRY or language-COUNTRY format).
+/// These are often used in malware for geofencing/targeting specific regions.
+///
+/// Common locale patterns:
+/// - en_US, en-US (English - United States)
+/// - ru_RU, ru-RU (Russian - Russia)
+/// - zh_CN, zh-CN (Chinese - China)
+/// - Lists: "en_US;fr_FR;de_DE" or "ru_RU;be_BY;kk_KZ"
+fn has_multiple_locales(s: &str) -> bool {
+    // Common locale codes (top 15 global locales + CIS countries for malware detection)
+    const COMMON_LOCALES: &[&str] = &[
+        "en_US", "en-US", // English (US)
+        "en_GB", "en-GB", // English (UK)
+        "zh_CN", "zh-CN", // Chinese (China)
+        "es_ES", "es-ES", // Spanish (Spain)
+        "es_MX", "es-MX", // Spanish (Mexico)
+        "fr_FR", "fr-FR", // French (France)
+        "de_DE", "de-DE", // German (Germany)
+        "ja_JP", "ja-JP", // Japanese (Japan)
+        "pt_BR", "pt-BR", // Portuguese (Brazil)
+        "ru_RU", "ru-RU", // Russian (Russia)
+        "it_IT", "it-IT", // Italian (Italy)
+        "ko_KR", "ko-KR", // Korean (Korea)
+        "ar_SA", "ar-SA", // Arabic (Saudi Arabia)
+        "hi_IN", "hi-IN", // Hindi (India)
+        "tr_TR", "tr-TR", // Turkish (Turkey)
+        // CIS countries (common in DPRK malware geofencing)
+        "hy_AM", "hy-AM", // Armenian
+        "be_BY", "be-BY", // Belarusian
+        "kk_KZ", "kk-KZ", // Kazakh
+        "uk_UA", "uk-UA", // Ukrainian
+        "uz_UZ", "uz-UZ", // Uzbek
+    ];
+
+    // Count how many locale codes are present
+    let mut locale_count = 0;
+    for locale in COMMON_LOCALES {
+        if s.contains(locale) {
+            locale_count += 1;
+            if locale_count >= 2 {
+                return true; // Found at least 2 locale codes (likely a geofencing list)
+            }
+        }
+    }
+
+    // Single locale might be legitimate, but lists of locales are suspicious
+    false
+}
+
 /// Check progressively longer suffixes for mixed-case garbage.
 /// Classify an XOR-decoded string. Returns None if it doesn't look interesting.
 fn classify_xor_string(s: &str) -> Option<StringKind> {
@@ -2982,6 +3295,13 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
 
     // FIRST: Check for high-value IOCs that should bypass strict filtering
     // These are important enough that we want them even if they have unusual chars
+
+    // Check for locale strings (common in malware geofencing)
+    // Standard format: language_COUNTRY or language-COUNTRY (e.g., en_US, ru-RU, zh_CN)
+    // Malware often includes lists like "en_US;fr_FR;de_DE" to check victim's locale
+    if has_multiple_locales(s) {
+        return Some(StringKind::SuspiciousPath); // Classify as suspicious (indicates geofencing)
+    }
 
     // Check for well-known suspicious paths (even with garbage around them)
     for sus_path in SUSPICIOUS_PATHS {
@@ -3219,9 +3539,8 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             if char_count >= 30 && s.contains(' ') {
                 if looks_like_text(s) {
                     return Some(StringKind::Const);
-                } else {
-                    return None;
                 }
+                return None;
             }
 
             // Short strings: must be mostly alphanumeric

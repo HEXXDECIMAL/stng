@@ -236,8 +236,8 @@ where
                 return None;
             }
 
-            let offset = (s.ptr - blob_addr) as usize;
-            let end = offset + s.len as usize;
+            let offset = usize::try_from(s.ptr - blob_addr).ok()?;
+            let end = offset + usize::try_from(s.len).ok()?;
 
             if end > blob.len() {
                 return None;

@@ -7,9 +7,8 @@ pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
     use goblin::mach::load_command::CommandVariant;
     use goblin::Object;
 
-    let macho = match Object::parse(data) {
-        Ok(Object::Mach(goblin::mach::Mach::Binary(m))) => m,
-        _ => return None,
+    let Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) = Object::parse(data) else {
+        return None;
     };
 
     // Find LC_CODE_SIGNATURE load command

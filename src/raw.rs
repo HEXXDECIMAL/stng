@@ -63,9 +63,9 @@ pub fn extract_raw_strings(
 
                 // Get section metadata if this is a section
                 let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                    section_info.get(trimmed).map(|info| {
+                    section_info.get(trimmed).map_or((None, None, None), |info| {
                         (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                    }).unwrap_or((None, None, None))
+                    })
                 } else {
                     (None, None, None)
                 };
@@ -94,7 +94,7 @@ pub fn extract_raw_strings(
     extract_printable_runs(
         data,
         min_length,
-        &section,
+        section.as_ref(),
         &segment_names_set,
         section_info,
         &mut strings,
@@ -109,7 +109,7 @@ pub fn extract_raw_strings(
 pub fn extract_printable_runs(
     data: &[u8],
     min_length: usize,
-    section: &Option<String>,
+    section: Option<&String>,
     segment_names_set: &HashSet<&str>,
     section_info: &HashMap<String, crate::binary::SectionInfo>,
     strings: &mut Vec<ExtractedString>,
@@ -139,9 +139,9 @@ pub fn extract_printable_runs(
 
                         // Get section metadata if this is a section
                         let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                            section_info.get(trimmed).map(|info| {
+                            section_info.get(trimmed).map_or((None, None, None), |info| {
                                 (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                            }).unwrap_or((None, None, None))
+                            })
                         } else {
                             (None, None, None)
                         };
@@ -150,7 +150,7 @@ pub fn extract_printable_runs(
                         strings.push(ExtractedString {
                             value: trimmed.to_string(),
                             data_offset: start as u64,
-                            section: section.clone(),
+                            section: section.cloned(),
                             method: StringMethod::RawScan,
                             kind,
                             library: None,
@@ -183,9 +183,9 @@ pub fn extract_printable_runs(
 
                     // Get section metadata if this is a section
                     let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                        section_info.get(trimmed).map(|info| {
+                        section_info.get(trimmed).map_or((None, None, None), |info| {
                             (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                        }).unwrap_or((None, None, None))
+                        })
                     } else {
                         (None, None, None)
                     };
@@ -194,7 +194,7 @@ pub fn extract_printable_runs(
                     strings.push(ExtractedString {
                         value: trimmed.to_string(),
                         data_offset: start as u64,
-                        section: section.clone(),
+                        section: section.cloned(),
                         method: StringMethod::RawScan,
                         kind,
                         library: None,
@@ -281,9 +281,9 @@ pub fn extract_wide_strings(
 
                     // Get section metadata if this is a section
                     let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                        section_info.get(trimmed).map(|info| {
+                        section_info.get(trimmed).map_or((None, None, None), |info| {
                             (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                        }).unwrap_or((None, None, None))
+                        })
                     } else {
                         (None, None, None)
                     };

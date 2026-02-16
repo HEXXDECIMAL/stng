@@ -638,8 +638,7 @@ fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
                     let mut value: u32 = 0;
                     for &digit in &group {
                         value = value.checked_mul(85)
-                            .and_then(|v| v.checked_add(u32::from(digit)))
-                            .filter(|&v| v <= u32::MAX)?;
+                            .and_then(|v| v.checked_add(u32::from(digit)))?;
                     }
                     result.extend_from_slice(&value.to_be_bytes());
                     group.clear();
@@ -663,8 +662,7 @@ fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
         let mut value: u32 = 0;
         for &digit in &group {
             value = value.checked_mul(85)
-                .and_then(|v| v.checked_add(u32::from(digit)))
-                .filter(|&v| v <= u32::MAX)?;
+                .and_then(|v| v.checked_add(u32::from(digit)))?;
         }
 
         let bytes = value.to_be_bytes();

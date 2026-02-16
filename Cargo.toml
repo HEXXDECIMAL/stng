@@ -75,29 +75,41 @@ codegen-units = 1
 debug = true
 
 [lints.rust]
+# Forbid unsafe code entirely
 unsafe_code = "forbid"
+
+# Deny these - they catch real bugs
 unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [lints.clippy]
-# Pedantic lints for better code quality
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
+# Correctness - these catch real bugs (deny by default in clippy, but explicit is good)
+correctness = { level = "deny", priority = -1 }
 
-# Performance
-inefficient_to_string = "warn"
+# Suspicious patterns - likely bugs
+suspicious = { level = "warn", priority = -1 }
+
+# Performance - real performance issues
+perf = { level = "warn", priority = -1 }
+
+# Specific strict lints for common mistakes
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Memory/Resource issues
+large_stack_arrays = "warn"
 large_types_passed_by_value = "warn"
 
-# Suspicious patterns
-suspicious = "warn"
+# Logic errors
+debug_assert_with_mut_call = "deny"
+exit = "warn"
 
-# Complexity
-too_many_lines = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-module_name_repetitions = "allow"
-similar_names = "allow"
-unreadable_literal = "allow"
-must_use_candidate = "allow"
-missing_const_for_fn = "allow"
-use_self = "allow"
+# API design (for library code)
+missing_errors_doc = "allow"  # Too noisy for internal APIs
+missing_panics_doc = "allow"  # Too noisy for internal APIs
+
+# Style - be pragmatic, not pedantic
+# Don't enable pedantic/nursery wholesale - too much noise for little value

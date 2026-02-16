@@ -3,7 +3,7 @@
 //! This module defines the fundamental data structures used throughout
 //! the string extraction process.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Represents a string structure found in binary (pointer + length pair).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -62,11 +62,11 @@ pub struct ExtractedString {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub section_writable: Option<bool>,
-    /// Architecture (for Mach-O fat binaries: "x86_64", "arm64", etc.)
+    /// Architecture (for Mach-O fat binaries: `x86_64`, `arm64`, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub architecture: Option<String>,
-    /// Function metadata (for FuncName kind)
+    /// Function metadata (for `FuncName` kind)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub function_meta: Option<FunctionMetadata>,
@@ -122,8 +122,9 @@ impl ExtractedString {
         let is_write = self.section_writable.unwrap_or(false);
 
         // Format size
+        #[allow(clippy::cast_precision_loss)]
         let size_str = if size < 1024 {
-            format!("{}b", size)
+            format!("{size}b")
         } else if size < 1024 * 1024 {
             format!("{:.1}kb", size as f64 / 1024.0)
         } else {
@@ -134,11 +135,10 @@ impl ExtractedString {
         let type_str = match (is_exec, is_write) {
             (true, true) => "TEXT+DATA",
             (true, false) => "TEXT",
-            (false, true) => "DATA",
-            (false, false) => "DATA",
+            (false, _) => "DATA",
         };
 
-        Some(format!("({}, {})", size_str, type_str))
+        Some(format!("({size_str}, {type_str})"))
     }
 }
 
@@ -191,7 +191,7 @@ pub enum StringMethod {
 /// Semantic kind of the extracted string.
 ///
 /// Classifies strings by their purpose and security relevance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 pub enum StringKind {
     /// Generic string constant
@@ -232,8 +232,14 @@ pub enum StringKind {
     Hostname,
     /// Shell command (pipes, redirects, common commands)
     ShellCmd,
-    /// AppleScript code (common in macOS malware)
+    /// `AppleScript` code (common in macOS malware)
     AppleScript,
+    /// Python code (import statements, def/class keywords, python-specific calls)
+    PythonCode,
+    /// JavaScript code (function declarations, const/let/var, require, arrow functions)
+    JavaScriptCode,
+    /// PHP code (<?php tags, $ variables, `eval(base64_decode)`)
+    PhpCode,
     /// Suspicious path (hidden dirs, rootkit locations, persistence)
     SuspiciousPath,
     /// Windows registry path
@@ -420,6 +426,9 @@ impl StringKind {
             StringKind::RansomNote => "ransom",
             StringKind::LDAPPath => "ldap",
             StringKind::AppleScript => "applescript",
+            StringKind::PythonCode => "python",
+            StringKind::JavaScriptCode => "javascript",
+            StringKind::PhpCode => "php",
         }
     }
 }

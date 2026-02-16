@@ -45,7 +45,7 @@ pub fn is_garbage(s: &str) -> bool {
     }
 
     // Special case: Cryptocurrency addresses (ransomware/miner IOCs)
-    if len >= 26 && len <= 108 {
+    if (26..=108).contains(&len) {
         // Bitcoin (legacy): starts with 1 or 3, 26-35 chars, base58
         // Bitcoin (bech32): starts with bc1, 42+ chars
         // Ethereum: starts with 0x, 42 chars hex
@@ -75,7 +75,7 @@ pub fn is_garbage(s: &str) -> bool {
 
     // Mining pool domains (common patterns)
     if (trimmed.contains("pool.") || trimmed.contains("nanopool") || trimmed.contains("minergate"))
-        && (trimmed.contains(".com") || trimmed.contains(".org") || trimmed.contains(":"))
+        && (trimmed.contains(".com") || trimmed.contains(".org") || trimmed.contains(':'))
     {
         return false; // Mining pool URLs are NOT garbage
     }
@@ -113,9 +113,9 @@ pub fn is_garbage(s: &str) -> bool {
         // Be flexible: 36-38 chars, 4 dashes, mostly hex
         if (36..=38).contains(&len) {
             let dash_count = trimmed.chars().filter(|&c| c == '-').count();
-            let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+            let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
             // GUID has 4 dashes and mostly hex digits (allow 30-32)
-            if dash_count == 4 && hex_count >= 30 && hex_count <= 32 {
+            if dash_count == 4 && (30..=32).contains(&hex_count) {
                 return false; // GUIDs are NOT garbage
             }
         }
@@ -215,7 +215,7 @@ pub fn is_garbage(s: &str) -> bool {
         || trimmed.contains("$_COOKIE")
         || trimmed.contains("$GLOBALS")
         || trimmed.contains("preg_replace(")
-        || (trimmed.starts_with("${") && trimmed.contains("}"))
+        || (trimmed.starts_with("${") && trimmed.contains('}'))
     {
         return false; // PHP code is NOT garbage
     }
@@ -224,14 +224,14 @@ pub fn is_garbage(s: &str) -> bool {
     if trimmed.contains("pack(")
         || trimmed.contains("$ARGV")
         || trimmed.contains("eval(")
-        || (trimmed.contains("open(") && trimmed.contains("|"))
+        || (trimmed.contains("open(") && trimmed.contains('|'))
     {
         return false; // Perl code is NOT garbage
     }
 
     // Shell patterns
     if trimmed.contains("${IFS}")
-        || (trimmed.contains("$(") && trimmed.contains(")"))
+        || (trimmed.contains("$(") && trimmed.contains(')'))
         || (trimmed.contains("eval") && (trimmed.contains("base64") || trimmed.contains("echo")))
     {
         return false; // Shell code is NOT garbage

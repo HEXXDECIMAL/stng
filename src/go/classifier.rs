@@ -210,39 +210,6 @@ pub fn classify_string(s: &str) -> StringKind {
         }
     }
 
-    // Command injection patterns - use byte checks for speed
-    // Only check if the string contains key indicator bytes
-    if memchr::memchr3(b';', b'|', b'$', bytes).is_some() {
-        if (s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
-            || (s.contains("| ") && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
-            || s.contains("$(")
-        {
-            return StringKind::CommandInjection;
-        }
-    }
-
-    // Backtick command substitution - must be mostly ASCII and contain command-like content
-    if s.starts_with('`') && s.ends_with('`') && len >= 5 {
-        let content = &s[1..len-1];
-        let content_len = content.len();
-
-        // Must be mostly ASCII (>90%) - reject garbage with non-ASCII chars
-        let ascii_count = content.chars().filter(|c| c.is_ascii()).count();
-        if ascii_count * 100 / content_len > 90 {
-            // Must contain spaces (multiword command) or known command names
-            if content.contains(' ')
-                || content.contains("cat")
-                || content.contains("ls")
-                || content.contains("pwd")
-                || content.contains("echo")
-                || content.contains("wget")
-                || content.contains("curl")
-            {
-                return StringKind::CommandInjection;
-            }
-        }
-    }
-
     // LDAP/AD paths
     if s.contains("LDAP://") || (s.contains("CN=") && s.contains("DC=")) {
         return StringKind::LDAPPath;
@@ -309,14 +276,62 @@ pub fn classify_string(s: &str) -> StringKind {
         }
     }
 
-    // Check for shell commands (high priority for security)
-    if is_shell_command(s) {
-        return StringKind::ShellCmd;
+    // Check for embedded code first (most specific markers)
+    // PHP has very distinctive markers (<?php tags) so check it first
+    if is_php_code(s) {
+        return StringKind::PhpCode;
+    }
+
+    if is_python_code(s) {
+        return StringKind::PythonCode;
+    }
+
+    if is_javascript_code(s) {
+        return StringKind::JavaScriptCode;
     }
 
     // Check for AppleScript syntax (common in macOS malware)
     if is_applescript(s) {
         return StringKind::AppleScript;
+    }
+
+    // Check for shell commands last (catches generic commands like 'echo', 'curl')
+    // This is intentionally after code detection to avoid false positives
+    if is_shell_command(s) {
+        return StringKind::ShellCmd;
+    }
+
+    // Command injection patterns - check AFTER code detection to avoid false positives
+    // JavaScript/PHP code might contain command strings but should be detected as code first
+    if memchr::memchr3(b';', b'|', b'$', bytes).is_some() {
+        if (s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
+            || (s.contains("| ") && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
+            || s.contains("$(")
+        {
+            return StringKind::CommandInjection;
+        }
+    }
+
+    // Backtick command substitution - must be mostly ASCII and contain command-like content
+    if s.starts_with('`') && s.ends_with('`') && len >= 5 {
+        let content = &s[1..len-1];
+        let content_len = content.len();
+
+        // Must be mostly ASCII (>90%) - reject garbage with non-ASCII chars
+        let ascii_count = content.chars().filter(|c| c.is_ascii()).count();
+        if ascii_count * 100 / content_len > 90 {
+            // Must contain spaces (multiword command) or known command names
+            if content.contains(' ')
+                || content.contains("cat")
+                || content.contains("ls")
+                || content.contains("pwd")
+                || content.contains("echo")
+                || content.contains("wget")
+                || content.contains("curl")
+            {
+                return StringKind::CommandInjection;
+            }
+        }
     }
 
     // IP addresses and IP:port - only if starts with digit
@@ -473,6 +488,151 @@ pub fn classify_string(s: &str) -> StringKind {
     StringKind::Const
 }
 
+/// Check if a string looks like Python code
+fn is_python_code(s: &str) -> bool {
+    let len = s.len();
+
+    // Must have some length
+    if len < 8 {
+        return false;
+    }
+
+    // Quick rejection: Python code must contain certain characters
+    let bytes = s.as_bytes();
+    let has_python_indicators = bytes.iter().any(|&b| matches!(b, b'(' | b':' | b'.'));
+    if !has_python_indicators {
+        return false;
+    }
+
+    let mut matches = 0;
+
+    // Strong Python indicators (word boundaries matter)
+    if s.contains("import ") || s.starts_with("import ") {
+        matches += 1;
+    }
+    if s.contains("from ") && s.contains(" import") {
+        matches += 1;
+    }
+    if s.contains("def ") {
+        matches += 1;
+    }
+    if s.contains("class ") {
+        matches += 1;
+    }
+    if s.contains("exec(") {
+        matches += 1;
+    }
+    if s.contains("eval(") {
+        matches += 1;
+    }
+    if s.contains("sys.") {
+        matches += 1;
+    }
+    if s.contains("os.") {
+        matches += 1;
+    }
+    if s.contains("__name__") && s.contains("__main__") {
+        matches += 1;
+    }
+
+    // Require at least 2 matches to reduce false positives
+    matches >= 2
+}
+
+/// Check if a string looks like JavaScript code
+fn is_javascript_code(s: &str) -> bool {
+    let len = s.len();
+
+    // Must have some length
+    if len < 8 {
+        return false;
+    }
+
+    // Quick rejection: JavaScript code must contain certain characters
+    let bytes = s.as_bytes();
+    let has_js_indicators = bytes.iter().any(|&b| matches!(b, b'(' | b'{' | b'=' | b'.'));
+    if !has_js_indicators {
+        return false;
+    }
+
+    let mut matches = 0;
+
+    // JavaScript-specific patterns
+    if s.contains("function ") {
+        matches += 1;
+    }
+    if s.contains("const ") && s.contains(" = ") {
+        matches += 1;
+    }
+    if s.contains("let ") && s.contains(" = ") {
+        matches += 1;
+    }
+    if s.contains("var ") && s.contains(" = ") {
+        matches += 1;
+    }
+    if s.contains("require(") {
+        matches += 1;
+    }
+    if s.contains("document.") {
+        matches += 1;
+    }
+    if s.contains("window.") {
+        matches += 1;
+    }
+    if s.contains("console.log") {
+        matches += 1;
+    }
+    // Arrow functions: => {
+    if s.contains("=>") && s.contains("{") {
+        matches += 1;
+    }
+
+    // Require at least 2 matches to reduce false positives
+    matches >= 2
+}
+
+/// Check if a string looks like PHP code
+fn is_php_code(s: &str) -> bool {
+    let len = s.len();
+
+    // Must have some length
+    if len < 5 {
+        return false;
+    }
+
+    // Strong PHP indicators - opening tags are very distinctive
+    if s.contains("<?php") || s.contains("<?=") {
+        return true;
+    }
+
+    // Fallback: look for PHP-specific patterns
+    // PHP variables always start with $, so require multiple $ signs
+    let dollar_count = s.chars().filter(|&c| c == '$').count();
+    if dollar_count < 2 {
+        return false;
+    }
+
+    let mut matches = 0;
+
+    // PHP variable assignment: $var =
+    if s.contains("$") && s.contains(" = ") {
+        matches += 1;
+    }
+
+    // Common PHP obfuscation: eval(base64_decode
+    if s.contains("eval") && s.contains("base64_decode") {
+        matches += 1;
+    }
+
+    // PHP function with $ variable in body
+    if s.contains("function ") && s.contains("$") && s.contains("{") {
+        matches += 1;
+    }
+
+    // Require at least 2 matches if no PHP tags
+    matches >= 2
+}
+
 /// Check if a string looks like AppleScript code
 fn is_applescript(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
@@ -484,7 +644,7 @@ fn is_applescript(s: &str) -> bool {
         "every file of", "whose name extension", "posix file", "end tell",
         "do shell script", " dialog", "choose file", "choose folder",
         "duplicate ", " to posix file", "repeat with", "end repeat",
-        " as alias", " with replacing",
+        " as alias", " with replacing", "set volume",
     ];
 
     for pattern in &applescript_patterns {
@@ -511,6 +671,11 @@ fn is_shell_command(s: &str) -> bool {
     // Must have some length
     if len < 4 {
         return false;
+    }
+
+    // Shebang is a strong indicator
+    if s.starts_with("#!/bin/bash") || s.starts_with("#!/bin/sh") || s.starts_with("#!/usr/bin/env") {
+        return true;
     }
 
     // Quick byte-level check: shell commands typically contain key indicators
