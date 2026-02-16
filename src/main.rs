@@ -413,13 +413,8 @@ fn main() -> Result<()> {
             return Ok(());
         }
 
-        // Sort and display
-        strings.sort_by(|a, b| {
-            b.kind
-                .severity()
-                .cmp(&a.kind.severity())
-                .then_with(|| a.value.cmp(&b.value))
-        });
+        // Sort by offset (text files are sequential, so offset order makes sense)
+        strings.sort_by_key(|s| s.data_offset);
 
         for s in &strings {
             print_string_line(s, use_color);
@@ -923,6 +918,55 @@ fn print_colorized_entitlements(xml: &str, use_color: bool) {
     println!("{result}");
 }
 
+/// Wrap a string to fit terminal width, returning lines with byte offsets
+///
+/// # Arguments
+/// * `text` - The string to wrap
+/// * `start_offset` - Starting byte offset
+/// * `max_width` - Maximum width for text content (excluding prefix columns)
+///
+/// # Returns
+/// Vector of (`byte_offset`, `line_text`) tuples
+fn wrap_string_lines(text: &str, start_offset: u64, max_width: usize) -> Vec<(u64, String)> {
+    if max_width == 0 {
+        return vec![(start_offset, text.to_string())];
+    }
+
+    let mut result = Vec::new();
+    let mut current_offset = start_offset;
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        // Find a good break point within max_width characters
+        let break_point = if remaining.chars().count() <= max_width {
+            // Entire remaining string fits
+            remaining.len()
+        } else {
+            // Find byte position for character boundary at max_width
+            // Take the first max_width characters and find the byte position after the last one
+            remaining
+                .char_indices()
+                .nth(max_width)
+                .map_or(remaining.len(), |(pos, _)| pos)
+        };
+
+        let line = &remaining[..break_point];
+        result.push((current_offset, line.to_string()));
+
+        current_offset += break_point as u64;
+        remaining = &remaining[break_point..];
+    }
+
+    result
+}
+
+/// Get terminal width, defaulting to 120 if unavailable
+fn get_terminal_width() -> usize {
+    terminal_size::terminal_size()
+        .map(|(terminal_size::Width(w), _)| w as usize)
+        .unwrap_or(120)
+}
+
 fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     // Special handling for multi-line entitlements XML
     if s.kind == stng::StringKind::EntitlementsXml {
@@ -985,8 +1029,6 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         return;
     }
 
-    let offset = format!("{:>8x}", s.data_offset);
-
     // Split method/encoding from classification for separate columns
     let (method, classification) = if s.method == stng::StringMethod::XorDecode {
         ("xor", s.kind.short_name())
@@ -1021,14 +1063,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         ("", "")
     };
 
-    // Format the value, trimming control characters and truncating if very long
+    // Format the value, trimming control characters
     let clean_value = s.value.trim_end_matches(|c: char| c.is_control());
-    let mut value = if clean_value.chars().count() > 120 {
-        let truncated: String = clean_value.chars().take(117).collect();
-        format!("{truncated}...")
-    } else {
-        clean_value.to_string()
-    };
+    let mut value = clean_value.to_string();
 
     // Append section metadata if this is a section
     if let Some(metadata) = s.section_metadata_str() {
@@ -1209,11 +1246,179 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         display_value
     };
 
-    if use_color {
-        println!(
-            "  {DIM}{offset}{RESET} {kind_color}{method:<8}{RESET} {kind_color}{classification:<12}{RESET} {color}{display_value}{RESET}"
-        );
+    // Calculate available width for string content
+    // Prefix format: "  " (2) + offset (8) + " " (1) + method (8) + " " (1) + classification (12) + " " (1) = 33 chars
+    let prefix_width = 33;
+    let term_width = get_terminal_width();
+    let available_width = if term_width > prefix_width + 20 {
+        term_width - prefix_width
     } else {
-        println!("  {offset} {method:<8} {classification:<12} {display_value}");
+        120 // Fallback for very narrow terminals
+    };
+
+    // Wrap the display value if needed
+    let wrapped_lines = wrap_string_lines(&display_value, s.data_offset, available_width);
+
+    // Print each wrapped line with proper offset
+    for (line_offset, line_text) in wrapped_lines {
+        let line_offset_str = format!("{line_offset:>8x}");
+
+        if use_color {
+            println!(
+                "  {DIM}{line_offset_str}{RESET} {kind_color}{method:<8}{RESET} {kind_color}{classification:<12}{RESET} {color}{line_text}{RESET}"
+            );
+        } else {
+            println!("  {line_offset_str} {method:<8} {classification:<12} {line_text}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrap_string_lines_no_wrap_needed() {
+        let text = "Short string";
+        let result = wrap_string_lines(text, 0, 100);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 0);
+        assert_eq!(result[0].1, text);
+    }
+
+    #[test]
+    fn test_wrap_string_lines_exact_width() {
+        let text = "Exactly10!";
+        let result = wrap_string_lines(text, 0, 10);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 0);
+        assert_eq!(result[0].1, text);
+    }
+
+    #[test]
+    fn test_wrap_string_lines_basic_wrap() {
+        let text = "This is a longer string that needs wrapping";
+        let result = wrap_string_lines(text, 0, 20);
+
+        // Should be wrapped into multiple lines
+        assert!(result.len() > 1, "String should be wrapped");
+
+        // First line should start at offset 0
+        assert_eq!(result[0].0, 0);
+
+        // Second line should start after first line
+        let first_line_len = result[0].1.len();
+        assert_eq!(result[1].0, first_line_len as u64);
+
+        // Verify all content is preserved
+        let rejoined: String = result.iter().map(|(_, text)| text.as_str()).collect();
+        assert_eq!(rejoined, text);
+    }
+
+    #[test]
+    fn test_wrap_string_lines_offset_tracking() {
+        let text = "AAAABBBBCCCCDDDD";
+        let result = wrap_string_lines(text, 100, 4);
+
+        // Should be split into 4 parts: AAAA, BBBB, CCCC, DDDD
+        assert_eq!(result.len(), 4);
+
+        // Check offsets
+        assert_eq!(result[0].0, 100); // AAAA at offset 100
+        assert_eq!(result[1].0, 104); // BBBB at offset 104 (100 + 4)
+        assert_eq!(result[2].0, 108); // CCCC at offset 108 (104 + 4)
+        assert_eq!(result[3].0, 112); // DDDD at offset 112 (108 + 4)
+
+        // Check content
+        assert_eq!(result[0].1, "AAAA");
+        assert_eq!(result[1].1, "BBBB");
+        assert_eq!(result[2].1, "CCCC");
+        assert_eq!(result[3].1, "DDDD");
+    }
+
+    #[test]
+    fn test_wrap_string_lines_utf8() {
+        // Each emoji is 4 bytes
+        let text = "🔥🔥🔥🔥";
+        let result = wrap_string_lines(text, 0, 2);
+
+        // Should wrap into 2 lines of 2 emojis each
+        assert_eq!(result.len(), 2);
+
+        // First line: 2 emojis = 8 bytes
+        assert_eq!(result[0].0, 0);
+        assert_eq!(result[0].1, "🔥🔥");
+
+        // Second line: starts at byte 8
+        assert_eq!(result[1].0, 8);
+        assert_eq!(result[1].1, "🔥🔥");
+    }
+
+    #[test]
+    fn test_wrap_string_lines_mixed_width_chars() {
+        // Mix of ASCII and multi-byte UTF-8
+        let text = "Hi🔥there";
+        let result = wrap_string_lines(text, 0, 4);
+
+        // Should wrap properly: "Hi🔥t" (2 + 4 + 1 = 7 bytes), "here" (4 bytes)
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, 0);
+        assert_eq!(result[0].1, "Hi🔥t");
+        assert_eq!(result[1].0, 7);
+        assert_eq!(result[1].1, "here");
+    }
+
+    #[test]
+    fn test_wrap_string_lines_empty() {
+        let text = "";
+        let result = wrap_string_lines(text, 42, 100);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_wrap_string_lines_zero_width() {
+        let text = "Some text";
+        let result = wrap_string_lines(text, 0, 0);
+
+        // Zero width should return the whole string as-is
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].1, text);
+    }
+
+    #[test]
+    fn test_wrap_string_lines_preserves_content() {
+        let text = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let result = wrap_string_lines(text, 0, 10);
+
+        // Reconstruct the string
+        let reconstructed: String = result.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(reconstructed, text, "Wrapping should preserve all content");
+    }
+
+    #[test]
+    fn test_wrap_string_lines_single_char_width() {
+        let text = "ABCDEF";
+        let result = wrap_string_lines(text, 0, 1);
+
+        // Should wrap into 6 lines, one char each
+        assert_eq!(result.len(), 6);
+        assert_eq!(result[0].1, "A");
+        assert_eq!(result[1].1, "B");
+        assert_eq!(result[2].1, "C");
+        assert_eq!(result[3].1, "D");
+        assert_eq!(result[4].1, "E");
+        assert_eq!(result[5].1, "F");
+
+        // Check offsets increment by 1 each time
+        for i in 0..6 {
+            assert_eq!(result[i].0, i as u64);
+        }
+    }
+
+    #[test]
+    fn test_get_terminal_width() {
+        let width = get_terminal_width();
+        // Should return a reasonable default (120) or actual terminal width
+        assert!(width >= 80, "Terminal width should be at least 80");
     }
 }

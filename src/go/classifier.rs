@@ -477,9 +477,10 @@ pub fn classify_string(s: &str) -> StringKind {
 fn is_applescript(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
 
-    // AppleScript indicators
+    // AppleScript indicators - using word boundaries to avoid false positives
+    // "set " must be followed by a variable assignment context, not just appear in a word
     let applescript_patterns = [
-        "set ", "tell application", "path to desktop", "path to documents",
+        "tell application", "path to desktop", "path to documents",
         "every file of", "whose name extension", "posix file", "end tell",
         "do shell script", " dialog", "choose file", "choose folder",
         "duplicate ", " to posix file", "repeat with", "end repeat",
@@ -490,6 +491,14 @@ fn is_applescript(s: &str) -> bool {
         if lower.contains(pattern) {
             return true;
         }
+    }
+
+    // "set " only if it appears at word boundaries (start of line, after space/tab)
+    // and is followed by a variable name
+    if (lower.starts_with("set ") || lower.contains("\nset ") || lower.contains("\tset ") || lower.contains(" set "))
+        && (lower.contains(" to ") || lower.contains("="))
+    {
+        return true;
     }
 
     false
@@ -1235,6 +1244,12 @@ fn is_base85(s: &str) -> bool {
         return false;
     }
 
+    // Reject passwd-style entries: username:*:uid:gid:comment:home:shell
+    // Pattern: starts with alpha/underscore, has 6+ colons, contains "/usr/bin/" or "/bin/" or "/var/"
+    if s.contains(":*:") || (s.matches(':').count() >= 6 && (s.contains("/usr/bin/") || s.contains("/bin/") || s.contains("/var/"))) {
+        return false;
+    }
+
     // Reject strings that look like character sets or pure punctuation
     let punct_count = s.chars().filter(|c| c.is_ascii_punctuation()).count();
     if punct_count * 2 > s.len() {
@@ -1792,6 +1807,26 @@ mod tests {
             classify_string("cat /etc/passwd"),
             StringKind::AppleScript
         );
+
+        // Passwd entries should NOT be AppleScript (avoid "_assetcache" matching "set ")
+        assert_ne!(
+            classify_string("_assetcache:*:235:235:Asset Cache Service:/var/empty:/usr/bin/false"),
+            StringKind::AppleScript
+        );
+        assert_ne!(
+            classify_string("_mobileasset:*:253:253:MobileAsset User:/var/ma:/usr/bin/false"),
+            StringKind::AppleScript
+        );
+
+        // AppleScript "set" must have proper context (variable assignment)
+        assert_eq!(
+            classify_string("set myVar to 10"),
+            StringKind::AppleScript
+        );
+        assert_eq!(
+            classify_string("set desktopPath = \"/Users/test\""),
+            StringKind::AppleScript
+        );
     }
 
     #[test]
@@ -2307,6 +2342,13 @@ mod tests {
 
         // Too few valid ASCII85 characters (< 90%)
         assert!(!is_base85("regular text with spaces here"));
+
+        // Passwd entries should NOT be classified as base85
+        assert!(!is_base85("_datadetectors:*:257:257:DataDetectors:/var/db/datadetectors:/usr/bin/false"));
+        assert!(!is_base85("_mmaintenanced:*:283:283:mmaintenanced:/var/db/mmaintenanced:/usr/bin/false"));
+        assert!(!is_base85("_biome:*:289:289:Biome:/var/db/biome:/usr/bin/false"));
+        assert!(!is_base85("_terminusd:*:295:295:Terminus:/var/db/terminus:/usr/bin/false"));
+        assert!(!is_base85("_nsurlsessiond:*:242:242:NSURLSession Daemon:/var/db/nsurlsessiond:/usr/bin/false"));
     }
 
     #[test]

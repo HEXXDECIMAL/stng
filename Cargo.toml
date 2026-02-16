@@ -58,6 +58,9 @@ dirs = "5.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+# Terminal utilities
+terminal_size = "0.4"
+
 [lib]
 name = "stng"
 path = "src/lib.rs"
