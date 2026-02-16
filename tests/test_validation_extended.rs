@@ -34,10 +34,16 @@ fn test_incomplete_mac_addresses() {
 #[test]
 fn test_ipv6_addresses() {
     // Full IPv6
-    assert!(!is_garbage("2001:0db8:85a3:0000:0000:8a2e:0370:7334"), "IPv6 full");
+    assert!(
+        !is_garbage("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+        "IPv6 full"
+    );
 
     // Compressed IPv6
-    assert!(!is_garbage("2001:db8:85a3::8a2e:370:7334"), "IPv6 compressed");
+    assert!(
+        !is_garbage("2001:db8:85a3::8a2e:370:7334"),
+        "IPv6 compressed"
+    );
     assert!(!is_garbage("2001:db8::1"), "IPv6 short compressed");
 
     // Special IPv6 addresses
@@ -65,16 +71,25 @@ fn test_crypto_hashes() {
     assert!(!is_garbage("5d41402abc4b2a76b9719d911017c592"), "MD5 hash");
 
     // SHA1 (40 hex chars)
-    assert!(!is_garbage("356a192b7913b04c54574d18c28d46e6395428ab"), "SHA1 hash");
+    assert!(
+        !is_garbage("356a192b7913b04c54574d18c28d46e6395428ab"),
+        "SHA1 hash"
+    );
 
     // SHA256 (64 hex chars)
-    assert!(!is_garbage("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"), "SHA256 hash");
+    assert!(
+        !is_garbage("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"),
+        "SHA256 hash"
+    );
 
     // SHA512 (128 hex chars)
     assert!(!is_garbage("ee26b0dd4af7e749aa1a8ee3c10ae9923f618980772e473f8819a5d4940e0db27ac185f8a0e1d5f84f88bc887fd67b143732c304cc5fa9ad8e6f57f50028a8ff"), "SHA512 hash");
 
     // Uppercase hex
-    assert!(!is_garbage("5D41402ABC4B2A76B9719D911017C592"), "MD5 uppercase");
+    assert!(
+        !is_garbage("5D41402ABC4B2A76B9719D911017C592"),
+        "MD5 uppercase"
+    );
 }
 
 #[test]
@@ -86,7 +101,10 @@ fn test_non_hash_hex_strings() {
     // Too long (> 128 chars) - not tested as it depends on other heuristics
 
     // Not all hex (< 95% hex) - this would fail hash detection but may not be garbage
-    assert!(!is_garbage("5d41402abc4b2a76b9719d911017c59z"), "Non-hex char");
+    assert!(
+        !is_garbage("5d41402abc4b2a76b9719d911017c59z"),
+        "Non-hex char"
+    );
 }
 
 // ===== Locale String Tests =====
@@ -146,7 +164,10 @@ fn test_shell_redirections() {
     assert!(!is_garbage("command 2>&1"), "Stderr to stdout");
     assert!(!is_garbage("ls 2>/dev/null"), "Stderr to file");
     assert!(!is_garbage("cat <<EOF"), "Heredoc");
-    assert!(!is_garbage("echo test > output.txt"), "Redirect with spaces");
+    assert!(
+        !is_garbage("echo test > output.txt"),
+        "Redirect with spaces"
+    );
     assert!(!is_garbage("osascript 2>&1 <<EOD"), "Combined redirects");
 }
 
@@ -270,9 +291,18 @@ fn test_invalid_dot_patterns() {
 fn test_format_strings() {
     // Short format strings with noise punctuation may be garbage
     // Longer format strings with more context are not garbage
-    assert!(!is_garbage("Error message: %s"), "Format with %s and context");
-    assert!(!is_garbage("Count is: %d items"), "Format with %d and context");
-    assert!(!is_garbage("Value: %f seconds"), "Format with %f and context");
+    assert!(
+        !is_garbage("Error message: %s"),
+        "Format with %s and context"
+    );
+    assert!(
+        !is_garbage("Count is: %d items"),
+        "Format with %d and context"
+    );
+    assert!(
+        !is_garbage("Value: %f seconds"),
+        "Format with %f and context"
+    );
     assert!(!is_garbage("Error: %s at line %d"), "Multiple format specs");
 }
 
@@ -296,7 +326,10 @@ fn test_invalid_paths() {
     assert!(is_garbage("///"), "Just slashes");
 
     // Note: Uppercase paths are valid (some systems use them)
-    assert!(!is_garbage("/AAAA/BBBB/CCCC"), "All uppercase path is valid");
+    assert!(
+        !is_garbage("/AAAA/BBBB/CCCC"),
+        "All uppercase path is valid"
+    );
 }
 
 // ===== Version String Tests =====
@@ -474,7 +507,10 @@ fn test_balanced_punctuation() {
     // But "(abc)" has balanced parens (open=1, close=1) yet is still garbage
     // because it has quotes issue or other heuristics
     // Let's test longer strings with balanced punctuation
-    assert!(!is_garbage("function(arg1, arg2)"), "Balanced parens in function");
+    assert!(
+        !is_garbage("function(arg1, arg2)"),
+        "Balanced parens in function"
+    );
     assert!(!is_garbage("array[index]"), "Balanced brackets");
 }
 
@@ -571,15 +607,30 @@ fn test_trailing_newline_exception() {
 
 #[test]
 fn test_obfuscated_javascript_hex_identifiers() {
-    assert!(!is_garbage("const _0x1c1000=_0x230d;"), "Hex identifier const");
-    assert!(!is_garbage("function _0x230d(_0x996a22)"), "Hex identifier function");
-    assert!(!is_garbage("_0x4a5b['base64']"), "Hex identifier array access");
+    assert!(
+        !is_garbage("const _0x1c1000=_0x230d;"),
+        "Hex identifier const"
+    );
+    assert!(
+        !is_garbage("function _0x230d(_0x996a22)"),
+        "Hex identifier function"
+    );
+    assert!(
+        !is_garbage("_0x4a5b['base64']"),
+        "Hex identifier array access"
+    );
 }
 
 #[test]
 fn test_obfuscated_python_mangled_identifiers() {
-    assert!(!is_garbage("def llIIlIlllllIIlllII(arg):"), "Python mangled def");
-    assert!(!is_garbage("return lIlIlIlIIIlIllllll(arg)"), "Python mangled return");
+    assert!(
+        !is_garbage("def llIIlIlllllIIlllII(arg):"),
+        "Python mangled def"
+    );
+    assert!(
+        !is_garbage("return lIlIlIlIIIlIllllll(arg)"),
+        "Python mangled return"
+    );
 }
 
 // ===== API Keys and Secrets =====
@@ -587,9 +638,18 @@ fn test_obfuscated_python_mangled_identifiers() {
 #[test]
 fn test_api_key_formats() {
     assert!(!is_garbage("AKIA0123456789ABCDEF"), "AWS access key");
-    assert!(!is_garbage("ghp_0123456789abcdefghijklmnopqrstuv"), "GitHub token");
-    assert!(!is_garbage("sk_live_0123456789abcdefghijklmn"), "Stripe key");
-    assert!(!is_garbage("xoxb-1234567890-1234567890-abcdefghijklmnop"), "Slack token");
+    assert!(
+        !is_garbage("ghp_0123456789abcdefghijklmnopqrstuv"),
+        "GitHub token"
+    );
+    assert!(
+        !is_garbage("sk_live_0123456789abcdefghijklmn"),
+        "Stripe key"
+    );
+    assert!(
+        !is_garbage("xoxb-1234567890-1234567890-abcdefghijklmnop"),
+        "Slack token"
+    );
 }
 
 // ===== SQL and XSS Patterns =====
@@ -605,14 +665,20 @@ fn test_sql_injection_patterns() {
 fn test_xss_patterns() {
     assert!(!is_garbage("<script>alert(1)</script>"), "XSS script");
     assert!(!is_garbage("<img src=x onerror=alert(1)>"), "XSS img");
-    assert!(!is_garbage("javascript:alert(1)"), "XSS javascript protocol");
+    assert!(
+        !is_garbage("javascript:alert(1)"),
+        "XSS javascript protocol"
+    );
 }
 
 // ===== Windows Patterns =====
 
 #[test]
 fn test_windows_registry_paths() {
-    assert!(!is_garbage("HKLM\\SOFTWARE\\Microsoft\\Windows"), "Registry HKLM");
+    assert!(
+        !is_garbage("HKLM\\SOFTWARE\\Microsoft\\Windows"),
+        "Registry HKLM"
+    );
     assert!(!is_garbage("HKCU\\Software\\Classes"), "Registry HKCU");
 }
 
@@ -621,7 +687,10 @@ fn test_windows_mutexes() {
     assert!(!is_garbage("Global\\MutexName"), "Windows global mutex");
     // Note: GUIDs with braces have special chars and may be flagged
     // Full GUID format is more recognizable
-    assert!(!is_garbage("{8F6F0AC4-B9A1-45fd-A8CF-72997C3991B9}"), "Full GUID");
+    assert!(
+        !is_garbage("{8F6F0AC4-B9A1-45fd-A8CF-72997C3991B9}"),
+        "Full GUID"
+    );
 }
 
 // ===== Cryptocurrency Patterns =====
@@ -665,19 +734,28 @@ fn test_ctf_flags() {
 fn test_pem_headers() {
     assert!(!is_garbage("-----BEGIN PUBLIC KEY-----"), "PEM begin");
     assert!(!is_garbage("-----END PRIVATE KEY-----"), "PEM end");
-    assert!(!is_garbage("-----BEGIN CERTIFICATE-----"), "Certificate begin");
+    assert!(
+        !is_garbage("-----BEGIN CERTIFICATE-----"),
+        "Certificate begin"
+    );
 }
 
 #[test]
 fn test_jwt_tokens() {
-    assert!(!is_garbage("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"), "JWT header");
+    assert!(
+        !is_garbage("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+        "JWT header"
+    );
 }
 
 // ===== Ransom Note Patterns =====
 
 #[test]
 fn test_ransom_patterns() {
-    assert!(!is_garbage("YOUR FILES HAVE BEEN ENCRYPTED"), "Ransom message");
+    assert!(
+        !is_garbage("YOUR FILES HAVE BEEN ENCRYPTED"),
+        "Ransom message"
+    );
     assert!(!is_garbage("Send $500 in Bitcoin to"), "Ransom demand");
     assert!(!is_garbage("DECRYPT-INSTRUCTIONS.txt"), "Decrypt filename");
 }

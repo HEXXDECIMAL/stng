@@ -14,20 +14,36 @@ fn test_text_file_hex_decoding() {
     let strings = stng::extract_strings_with_options(hex_content.as_bytes(), &opts);
 
     // Should have at least one string (the decoded version)
-    assert!(!strings.is_empty(), "Should extract decoded string from hex");
+    assert!(
+        !strings.is_empty(),
+        "Should extract decoded string from hex"
+    );
 
     // Find the decoded string
     let decoded = strings.iter().find(|s| s.method == StringMethod::HexDecode);
     assert!(decoded.is_some(), "Should have HexDecode method string");
 
     let decoded = decoded.unwrap();
-    assert!(decoded.value.contains("const"), "Decoded should contain JavaScript");
-    assert!(decoded.value.contains("function"), "Decoded should contain function keyword");
-    assert!(decoded.value.contains("_0x"), "Decoded should contain obfuscated identifiers");
+    assert!(
+        decoded.value.contains("const"),
+        "Decoded should contain JavaScript"
+    );
+    assert!(
+        decoded.value.contains("function"),
+        "Decoded should contain function keyword"
+    );
+    assert!(
+        decoded.value.contains("_0x"),
+        "Decoded should contain obfuscated identifiers"
+    );
 
     // Verify it's classified correctly (not as HexEncoded, but as decoded content)
     // The kind should be based on the decoded content, not the encoding
-    assert_ne!(decoded.kind, StringKind::HexEncoded, "Decoded string should not be marked as HexEncoded");
+    assert_ne!(
+        decoded.kind,
+        StringKind::HexEncoded,
+        "Decoded string should not be marked as HexEncoded"
+    );
 }
 
 #[test]
@@ -38,14 +54,22 @@ fn test_text_file_base64_decoding() {
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(base64_content.as_bytes(), &opts);
 
-    assert!(!strings.is_empty(), "Should extract decoded string from base64");
+    assert!(
+        !strings.is_empty(),
+        "Should extract decoded string from base64"
+    );
 
     // Find the decoded string
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should have Base64Decode method string");
 
     let decoded = decoded.unwrap();
-    assert_eq!(decoded.value, "secret_api_key_1234567890", "Should decode base64 correctly");
+    assert_eq!(
+        decoded.value, "secret_api_key_1234567890",
+        "Should decode base64 correctly"
+    );
 }
 
 #[test]
@@ -56,7 +80,10 @@ fn test_text_file_url_decoding() {
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(url_content.as_bytes(), &opts);
 
-    assert!(!strings.is_empty(), "Should extract decoded string from URL encoding");
+    assert!(
+        !strings.is_empty(),
+        "Should extract decoded string from URL encoding"
+    );
 
     // Find the decoded string
     let decoded = strings.iter().find(|s| s.method == StringMethod::UrlDecode);
@@ -64,7 +91,10 @@ fn test_text_file_url_decoding() {
 
     let decoded = decoded.unwrap();
     assert!(decoded.value.contains("curl"), "Should decode URL encoding");
-    assert!(decoded.value.contains("https://evil.com"), "Should decode URL correctly");
+    assert!(
+        decoded.value.contains("https://evil.com"),
+        "Should decode URL correctly"
+    );
 }
 
 #[test]
@@ -75,20 +105,31 @@ fn test_text_file_unicode_escape_decoding() {
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(unicode_content.as_bytes(), &opts);
 
-    assert!(!strings.is_empty(), "Should extract decoded string from unicode escapes");
+    assert!(
+        !strings.is_empty(),
+        "Should extract decoded string from unicode escapes"
+    );
 
     // Find the decoded string
-    let decoded = strings.iter().find(|s| s.method == StringMethod::UnicodeEscapeDecode);
-    assert!(decoded.is_some(), "Should have UnicodeEscapeDecode method string");
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::UnicodeEscapeDecode);
+    assert!(
+        decoded.is_some(),
+        "Should have UnicodeEscapeDecode method string"
+    );
 
     let decoded = decoded.unwrap();
-    assert_eq!(decoded.value, "Hello World", "Should decode unicode escapes");
+    assert_eq!(
+        decoded.value, "Hello World",
+        "Should decode unicode escapes"
+    );
 }
 
 #[test]
 fn test_dissect_api_gets_decoded_content() {
     // Simulate what DISSECT receives when analyzing a text file with hex-encoded malware
-    let malware_content = "636F6E73742073656372657420";  // "const secret"
+    let malware_content = "636F6E73742073656372657420"; // "const secret"
 
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(malware_content.as_bytes(), &opts);
@@ -97,8 +138,14 @@ fn test_dissect_api_gets_decoded_content() {
     let can_search_const = strings.iter().any(|s| s.value.contains("const"));
     let can_search_secret = strings.iter().any(|s| s.value.contains("secret"));
 
-    assert!(can_search_const, "DISSECT should be able to search for 'const' in decoded content");
-    assert!(can_search_secret, "DISSECT should be able to search for 'secret' in decoded content");
+    assert!(
+        can_search_const,
+        "DISSECT should be able to search for 'const' in decoded content"
+    );
+    assert!(
+        can_search_secret,
+        "DISSECT should be able to search for 'secret' in decoded content"
+    );
 }
 
 #[test]
@@ -111,11 +158,17 @@ fn test_library_deduplicates_keeps_decoded() {
     let strings = stng::extract_strings_with_options(hex_content.as_bytes(), &opts);
 
     // Should have at least one string (deduplication keeps the best one)
-    assert!(!strings.is_empty(), "Should have strings after deduplication");
+    assert!(
+        !strings.is_empty(),
+        "Should have strings after deduplication"
+    );
 
     // The string we get should be the decoded version, not the hex-encoded original
     let has_decoded = strings.iter().any(|s| s.method == StringMethod::HexDecode);
-    assert!(has_decoded, "Should keep decoded version after deduplication");
+    assert!(
+        has_decoded,
+        "Should keep decoded version after deduplication"
+    );
 
     // Verify we can find the decoded content
     let has_hello = strings.iter().any(|s| s.value.contains("Hello"));
@@ -134,17 +187,24 @@ fn test_multiline_hex_in_text_file() {
     let strings = stng::extract_strings_with_options(content.as_bytes(), &opts);
 
     // Should decode both lines
-    let decoded_strings: Vec<_> = strings.iter()
+    let decoded_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.method == StringMethod::HexDecode)
         .collect();
 
-    assert!(!decoded_strings.is_empty(), "Should decode hex strings from text file");
+    assert!(
+        !decoded_strings.is_empty(),
+        "Should decode hex strings from text file"
+    );
 
     // Should be able to search for content from decoded lines
     let has_api = strings.iter().any(|s| s.value.contains("api.example.com"));
     let has_secret = strings.iter().any(|s| s.value.contains("token"));
 
-    assert!(has_api || has_secret, "Should decode at least one line of hex content");
+    assert!(
+        has_api || has_secret,
+        "Should decode at least one line of hex content"
+    );
 }
 
 #[test]
@@ -162,7 +222,9 @@ fn test_mixed_encodings_in_text_file() {
 
     // Should have decoded strings from multiple encoding types
     let has_hex_decode = strings.iter().any(|s| s.method == StringMethod::HexDecode);
-    let has_base64_decode = strings.iter().any(|s| s.method == StringMethod::Base64Decode);
+    let has_base64_decode = strings
+        .iter()
+        .any(|s| s.method == StringMethod::Base64Decode);
     let has_url_decode = strings.iter().any(|s| s.method == StringMethod::UrlDecode);
 
     // At least some of these should be decoded
@@ -181,35 +243,50 @@ fn test_real_world_woff2_malware() {
     let strings = stng::extract_strings_with_options(hex_js.as_bytes(), &opts);
 
     // Should decode the hex-encoded JavaScript
-    let decoded_js = strings.iter().find(|s|
-        s.method == StringMethod::HexDecode && s.value.contains("function")
-    );
+    let decoded_js = strings
+        .iter()
+        .find(|s| s.method == StringMethod::HexDecode && s.value.contains("function"));
 
-    assert!(decoded_js.is_some(), "Should decode hex-encoded JavaScript from woff2 file");
+    assert!(
+        decoded_js.is_some(),
+        "Should decode hex-encoded JavaScript from woff2 file"
+    );
 
     let decoded = decoded_js.unwrap();
 
     // Verify we can search for malware indicators
-    assert!(decoded.value.contains("const"), "Should find 'const' in decoded JS");
-    assert!(decoded.value.contains("function"), "Should find 'function' in decoded JS");
-    assert!(decoded.value.contains("_0x"), "Should find obfuscated identifiers");
+    assert!(
+        decoded.value.contains("const"),
+        "Should find 'const' in decoded JS"
+    );
+    assert!(
+        decoded.value.contains("function"),
+        "Should find 'function' in decoded JS"
+    );
+    assert!(
+        decoded.value.contains("_0x"),
+        "Should find obfuscated identifiers"
+    );
 }
 
 #[test]
 fn test_json_output_consistency_with_cli() {
     // Ensure that what users see in CLI matches what's in JSON output
     // (both should show decoded content)
-    let hex_content = "636F6E73742073656372657420";  // "const secret"
+    let hex_content = "636F6E73742073656372657420"; // "const secret"
 
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(hex_content.as_bytes(), &opts);
 
     // JSON output (via library) should include decoded content
-    let has_decoded = strings.iter().any(|s|
-        s.method == StringMethod::HexDecode && s.value.contains("secret")
-    );
+    let has_decoded = strings
+        .iter()
+        .any(|s| s.method == StringMethod::HexDecode && s.value.contains("secret"));
 
-    assert!(has_decoded, "JSON output should include decoded content just like CLI shows it");
+    assert!(
+        has_decoded,
+        "JSON output should include decoded content just like CLI shows it"
+    );
 }
 
 #[test]
@@ -245,8 +322,14 @@ fn test_dissect_api_consumer_workflow() {
     );
 
     // Verify they get decoded entries, not just detection
-    let decoded_count = strings.iter().filter(|s| s.method == StringMethod::HexDecode).count();
-    assert!(decoded_count > 0, "Should have HexDecode method entries for API consumers");
+    let decoded_count = strings
+        .iter()
+        .filter(|s| s.method == StringMethod::HexDecode)
+        .count();
+    assert!(
+        decoded_count > 0,
+        "Should have HexDecode method entries for API consumers"
+    );
 }
 
 #[test]
@@ -271,11 +354,20 @@ F\x00a\x00g\x00d\x00C\x00 \x00=\x00 \x00(\x00\"\x00\\\xAA\xDA\x02\xFD\xFF\
     let strings = stng::extract_strings_with_options(utf16le_js, &opts);
 
     // Should detect UTF-16LE BOM and decode the file
-    assert!(!strings.is_empty(), "Should extract strings from UTF-16LE encoded file");
+    assert!(
+        !strings.is_empty(),
+        "Should extract strings from UTF-16LE encoded file"
+    );
 
     // All strings should be marked as Utf16LeDecode
-    let utf16_decoded = strings.iter().filter(|s| s.method == StringMethod::Utf16LeDecode).count();
-    assert!(utf16_decoded > 0, "Should have Utf16LeDecode method strings");
+    let utf16_decoded = strings
+        .iter()
+        .filter(|s| s.method == StringMethod::Utf16LeDecode)
+        .count();
+    assert!(
+        utf16_decoded > 0,
+        "Should have Utf16LeDecode method strings"
+    );
 
     // Should extract JavaScript function names and keywords
     assert!(
@@ -305,11 +397,20 @@ fn test_utf16be_bom_detection() {
     let opts = stng::ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(utf16be_data, &opts);
 
-    assert!(!strings.is_empty(), "Should extract strings from UTF-16BE encoded file");
+    assert!(
+        !strings.is_empty(),
+        "Should extract strings from UTF-16BE encoded file"
+    );
 
     // Should be marked as Utf16BeDecode
-    let utf16_decoded = strings.iter().filter(|s| s.method == StringMethod::Utf16BeDecode).count();
-    assert!(utf16_decoded > 0, "Should have Utf16BeDecode method strings");
+    let utf16_decoded = strings
+        .iter()
+        .filter(|s| s.method == StringMethod::Utf16BeDecode)
+        .count();
+    assert!(
+        utf16_decoded > 0,
+        "Should have Utf16BeDecode method strings"
+    );
 
     // Should decode "Hello World"
     assert!(
@@ -321,30 +422,49 @@ fn test_utf16be_bom_detection() {
 #[test]
 fn test_dissect_vs_bare_options() {
     let data = std::fs::read("/Users/t/data/dissect/malware/typescript/2026.property-demo/webfonts/fa-brands-regular.woff2").unwrap();
-    
+
     // Test 1: bare options like the unit test
     let opts1 = stng::ExtractOptions::new(4);
     let strings1 = stng::extract_strings_with_options(&data, &opts1);
     eprintln!("Bare options: {} strings", strings1.len());
     for (i, s) in strings1.iter().take(3).enumerate() {
-        eprintln!("  bare[{}]: method={:?}, preview={}", i, s.method, 
-            s.value.chars().take(60).collect::<String>());
+        eprintln!(
+            "  bare[{}]: method={:?}, preview={}",
+            i,
+            s.method,
+            s.value.chars().take(60).collect::<String>()
+        );
     }
-    
-    // Test 2: DISSECT options  
+
+    // Test 2: DISSECT options
     let opts2 = stng::ExtractOptions::new(4)
         .with_garbage_filter(true)
         .with_xor(None);
     let strings2 = stng::extract_strings_with_options(&data, &opts2);
-    eprintln!("\nDISSECT options (garbage_filter=true, xor=None): {} strings", strings2.len());
+    eprintln!(
+        "\nDISSECT options (garbage_filter=true, xor=None): {} strings",
+        strings2.len()
+    );
     for (i, s) in strings2.iter().take(3).enumerate() {
-        eprintln!("  dissect[{}]: method={:?}, preview={}", i, s.method,
-            s.value.chars().take(60).collect::<String>());
+        eprintln!(
+            "  dissect[{}]: method={:?}, preview={}",
+            i,
+            s.method,
+            s.value.chars().take(60).collect::<String>()
+        );
     }
-    
+
     // They should both find the decoded JavaScript
-    assert!(strings1.iter().any(|s| s.method == stng::StringMethod::HexDecode && s.value.contains("function")),
-        "Bare options should decode hex");
-    assert!(strings2.iter().any(|s| s.method == stng::StringMethod::HexDecode && s.value.contains("function")),
-        "DISSECT options should also decode hex");
+    assert!(
+        strings1
+            .iter()
+            .any(|s| s.method == stng::StringMethod::HexDecode && s.value.contains("function")),
+        "Bare options should decode hex"
+    );
+    assert!(
+        strings2
+            .iter()
+            .any(|s| s.method == stng::StringMethod::HexDecode && s.value.contains("function")),
+        "DISSECT options should also decode hex"
+    );
 }

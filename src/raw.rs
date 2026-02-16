@@ -63,9 +63,15 @@ pub fn extract_raw_strings(
 
                 // Get section metadata if this is a section
                 let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                    section_info.get(trimmed).map_or((None, None, None), |info| {
-                        (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                    })
+                    section_info
+                        .get(trimmed)
+                        .map_or((None, None, None), |info| {
+                            (
+                                Some(info.size),
+                                Some(info.is_executable),
+                                Some(info.is_writable),
+                            )
+                        })
                 } else {
                     (None, None, None)
                 };
@@ -139,9 +145,15 @@ pub fn extract_printable_runs(
 
                         // Get section metadata if this is a section
                         let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                            section_info.get(trimmed).map_or((None, None, None), |info| {
-                                (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                            })
+                            section_info
+                                .get(trimmed)
+                                .map_or((None, None, None), |info| {
+                                    (
+                                        Some(info.size),
+                                        Some(info.is_executable),
+                                        Some(info.is_writable),
+                                    )
+                                })
                         } else {
                             (None, None, None)
                         };
@@ -158,8 +170,8 @@ pub fn extract_printable_runs(
                             section_size: sec_size,
                             section_executable: sec_exec,
                             section_writable: sec_write,
-                        architecture: None,
-                        function_meta: None,
+                            architecture: None,
+                            function_meta: None,
                         });
                     }
                 }
@@ -183,9 +195,15 @@ pub fn extract_printable_runs(
 
                     // Get section metadata if this is a section
                     let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                        section_info.get(trimmed).map_or((None, None, None), |info| {
-                            (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                        })
+                        section_info
+                            .get(trimmed)
+                            .map_or((None, None, None), |info| {
+                                (
+                                    Some(info.size),
+                                    Some(info.is_executable),
+                                    Some(info.is_writable),
+                                )
+                            })
                     } else {
                         (None, None, None)
                     };
@@ -281,9 +299,15 @@ pub fn extract_wide_strings(
 
                     // Get section metadata if this is a section
                     let (sec_size, sec_exec, sec_write) = if kind == StringKind::Section {
-                        section_info.get(trimmed).map_or((None, None, None), |info| {
-                            (Some(info.size), Some(info.is_executable), Some(info.is_writable))
-                        })
+                        section_info
+                            .get(trimmed)
+                            .map_or((None, None, None), |info| {
+                                (
+                                    Some(info.size),
+                                    Some(info.is_executable),
+                                    Some(info.is_writable),
+                                )
+                            })
                     } else {
                         (None, None, None)
                     };

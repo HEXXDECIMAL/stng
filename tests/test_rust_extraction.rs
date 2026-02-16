@@ -1,14 +1,16 @@
 /// Comprehensive integration tests for Rust string extraction
 /// Covers src/rust.rs (895 lines, 25% → 80% coverage)
 /// Tests RustStringExtractor with realistic binary structures
-
 use stng::{RustStringExtractor, StringKind, StringMethod};
 
 /// Test RustStringExtractor creation with different min_length values
 #[test]
 fn test_extractor_creation() {
     let extractor = RustStringExtractor::new(4);
-    assert_eq!(std::mem::size_of_val(&extractor), std::mem::size_of::<usize>());
+    assert_eq!(
+        std::mem::size_of_val(&extractor),
+        std::mem::size_of::<usize>()
+    );
 
     let extractor_long = RustStringExtractor::new(100);
     assert_eq!(
@@ -59,8 +61,7 @@ fn test_elf_extraction_with_rodata() {
     // Add some test strings in the data
     let test_strings = b"test_string\0another_test\0hello_world\0";
     let string_offset = 512;
-    elf_data[string_offset..string_offset + test_strings.len()]
-        .copy_from_slice(test_strings);
+    elf_data[string_offset..string_offset + test_strings.len()].copy_from_slice(test_strings);
 
     // Try to parse (will likely fail for minimal ELF, but won't panic)
     match Elf::parse(&elf_data) {
@@ -126,9 +127,7 @@ fn test_elf_multiple_sections() {
                 }
 
                 // Should have some structure-based extractions or inline patterns
-                let has_structure = strings
-                    .iter()
-                    .any(|s| s.method == StringMethod::Structure);
+                let has_structure = strings.iter().any(|s| s.method == StringMethod::Structure);
                 let has_inline = strings
                     .iter()
                     .any(|s| s.method == StringMethod::InstructionPattern);
@@ -238,7 +237,10 @@ fn test_classification_variety() {
             }
 
             // Should find at least 2 different kinds
-            assert!(kinds.len() >= 2, "Should classify strings into multiple kinds");
+            assert!(
+                kinds.len() >= 2,
+                "Should classify strings into multiple kinds"
+            );
 
             // Should find some paths (very common in binaries)
             let has_paths = strings.iter().any(|s| s.kind == StringKind::Path);
@@ -258,11 +260,7 @@ fn test_macho_text_const() {
     let extractor = RustStringExtractor::new(4);
 
     // Test with a macOS binary if available
-    let test_paths = [
-        "/bin/ls",
-        "/usr/bin/true",
-        "/bin/cat",
-    ];
+    let test_paths = ["/bin/ls", "/usr/bin/true", "/bin/cat"];
 
     for path in &test_paths {
         if let Ok(data) = std::fs::read(path) {

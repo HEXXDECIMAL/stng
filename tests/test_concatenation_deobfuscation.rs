@@ -17,11 +17,16 @@ fn test_javascript_double_quotes_concatenation() {
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
     // Should find the reassembled base64 and decode it
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should decode concatenated base64");
 
     let decoded = decoded.unwrap();
-    assert!(decoded.value.contains("function"), "Should decode to 'function OKbLc'");
+    assert!(
+        decoded.value.contains("function"),
+        "Should decode to 'function OKbLc'"
+    );
 }
 
 #[test]
@@ -33,8 +38,13 @@ fn test_javascript_single_quotes_concatenation() {
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
-    assert!(decoded.is_some(), "Should decode concatenated base64 with single quotes");
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
+    assert!(
+        decoded.is_some(),
+        "Should decode concatenated base64 with single quotes"
+    );
 }
 
 #[test]
@@ -46,7 +56,9 @@ fn test_mixed_quotes_concatenation() {
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should handle mixed quote styles");
 }
 
@@ -64,7 +76,10 @@ fn test_obfuscated_with_junk_insertion() {
     // BUT we should at least try to decode it
 
     // For now, just verify we extract something
-    assert!(!strings.is_empty(), "Should extract strings from obfuscated code");
+    assert!(
+        !strings.is_empty(),
+        "Should extract strings from obfuscated code"
+    );
 }
 
 #[test]
@@ -93,7 +108,9 @@ fn test_php_concatenation() {
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should handle PHP . concatenation");
 }
 
@@ -110,8 +127,14 @@ fn test_hex_concatenation() {
     assert!(decoded.is_some(), "Should decode concatenated hex");
 
     if let Some(decoded) = decoded {
-        assert!(decoded.value.contains("Hello"), "Should decode to 'Hello World!'");
-        assert!(decoded.value.contains("World"), "Should decode to 'Hello World!'");
+        assert!(
+            decoded.value.contains("Hello"),
+            "Should decode to 'Hello World!'"
+        );
+        assert!(
+            decoded.value.contains("World"),
+            "Should decode to 'Hello World!'"
+        );
     }
 }
 
@@ -125,7 +148,9 @@ fn test_no_concatenation_unchanged() {
     let strings = stng::extract_strings_with_options(normal.as_bytes(), &opts);
 
     // Should still decode normally
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should decode normal base64");
 }
 
@@ -139,7 +164,9 @@ fn test_empty_segments() {
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
     // Should handle empty segments gracefully
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should handle empty segments");
 }
 
@@ -153,7 +180,9 @@ fn test_single_segment_no_deobfuscation() {
     let strings = stng::extract_strings_with_options(single.as_bytes(), &opts);
 
     // Should decode normally without deobfuscation
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should decode single segment");
 }
 
@@ -166,7 +195,9 @@ fn test_powershell_concatenation() {
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
-    let decoded = strings.iter().find(|s| s.method == StringMethod::Base64Decode);
+    let decoded = strings
+        .iter()
+        .find(|s| s.method == StringMethod::Base64Decode);
     assert!(decoded.is_some(), "Should handle PowerShell concatenation");
 }
 
@@ -180,8 +211,14 @@ fn test_whitespace_variations() {
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
     // Should handle various whitespace patterns
-    let decoded_count = strings.iter().filter(|s| s.method == StringMethod::Base64Decode).count();
-    assert!(decoded_count >= 1, "Should decode despite whitespace variations");
+    let decoded_count = strings
+        .iter()
+        .filter(|s| s.method == StringMethod::Base64Decode)
+        .count();
+    assert!(
+        decoded_count >= 1,
+        "Should decode despite whitespace variations"
+    );
 }
 
 #[test]
@@ -199,12 +236,18 @@ fn test_nested_quotes_not_confused() {
 #[test]
 fn test_long_concatenation_chain() {
     // Very long chain to test performance
-    let obfuscated = r#"x = "aGVs" + "bG8g" + "d29y" + "bGQg" + "dGhp" + "cyBp" + "cyBh" + " long" + " test";"#;
+    let obfuscated =
+        r#"x = "aGVs" + "bG8g" + "d29y" + "bGQg" + "dGhp" + "cyBp" + "cyBh" + " long" + " test";"#;
 
     let opts = ExtractOptions::new(4);
     let strings = stng::extract_strings_with_options(obfuscated.as_bytes(), &opts);
 
     // Should reassemble long chains
-    let has_decoded = strings.iter().any(|s| s.method == StringMethod::Base64Decode);
-    assert!(has_decoded || !strings.is_empty(), "Should handle long concatenation chains");
+    let has_decoded = strings
+        .iter()
+        .any(|s| s.method == StringMethod::Base64Decode);
+    assert!(
+        has_decoded || !strings.is_empty(),
+        "Should handle long concatenation chains"
+    );
 }

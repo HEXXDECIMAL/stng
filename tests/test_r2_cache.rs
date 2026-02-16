@@ -1,6 +1,5 @@
 /// Comprehensive tests for r2 cache functionality
 /// Covers src/r2/cache.rs (~245 lines, 0% → 80% coverage)
-
 use std::fs;
 use std::path::PathBuf;
 
@@ -36,10 +35,16 @@ fn test_cache_creation() {
     assert!(cache.is_ok(), "Cache creation should succeed");
 
     let cache = R2Cache::with_enabled(true);
-    assert!(cache.is_ok(), "Cache creation with enabled=true should succeed");
+    assert!(
+        cache.is_ok(),
+        "Cache creation with enabled=true should succeed"
+    );
 
     let cache = R2Cache::with_enabled(false);
-    assert!(cache.is_ok(), "Cache creation with enabled=false should succeed");
+    assert!(
+        cache.is_ok(),
+        "Cache creation with enabled=false should succeed"
+    );
 }
 
 /// Test cache set and get operations (cache hit)
@@ -77,7 +82,10 @@ fn test_cache_miss() {
 
     // Try to get cache for command that was never set
     let cached = cache.get(file_path, "nonexistent_command");
-    assert!(cached.is_none(), "Cache should miss for non-existent command");
+    assert!(
+        cached.is_none(),
+        "Cache should miss for non-existent command"
+    );
 
     let _ = fs::remove_file(temp_path);
 }
@@ -343,10 +351,7 @@ fn test_cache_clear_nonexistent() {
 
     // Clear cache that was never created
     let result = cache.clear(file_path);
-    assert!(
-        result.is_ok(),
-        "Clearing non-existent cache should succeed"
-    );
+    assert!(result.is_ok(), "Clearing non-existent cache should succeed");
 
     let _ = fs::remove_file(temp_path);
 }

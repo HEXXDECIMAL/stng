@@ -67,7 +67,8 @@ pub use overlay::{detect_elf_overlay, extract_overlay_strings};
 pub use rust::RustStringExtractor;
 pub use stack_strings::extract_stack_strings;
 pub use types::{
-    BinaryInfo, ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod, StringStruct,
+    BinaryInfo, ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod,
+    StringStruct,
 };
 pub use validation::is_garbage;
 
@@ -97,9 +98,13 @@ fn is_bundle_id(s: &str) -> bool {
     }
 
     // Must start with known TLD
-    if !s.starts_with("com.") && !s.starts_with("org.") &&
-       !s.starts_with("net.") && !s.starts_with("io.") &&
-       !s.starts_with("app.") && !s.starts_with("dev.") {
+    if !s.starts_with("com.")
+        && !s.starts_with("org.")
+        && !s.starts_with("net.")
+        && !s.starts_with("io.")
+        && !s.starts_with("app.")
+        && !s.starts_with("dev.")
+    {
         return false;
     }
 
@@ -113,7 +118,10 @@ fn is_bundle_id(s: &str) -> bool {
         if part.is_empty() {
             return false;
         }
-        if !part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if !part
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             return false;
         }
     }
@@ -129,31 +137,33 @@ fn is_bundle_id(s: &str) -> bool {
 /// - Policy text: "This certificate is to be used exclusively for..."
 fn is_certificate_string(s: &str) -> bool {
     // Certificate Authority names
-    if s.contains("Certification Authority") ||
-       s.contains("Certificate Authority") ||
-       s.contains("Root CA") {
+    if s.contains("Certification Authority")
+        || s.contains("Certificate Authority")
+        || s.contains("Root CA")
+    {
         return true;
     }
 
     // Code signing related
-    if s.contains("Code Signing") ||
-       s.contains("Software Signing") {
+    if s.contains("Code Signing") || s.contains("Software Signing") {
         return true;
     }
 
     // CRL (Certificate Revocation List) URLs
-    if s.contains("crl.apple.com") ||
-       s.contains("appleca") ||
-       (s.contains(".crl") && s.contains("http")) {
+    if s.contains("crl.apple.com")
+        || s.contains("appleca")
+        || (s.contains(".crl") && s.contains("http"))
+    {
         return true;
     }
 
     // ASN.1 date format: YYMMDDHHMMSSZ or YYYYMMDDHHMMSSZ
     // Examples: "111024173941Z", "261024173941Z0", "201029183238Z"
     if s.len() >= 13 && s.ends_with('Z') {
-        let without_z = &s[..s.len()-1];
-        if without_z.chars().all(|c| c.is_ascii_digit()) &&
-           (without_z.len() == 12 || without_z.len() == 14) {
+        let without_z = &s[..s.len() - 1];
+        if without_z.chars().all(|c| c.is_ascii_digit())
+            && (without_z.len() == 12 || without_z.len() == 14)
+        {
             return true;
         }
     }
@@ -170,15 +180,16 @@ fn is_certificate_string(s: &str) -> bool {
     }
 
     // Certificate policy text
-    if s.contains("certificate is to be used") ||
-       s.contains("Reliance on this certificate") ||
-       s.contains("terms and conditions") {
+    if s.contains("certificate is to be used")
+        || s.contains("Reliance on this certificate")
+        || s.contains("terms and conditions")
+    {
         return true;
     }
 
     // Apple Inc. and related organizational units (but not just "Apple")
-    if (s.contains("Apple Inc.") || s.contains("Apple Software")) &&
-       s.len() < 50 { // Keep it short to avoid false positives
+    if (s.contains("Apple Inc.") || s.contains("Apple Software")) && s.len() < 50 {
+        // Keep it short to avoid false positives
         return true;
     }
 
@@ -186,7 +197,7 @@ fn is_certificate_string(s: &str) -> bool {
 }
 
 /// Enrich strings with section information based on their file offsets (ELF)
-fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf) {
+fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf<'_>) {
     for s in strings {
         if s.section.is_none() {
             // Find which section this offset belongs to
@@ -223,7 +234,7 @@ fn cputype_to_arch_string(cputype: u32) -> &'static str {
 /// arch.offset for fat binaries).
 fn enrich_macho_sections(
     strings: &mut [ExtractedString],
-    macho: &goblin::mach::MachO,
+    macho: &goblin::mach::MachO<'_>,
     base_offset: u64,
 ) {
     let arch_name = cputype_to_arch_string(macho.header.cputype);
@@ -231,7 +242,6 @@ fn enrich_macho_sections(
     // Header is 32 bytes for 64-bit, 28 bytes for 32-bit
     let header_size: u64 = if macho.is_64 { 32 } else { 28 };
     let load_cmds_end = base_offset + header_size + u64::from(macho.header.sizeofcmds);
-
 
     // Find LINKEDIT segment range (contains symbol/string tables)
     // Segment fileoff is relative to architecture, so add base_offset
@@ -249,7 +259,7 @@ fn enrich_macho_sections(
 
     for s in strings {
         // Check if section needs enrichment (None or empty string)
-        let needs_section = s.section.as_ref().map_or(true, |sec| sec.is_empty());
+        let needs_section = s.section.as_ref().is_none_or(|sec| sec.is_empty());
         if needs_section {
             // First check actual sections
             // Try both absolute and architecture-relative comparisons
@@ -270,8 +280,10 @@ fn enrich_macho_sections(
                     let section_start_rel = u64::from(section.offset);
                     let section_end_rel = section_start_rel + section.size;
 
-                    let matches_absolute = s.data_offset >= section_start_abs && s.data_offset < section_end_abs;
-                    let matches_relative = s.data_offset >= section_start_rel && s.data_offset < section_end_rel;
+                    let matches_absolute =
+                        s.data_offset >= section_start_abs && s.data_offset < section_end_abs;
+                    let matches_relative =
+                        s.data_offset >= section_start_rel && s.data_offset < section_end_rel;
 
                     if matches_absolute || matches_relative {
                         s.section = Some(section.name().unwrap_or("(unknown)").to_string());
@@ -304,7 +316,7 @@ fn enrich_macho_sections(
 }
 
 /// Enrich strings with section information based on their file offsets (PE)
-fn enrich_pe_sections(strings: &mut [ExtractedString], pe: &goblin::pe::PE) {
+fn enrich_pe_sections(strings: &mut [ExtractedString], pe: &goblin::pe::PE<'_>) {
     for s in strings {
         if s.section.is_none() {
             // Find which section this offset belongs to
@@ -526,7 +538,11 @@ fn deduplicate_by_offset(mut strings: Vec<ExtractedString>) -> Vec<ExtractedStri
 ///
 /// This is common for JavaScript malware, PowerShell scripts, and other text files
 /// saved in UTF-16 encoding on Windows systems.
-fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian: bool) -> Vec<ExtractedString> {
+fn extract_from_utf16_file(
+    data: &[u8],
+    opts: &ExtractOptions,
+    is_little_endian: bool,
+) -> Vec<ExtractedString> {
     let mut strings = Vec::new();
 
     // Skip the 2-byte BOM and decode the rest
@@ -537,7 +553,7 @@ fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian:
     let utf16_data = &data[2..];
 
     // Convert bytes to u16 code units
-    if utf16_data.len() % 2 != 0 {
+    if !utf16_data.len().is_multiple_of(2) {
         // Odd number of bytes - can't be valid UTF-16, truncate last byte
         tracing::warn!("UTF-16 file has odd byte count, truncating last byte");
     }
@@ -559,7 +575,13 @@ fn extract_from_utf16_file(data: &[u8], opts: &ExtractOptions, is_little_endian:
 
     // Extract strings from the decoded UTF-8 content
     let empty_section_info = std::collections::HashMap::new();
-    let mut raw_strings = extract_raw_strings(decoded_bytes, opts.min_length, None, &[], &empty_section_info);
+    let mut raw_strings = extract_raw_strings(
+        decoded_bytes,
+        opts.min_length,
+        None,
+        &[],
+        &empty_section_info,
+    );
 
     // Apply decoders (base64, hex, URL-encoding, etc.) to the extracted strings
     // This allows us to find base64-encoded PowerShell, hex-encoded URLs, etc.
@@ -619,8 +641,10 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
         let has_utf16be_bom = data[0] == 0xFE && data[1] == 0xFF;
 
         if has_utf16le_bom || has_utf16be_bom {
-            tracing::debug!("Detected UTF-16{} BOM, decoding entire file",
-                if has_utf16le_bom { "LE" } else { "BE" });
+            tracing::debug!(
+                "Detected UTF-16{} BOM, decoding entire file",
+                if has_utf16le_bom { "LE" } else { "BE" }
+            );
             return extract_from_utf16_file(data, opts, has_utf16le_bom);
         }
     }
@@ -628,7 +652,6 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
     if let Ok(object) = Object::parse(data) {
         deduplicate_by_offset(extract_from_object(&object, data, opts))
     } else {
-
         // Unknown format - use r2 if available, otherwise raw scan
         let mut strings = Vec::new();
         if let Some(r2_strings) = get_r2_strings(opts) {
@@ -641,13 +664,25 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
         // Extract wide strings for PE-like files (common in Windows binaries)
         if is_pe && !data.is_empty() {
             let empty_section_info = std::collections::HashMap::new();
-            strings.extend(extract_wide_strings(data, opts.min_length, None, &[], &empty_section_info));
+            strings.extend(extract_wide_strings(
+                data,
+                opts.min_length,
+                None,
+                &[],
+                &empty_section_info,
+            ));
         }
 
         // Raw scan for all unknown formats
         if !data.is_empty() {
             let empty_section_info = std::collections::HashMap::new();
-            strings.extend(extract_raw_strings(data, opts.min_length, None, &[], &empty_section_info));
+            strings.extend(extract_raw_strings(
+                data,
+                opts.min_length,
+                None,
+                &[],
+                &empty_section_info,
+            ));
         }
 
         // XOR string detection
@@ -805,7 +840,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 
 /// Helper to get r2 strings from options (pre-extracted or by running r2)
 pub fn extract_from_object(
-    object: &Object,
+    object: &Object<'_>,
     data: &[u8],
     opts: &ExtractOptions,
 ) -> Vec<ExtractedString> {
@@ -834,7 +869,13 @@ pub fn extract_from_object(
                 let extractor = RustStringExtractor::new(min_length);
                 let rust_strings = extractor.extract_macho(macho, data);
                 if rust_strings.is_empty() {
-                    strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
+                    strings.extend(extract_raw_strings(
+                        data,
+                        min_length,
+                        None,
+                        &segments,
+                        &section_info,
+                    ));
                 } else {
                     strings.extend(rust_strings);
                 }
@@ -888,7 +929,7 @@ pub fn extract_from_object(
             let mut is_rust = false;
             let mut segments = Vec::new();
             let mut section_info = std::collections::HashMap::new();
-            let mut first_macho: Option<MachO> = None;
+            let mut first_macho: Option<MachO<'_>> = None;
             for arch_result in fat {
                 if let Ok(goblin::mach::SingleArch::MachO(macho)) = arch_result {
                     segments = collect_macho_segments(&macho);
@@ -913,7 +954,13 @@ pub fn extract_from_object(
                     strings.extend(r2_strings);
                 }
                 // Also do raw scan to catch anything r2 missed
-                strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
+                strings.extend(extract_raw_strings(
+                    data,
+                    min_length,
+                    None,
+                    &segments,
+                    &section_info,
+                ));
             }
             // Skip stack string extraction for Go binaries
             if !is_go_binary {
@@ -1005,13 +1052,25 @@ pub fn extract_from_object(
                 let extractor = RustStringExtractor::new(min_length);
                 let rust_strings = extractor.extract_elf(elf, scan_data);
                 if rust_strings.is_empty() {
-                    strings.extend(extract_raw_strings(scan_data, min_length, None, &segments, &section_info));
+                    strings.extend(extract_raw_strings(
+                        scan_data,
+                        min_length,
+                        None,
+                        &segments,
+                        &section_info,
+                    ));
                 } else {
                     strings.extend(rust_strings);
                 }
             }
             // Extract UTF-16LE wide strings (less common in ELF but can occur, especially in malware)
-            strings.extend(extract_wide_strings(scan_data, min_length, None, &segments, &section_info));
+            strings.extend(extract_wide_strings(
+                scan_data,
+                min_length,
+                None,
+                &segments,
+                &section_info,
+            ));
 
             // Extract binary network data (IPs and ports in network byte order)
             strings.extend(scan_binary_ips(
@@ -1085,7 +1144,13 @@ pub fn extract_from_object(
             }
 
             // Extract UTF-16LE wide strings (common in Windows binaries)
-            strings.extend(extract_wide_strings(data, min_length, None, &segments, &section_info));
+            strings.extend(extract_wide_strings(
+                data,
+                min_length,
+                None,
+                &segments,
+                &section_info,
+            ));
 
             // Extract binary network data (IPs and ports in network byte order)
             strings.extend(scan_binary_ips(
@@ -1097,7 +1162,13 @@ pub fn extract_from_object(
             ));
 
             // Raw scan for PE (catches strings missed by structure extraction)
-            strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
+            strings.extend(extract_raw_strings(
+                data,
+                min_length,
+                None,
+                &segments,
+                &section_info,
+            ));
 
             // Skip stack string extraction for Go binaries
             if !is_go_binary {
@@ -1114,7 +1185,13 @@ pub fn extract_from_object(
             }
             if strings.is_empty() && !data.is_empty() {
                 let empty_section_info = std::collections::HashMap::new();
-                strings.extend(extract_raw_strings(data, min_length, None, &[], &empty_section_info));
+                strings.extend(extract_raw_strings(
+                    data,
+                    min_length,
+                    None,
+                    &[],
+                    &empty_section_info,
+                ));
             }
             // Extract binary network data (IPs and ports in network byte order)
             // For unknown formats, use 0 (not M68000) to process normally
@@ -1256,8 +1333,13 @@ pub fn extract_from_object(
     // Try to auto-detect XOR key from extracted strings if XOR scanning is enabled
     if !data.is_empty() && opts.xor_scan {
         // Auto-detect XOR key from high-quality candidates in extracted strings
-        if let Some((key, key_str, _key_offset)) = xor::auto_detect_xor_key(data, &strings, opts.xor_min_length) {
-            tracing::info!("Auto-detected XOR key: '{}' (from extracted strings)", key_str);
+        if let Some((key, key_str, _key_offset)) =
+            xor::auto_detect_xor_key(data, &strings, opts.xor_min_length)
+        {
+            tracing::info!(
+                "Auto-detected XOR key: '{}' (from extracted strings)",
+                key_str
+            );
 
             // Mark the key string as XorKey type if it exists in extracted strings
             if let Some(key_string) = strings.iter_mut().find(|s| s.value == key_str) {
@@ -1315,19 +1397,19 @@ pub fn extract_from_object(
 
                 // XML/plist strings in __LINKEDIT are part of code signature
                 // (entitlements or code signature metadata like cdhashes)
-                if s.kind == StringKind::Const && (
-                    s.value.starts_with("<?xml") ||
-                    s.value.starts_with("<!DOCTYPE plist") ||
-                    s.value.starts_with("<plist") ||
-                    s.value.starts_with("<dict") ||
-                    s.value.starts_with("</dict>") ||
-                    s.value.starts_with("</plist>") ||
-                    s.value.starts_with("<key>") ||
-                    s.value.starts_with("<array>") ||
-                    s.value.starts_with("</array>") ||
-                    s.value.starts_with("<data>") ||
-                    s.value.starts_with("</data>")
-                ) {
+                if s.kind == StringKind::Const
+                    && (s.value.starts_with("<?xml")
+                        || s.value.starts_with("<!DOCTYPE plist")
+                        || s.value.starts_with("<plist")
+                        || s.value.starts_with("<dict")
+                        || s.value.starts_with("</dict>")
+                        || s.value.starts_with("</plist>")
+                        || s.value.starts_with("<key>")
+                        || s.value.starts_with("<array>")
+                        || s.value.starts_with("</array>")
+                        || s.value.starts_with("<data>")
+                        || s.value.starts_with("</data>"))
+                {
                     s.method = StringMethod::CodeSignature;
                 }
 
@@ -1381,7 +1463,7 @@ pub fn extract_from_object(
 ///
 /// This allows library clients who have already parsed the binary to avoid re-parsing.
 pub fn extract_from_macho(
-    macho: &MachO,
+    macho: &MachO<'_>,
     data: &[u8],
     opts: &ExtractOptions,
 ) -> Vec<ExtractedString> {
@@ -1405,7 +1487,13 @@ pub fn extract_from_macho(
         let extractor = RustStringExtractor::new(min_length);
         let rust_strings = extractor.extract_macho(macho, data);
         if rust_strings.is_empty() {
-            strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
+            strings.extend(extract_raw_strings(
+                data,
+                min_length,
+                None,
+                &segments,
+                &section_info,
+            ));
         } else {
             strings.extend(rust_strings);
         }
@@ -1473,7 +1561,7 @@ pub fn extract_from_macho(
 /// Returns the raw XML plist from `LC_CODE_SIGNATURE` if present.
 #[allow(dead_code)]
 pub fn extract_from_elf(
-    elf: &goblin::elf::Elf,
+    elf: &goblin::elf::Elf<'_>,
     data: &[u8],
     opts: &ExtractOptions,
 ) -> Vec<ExtractedString> {
@@ -1517,7 +1605,13 @@ pub fn extract_from_elf(
         let extractor = RustStringExtractor::new(min_length);
         let rust_strings = extractor.extract_elf(elf, scan_data);
         if rust_strings.is_empty() {
-            strings.extend(extract_raw_strings(scan_data, min_length, None, &segments, &section_info));
+            strings.extend(extract_raw_strings(
+                scan_data,
+                min_length,
+                None,
+                &segments,
+                &section_info,
+            ));
         } else {
             strings.extend(rust_strings);
         }
@@ -1573,7 +1667,7 @@ pub fn extract_from_elf(
 ///
 /// This allows library clients who have already parsed the binary to avoid re-parsing.
 pub fn extract_from_pe(
-    pe: &goblin::pe::PE,
+    pe: &goblin::pe::PE<'_>,
     data: &[u8],
     opts: &ExtractOptions,
 ) -> Vec<ExtractedString> {
@@ -1609,11 +1703,23 @@ pub fn extract_from_pe(
     }
 
     // Extract UTF-16LE wide strings (common in Windows binaries)
-    strings.extend(extract_wide_strings(data, min_length, None, &segments, &section_info));
+    strings.extend(extract_wide_strings(
+        data,
+        min_length,
+        None,
+        &segments,
+        &section_info,
+    ));
 
     // Also do raw scan for PE (always, since structure extraction may miss many strings)
     if !data.is_empty() {
-        strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
+        strings.extend(extract_raw_strings(
+            data,
+            min_length,
+            None,
+            &segments,
+            &section_info,
+        ));
     }
 
     // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)

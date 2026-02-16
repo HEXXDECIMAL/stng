@@ -13,7 +13,8 @@ fn main() {
 
     // Find candidate keys
     println!("\nStep 2: Look for XOR key candidates (15-32 chars, high entropy)");
-    let candidates: Vec<_> = strings.iter()
+    let candidates: Vec<_> = strings
+        .iter()
         .filter(|s| {
             let len = s.value.len();
             len >= 15 && len <= 32 && s.value.is_ascii()
@@ -42,7 +43,10 @@ fn main() {
         let (upper, lower, digit, special) = count_char_types(&s.value);
         println!("  ✓ Found key at 0x{:06x}", s.data_offset);
         println!("    Entropy: {:.2}", entropy);
-        println!("    Char types: upper={}, lower={}, digit={}, special={}", upper, lower, digit, special);
+        println!(
+            "    Char types: upper={}, lower={}, digit={}, special={}",
+            upper, lower, digit, special
+        );
 
         // Check if it passes is_good_xor_key_candidate checks
         println!("\n  Checking is_good_xor_key_candidate() filters:");
@@ -50,7 +54,14 @@ fn main() {
         println!("    ASCII? {}", s.value.is_ascii());
         println!("    No underscores? {}", !s.value.contains('_'));
         println!("    Entropy >= 3.5? {}", entropy >= 3.5);
-        println!("    Type count >= 2? {}", (upper > 0 as usize) as usize + (lower > 0 as usize) as usize + (digit > 0 as usize) as usize + (special > 0 as usize) as usize >= 2);
+        println!(
+            "    Type count >= 2? {}",
+            (upper > 0 as usize) as usize
+                + (lower > 0 as usize) as usize
+                + (digit > 0 as usize) as usize
+                + (special > 0 as usize) as usize
+                >= 2
+        );
     } else {
         println!("  ✗ Key not found");
     }
@@ -58,11 +69,7 @@ fn main() {
     // Now check how many strings would be decoded with the correct key
     println!("\nStep 4: Try decoding with the correct key");
     let key_bytes = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
-    let decoded = stng::xor::extract_custom_xor_strings(
-        &data,
-        &key_bytes.to_vec(),
-        10,
-    );
+    let decoded = stng::xor::extract_custom_xor_strings(&data, &key_bytes.to_vec(), 10);
 
     println!("  Decoded {} strings with the correct key", decoded.len());
 

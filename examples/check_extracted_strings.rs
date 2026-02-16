@@ -24,20 +24,27 @@ fn main() {
         println!("✗ XOR key NOT in extracted strings\n");
 
         // Show all strings sorted by offset to see what's near 0x235ad
-        let mut nearby: Vec<_> = extracted.iter()
+        let mut nearby: Vec<_> = extracted
+            .iter()
             .filter(|s| s.data_offset >= 0x230a0 && s.data_offset <= 0x24000)
             .collect();
         nearby.sort_by_key(|s| s.data_offset);
 
         println!("Strings in the range 0x230a0-0x24000:");
         for s in nearby.iter().take(20) {
-            println!("  [0x{:06x}] {} ({})", s.data_offset, s.value, s.value.len());
+            println!(
+                "  [0x{:06x}] {} ({})",
+                s.data_offset,
+                s.value,
+                s.value.len()
+            );
         }
     }
 
     // Look for high-entropy strings that might be confused with the key
     println!("\nSearching for strings that look like XOR keys (15-32 chars, high entropy):");
-    let mut high_entropy: Vec<_> = extracted.iter()
+    let mut high_entropy: Vec<_> = extracted
+        .iter()
         .filter(|s| s.value.len() >= 15 && s.value.len() <= 32 && s.value.is_ascii())
         .map(|s| {
             let entropy = calculate_entropy(s.value.as_bytes());
@@ -49,8 +56,13 @@ fn main() {
     high_entropy.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     for (entropy, s) in high_entropy.iter().take(20) {
-        println!("  [0x{:06x}] {} (entropy: {:.2}, len: {})",
-                 s.data_offset, s.value, entropy, s.value.len());
+        println!(
+            "  [0x{:06x}] {} (entropy: {:.2}, len: {})",
+            s.data_offset,
+            s.value,
+            entropy,
+            s.value.len()
+        );
     }
 }
 

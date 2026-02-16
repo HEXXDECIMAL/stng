@@ -7,9 +7,9 @@
 use crate::go::classify_string;
 use crate::{ExtractedString, StringKind, StringMethod};
 use aho_corasick::AhoCorasick;
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::sync::OnceLock;
-use rayon::prelude::*;
 
 /// Minimum length for XOR-decoded strings (default).
 pub const DEFAULT_XOR_MIN_LENGTH: usize = 10;
@@ -72,15 +72,23 @@ fn is_good_xor_key_candidate(s: &str) -> bool {
 
     // Reject obvious legitimate strings that aren't XOR keys
     let lower = s.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://")
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
         || lower.starts_with("ftp://")
-        || lower.contains("apple") || lower.contains("software")
-        || lower.contains("signing") || lower.contains("certification")
-        || lower.contains("authority") || lower.contains("directory")
-        || lower.contains("cycle") || lower.contains("invalid")
-        || lower.contains("error") || lower.contains("fail")
-        || lower.contains("unknown") || lower.contains(" %s")
-        || lower.contains(" %d") || lower.contains("%x")
+        || lower.contains("apple")
+        || lower.contains("software")
+        || lower.contains("signing")
+        || lower.contains("certification")
+        || lower.contains("authority")
+        || lower.contains("directory")
+        || lower.contains("cycle")
+        || lower.contains("invalid")
+        || lower.contains("error")
+        || lower.contains("fail")
+        || lower.contains("unknown")
+        || lower.contains(" %s")
+        || lower.contains(" %d")
+        || lower.contains("%x")
     {
         return false;
     }
@@ -501,14 +509,20 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                         // Reject if has letters but poor vowel ratio (English-specific check)
                         // Only apply to ASCII text - skip for international text (Russian, Chinese, etc.)
                         if alpha >= 3 {
-                            let has_non_ascii = s.chars().any(|c| !c.is_ascii());
+                            let has_non_ascii = !s.is_ascii();
                             if !has_non_ascii {
                                 // Only check vowels for ASCII/English text
-                                let vowels = s.chars().filter(|c| {
-                                    matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
-                                }).count();
+                                let vowels = s
+                                    .chars()
+                                    .filter(|c| {
+                                        matches!(
+                                            c.to_ascii_lowercase(),
+                                            'a' | 'e' | 'i' | 'o' | 'u'
+                                        )
+                                    })
+                                    .count();
                                 let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
-                                if vowel_ratio < 10 || vowel_ratio > 70 {
+                                if !(10..=70).contains(&vowel_ratio) {
                                     continue;
                                 }
                             }
@@ -614,8 +628,8 @@ fn extract_custom_xor_strings_file_level_cycling(
             // (these just produce the key)
             if start < data.len() {
                 let mut null_count = 0;
-                for i in start..data.len().min(start + key.len()) {
-                    if data[i] == 0x00 {
+                for &byte in data.iter().take(data.len().min(start + key.len())).skip(start) {
+                    if byte == 0x00 {
                         null_count += 1;
                     }
                 }
@@ -782,10 +796,7 @@ fn extract_custom_xor_strings_file_level_cycling(
     final_results.sort_by_key(|s| s.data_offset);
 
     let total_time = start_time.elapsed();
-    tracing::debug!(
-        "File-level cycling total: {:.2}s",
-        total_time.as_secs_f64()
-    );
+    tracing::debug!("File-level cycling total: {:.2}s", total_time.as_secs_f64());
 
     tracing::info!(
         "File-level cycling complete: {} strings after quality-based deduplication",
@@ -804,7 +815,7 @@ fn is_printable_byte_for_file_xor(b: u8) -> bool {
     // Accept UTF-8 continuation bytes (0x80-0xBF) and UTF-8 start bytes (0xC0-0xF7)
     // This allows Unicode text (Russian, Chinese, Arabic, etc.) to pass through
     // Invalid UTF-8 will be caught later by String::from_utf8()
-    b >= 0x80 && b <= 0xF7
+    (0x80..=0xF7).contains(&b)
 }
 
 /// Try XOR decoding at radare2 string boundary hints.
@@ -1243,7 +1254,10 @@ fn extract_custom_xor_strings_pattern_based_simple(
     // Scan every position (like decode.py)
     for pos in 0..data.len().saturating_sub(min_length) {
         // Skip excluded ranges
-        if excluded_ranges.iter().any(|&(start, end)| pos >= start && pos < end) {
+        if excluded_ranges
+            .iter()
+            .any(|&(start, end)| pos >= start && pos < end)
+        {
             continue;
         }
 
@@ -1290,11 +1304,14 @@ fn extract_custom_xor_strings_pattern_based_simple(
 
                     // Count consonants in first 4 chars (or all if less than 4)
                     let check_len = after_null.len().min(4);
-                    let consonant_run = s_after.chars()
+                    let consonant_run = s_after
+                        .chars()
                         .take(check_len)
-                        .filter(|c| c.is_ascii_alphabetic() && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u'))
+                        .filter(|c| {
+                            c.is_ascii_alphabetic()
+                                && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+                        })
                         .count();
-
 
                     // If we have 3+ consonants in the checked chars, it's likely garbage
                     // Trim at this null position
@@ -1362,7 +1379,8 @@ fn extract_custom_xor_strings_pattern_based_simple(
 
         // Additional sanity check: reject obvious garbage even if classify passed it
         // Be especially strict when using automatically detected keys (paths)
-        let key_is_likely_auto_detected = key_preview.starts_with('/') || key_preview.starts_with("C:\\");
+        let key_is_likely_auto_detected =
+            key_preview.starts_with('/') || key_preview.starts_with("C:\\");
 
         let alnum = trimmed_s.chars().filter(|c| c.is_alphanumeric()).count();
         let alpha = trimmed_s.chars().filter(|c| c.is_alphabetic()).count();
@@ -1379,12 +1397,13 @@ fn extract_custom_xor_strings_pattern_based_simple(
         // Reject if has letters but poor vowel ratio (linguistic check)
         // Only apply to ASCII/English text - skip for international text (Russian, Chinese, etc.)
         if alpha >= 3 {
-            let has_non_ascii = trimmed_s.chars().any(|c| !c.is_ascii());
+            let has_non_ascii = !trimmed_s.is_ascii();
             if !has_non_ascii {
                 // Only check vowels for ASCII/English text
-                let vowels = trimmed_s.chars().filter(|c| {
-                    matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
-                }).count();
+                let vowels = trimmed_s
+                    .chars()
+                    .filter(|c| matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u'))
+                    .count();
                 let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
 
                 // For auto-detected keys, be stricter with vowel ratios
@@ -1446,7 +1465,8 @@ fn extract_custom_xor_strings_pattern_based_simple(
 /// Examples:
 /// - `set volume output muted truegtZh` -> `set volume output muted true`
 /// - `%s/.electron-cash/wallets8gkqyY]x` -> `%s/.electron-cash/wallets`
-/// Trim at consonant clusters that indicate garbage.
+///
+///   Trim at consonant clusters that indicate garbage.
 ///
 /// XOR-decoded strings often have trailing consonant clusters (e.g., "gtZh", "kqyY")
 /// that occur when null bytes or padding decode to random letters.
@@ -1502,7 +1522,7 @@ fn trim_consonant_clusters(s: &str) -> String {
 /// - `hy_AM;be_BY;kk_KZ;ru_RU;uk_UA;ffYztZORL` -> `hy_AM;be_BY;kk_KZ;ru_RU;uk_UA;`
 fn clean_locale_trailing_garbage(s: &str) -> String {
     // Find the last valid locale separator (';' or ',')
-    if let Some(last_sep) = s.rfind(|c| c == ';' || c == ',') {
+    if let Some(last_sep) = s.rfind([';', ',']) {
         // Include the separator in the result
         let clean_len = last_sep + 1;
         if clean_len < s.len() {
@@ -1529,7 +1549,11 @@ fn clean_url_trailing_garbage(url: &str) -> String {
         let after_proto = &url[proto_end + 3..];
 
         // Check if it starts with an IP address
-        if after_proto.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        if after_proto
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+        {
             // Find the end of the IP (last digit of last octet)
             let mut ip_end = 0;
             let mut dots = 0;
@@ -1545,7 +1569,9 @@ fn clean_url_trailing_garbage(url: &str) -> String {
                 } else if c == ':' && dots == 3 {
                     // Port number after IP - find end of port
                     let port_start = i + 1;
-                    if let Some(port_end_offset) = after_proto[port_start..].find(|c: char| !c.is_ascii_digit()) {
+                    if let Some(port_end_offset) =
+                        after_proto[port_start..].find(|c: char| !c.is_ascii_digit())
+                    {
                         ip_end = port_start + port_end_offset;
                     } else {
                         ip_end = after_proto.len();
@@ -1569,7 +1595,8 @@ fn clean_url_trailing_garbage(url: &str) -> String {
             let valid_url_chars: Vec<usize> = after_proto
                 .char_indices()
                 .filter(|(_, c)| {
-                    c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '?' | '=' | '&' | '%' | '#' | '+')
+                    c.is_alphanumeric()
+                        || matches!(c, '/' | '.' | '-' | '_' | '?' | '=' | '&' | '%' | '#' | '+')
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -1647,11 +1674,7 @@ pub fn auto_detect_xor_key(
     );
 
     for (score, _offset, candidate) in candidates_with_score.iter().take(5) {
-        tracing::debug!(
-            "  Candidate (score={}): {}",
-            score,
-            candidate
-        );
+        tracing::debug!("  Candidate (score={}): {}", score, candidate);
     }
 
     // OPTIMIZATION 1: Phase 1 Quick Pre-filter
@@ -1659,8 +1682,17 @@ pub fn auto_detect_xor_key(
     let quick_scan_size = std::cmp::min(32768, data.len());
     let quick_data = &data[..quick_scan_size];
     let killer_patterns = [
-        "osascript", "screencapture", "/bin/sh", "/bin/bash", "2>&1",
-        "http://", "https://", "launchctl", "electrum", "ethereum", "exodus"
+        "osascript",
+        "screencapture",
+        "/bin/sh",
+        "/bin/bash",
+        "2>&1",
+        "http://",
+        "https://",
+        "launchctl",
+        "electrum",
+        "ethereum",
+        "exodus",
     ];
 
     let mut promising_candidates = Vec::new();
@@ -1681,16 +1713,26 @@ pub fn auto_detect_xor_key(
 
     // Fall back to all candidates if Phase 1 eliminates everything (safety net)
     let candidates_to_test = if promising_candidates.is_empty() {
-        tracing::info!("Phase 1: No killer patterns in first 32KB, testing all {} candidates", candidates.len());
+        tracing::info!(
+            "Phase 1: No killer patterns in first 32KB, testing all {} candidates",
+            candidates.len()
+        );
         candidates
     } else {
-        tracing::info!("Phase 1: {} promising candidates (skipped {})", promising_candidates.len(), candidates.len() - promising_candidates.len());
+        tracing::info!(
+            "Phase 1: {} promising candidates (skipped {})",
+            promising_candidates.len(),
+            candidates.len() - promising_candidates.len()
+        );
         promising_candidates
     };
 
     // OPTIMIZATION 2: Parallel candidate testing
     // Test all promising candidates in parallel for 2-3x speedup on multi-core CPUs
-    tracing::info!("Phase 2: Testing {} candidates in parallel", candidates_to_test.len());
+    tracing::info!(
+        "Phase 2: Testing {} candidates in parallel",
+        candidates_to_test.len()
+    );
 
     let candidate_scores: Vec<(i32, u64, String, Vec<u8>)> = candidates_to_test
         .into_par_iter()
@@ -1813,7 +1855,8 @@ pub fn auto_detect_xor_key(
 
     tracing::debug!(
         "Best XOR score overall: {} (threshold: {})",
-        best_score, min_xor_confidence_threshold
+        best_score,
+        min_xor_confidence_threshold
     );
 
     if best_score >= min_xor_confidence_threshold {
@@ -2507,7 +2550,7 @@ fn is_printable_char(b: u8) -> bool {
     // Accept UTF-8 continuation bytes (0x80-0xBF) and UTF-8 start bytes (0xC0-0xF7)
     // This allows Unicode text (Russian, Chinese, Arabic, etc.) to pass through
     // Invalid UTF-8 will be caught later by String::from_utf8()
-    b >= 0x80 && b <= 0xF7
+    (0x80..=0xF7).contains(&b)
 }
 
 /// Check if a string looks meaningful (not random garbage).
@@ -2518,26 +2561,46 @@ fn is_valid_xor_string(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
 
     // Check for specific malicious indicators (not just any system path)
-    let has_shell_command = s.contains("osascript") || s.contains("screencapture") ||
-        s.contains("bash ") || s.contains("sh -") || s.contains("curl ") ||
-        s.contains("wget ") || s.contains("chmod ") || s.contains("python ") ||
-        s.contains("perl ") || s.contains("ruby ") || s.contains("/bin/") ||
-        s.contains("sleep ") || s.contains(" rm ") || s.contains("rm -") ||
-        s.contains("echo ") || s.contains("kill ") || s.contains("ps ") ||
-        lower.contains("powershell") || lower.contains("cmd.exe") || lower.contains("xattr");
+    let has_shell_command = s.contains("osascript")
+        || s.contains("screencapture")
+        || s.contains("bash ")
+        || s.contains("sh -")
+        || s.contains("curl ")
+        || s.contains("wget ")
+        || s.contains("chmod ")
+        || s.contains("python ")
+        || s.contains("perl ")
+        || s.contains("ruby ")
+        || s.contains("/bin/")
+        || s.contains("sleep ")
+        || s.contains(" rm ")
+        || s.contains("rm -")
+        || s.contains("echo ")
+        || s.contains("kill ")
+        || s.contains("ps ")
+        || lower.contains("powershell")
+        || lower.contains("cmd.exe")
+        || lower.contains("xattr");
 
-    let has_suspicious_path = s.contains("Ethereum/keystore") ||
-        s.contains("/tmp/") && (s.contains(".sh") || s.contains("payload")) ||
-        s.contains("/etc/passwd") || s.contains("/etc/shadow") ||
-        lower.contains("appdata") || lower.contains("programdata") ||
-        lower.contains("launchagents") || lower.contains("launchdaemons");
+    let has_suspicious_path = s.contains("Ethereum/keystore")
+        || s.contains("/tmp/") && (s.contains(".sh") || s.contains("payload"))
+        || s.contains("/etc/passwd")
+        || s.contains("/etc/shadow")
+        || lower.contains("appdata")
+        || lower.contains("programdata")
+        || lower.contains("launchagents")
+        || lower.contains("launchdaemons");
 
     let has_suspicious_url = s.contains("://") && !s.contains("apple.com");
 
     // Check for IP addresses (likely C2 infrastructure) - pattern: N.N.N.N
-    let has_ip = s.chars().filter(|&c| c == '.').count() == 3 &&
-        s.split('.').filter(|seg| !seg.is_empty() &&
-            seg.chars().all(|c| c.is_ascii_digit()) && seg.len() <= 3).count() == 4;
+    let has_ip = s.chars().filter(|&c| c == '.').count() == 3
+        && s.split('.')
+            .filter(|seg| {
+                !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()) && seg.len() <= 3
+            })
+            .count()
+            == 4;
 
     // Check for unicode escape sequences (legitimate obfuscation)
     let has_unicode_escapes = s.contains("\\x") || s.contains("\\u");
@@ -2547,16 +2610,25 @@ fn is_valid_xor_string(s: &str) -> bool {
 
     // Count truly bad punctuation (control chars and unusual symbols)
     // Allow newlines in heredocs
-    let control_chars = s.chars().filter(|&c| {
-        if has_heredoc && c == '\n' {
-            return false;
-        }
-        matches!(c, '\x00'..='\x1f' | '\x7f')
-    }).count();
+    let control_chars = s
+        .chars()
+        .filter(|&c| {
+            if has_heredoc && c == '\n' {
+                return false;
+            }
+            matches!(c, '\x00'..='\x1f' | '\x7f')
+        })
+        .count();
 
     // If string has SPECIFIC malicious indicators OR encoding, allow them
     // This bypass ensures high-value IOCs pass validation even with unusual chars
-    if has_shell_command || has_suspicious_path || has_suspicious_url || has_ip || has_unicode_escapes || has_heredoc {
+    if has_shell_command
+        || has_suspicious_path
+        || has_suspicious_url
+        || has_ip
+        || has_unicode_escapes
+        || has_heredoc
+    {
         // Only reject if mostly control characters (> 30%)
         return control_chars * 3 < s.len();
     }
@@ -2565,37 +2637,43 @@ fn is_valid_xor_string(s: &str) -> bool {
     // But allow certain metacharacters in specific contexts
     let has_xml_tags = s.starts_with('<') && s.ends_with('>') && !s.contains(' ');
     let has_shell_metacharacters = s.contains('<') || s.contains('>') || s.contains('|');
-    let looks_like_shell = has_shell_metacharacters && s.len() >= 15 && (
-        (s.contains("EOF") || s.contains("END")) ||
-        (s.contains(">>") || s.contains("<<")) ||
-        (s.contains("/dev/") && s.contains('>')) ||
-        (s.contains("2>&1") || s.contains("1>&2"))
-    );
+    let looks_like_shell = has_shell_metacharacters
+        && s.len() >= 15
+        && ((s.contains("EOF") || s.contains("END"))
+            || (s.contains(">>") || s.contains("<<"))
+            || (s.contains("/dev/") && s.contains('>'))
+            || (s.contains("2>&1") || s.contains("1>&2")));
 
-    let bad_punct_count = s.chars().filter(|&c| {
-        // Allow <, > for XML tags or shell commands
-        if (has_xml_tags || looks_like_shell) && matches!(c, '<' | '>') {
-            return false;
-        }
-        // Allow | for shell commands
-        if looks_like_shell && c == '|' {
-            return false;
-        }
-        matches!(c,
-            '^' | '~' | '`' | '[' | ']' | '{' | '}' | '<' | '>' | '|' |
-            '\x00'..='\x1f' | '\x7f'  // Control characters
-        )
-    }).count();
+    let bad_punct_count = s
+        .chars()
+        .filter(|&c| {
+            // Allow <, > for XML tags or shell commands
+            if (has_xml_tags || looks_like_shell) && matches!(c, '<' | '>') {
+                return false;
+            }
+            // Allow | for shell commands
+            if looks_like_shell && c == '|' {
+                return false;
+            }
+            matches!(
+                c,
+                '^' | '~' | '`' | '[' | ']' | '{' | '}' | '<' | '>' | '|' | '\x00'
+                    ..='\x1f' | '\x7f' // Control characters
+            )
+        })
+        .count();
 
     // Count "questionable" punctuation that can appear in valid strings
-    let questionable_punct = s.chars().filter(|&c| {
-        matches!(c, '$' | '#' | '@' | '!' | '"' | '\'' | '\\')
-    }).count();
+    let questionable_punct = s
+        .chars()
+        .filter(|&c| matches!(c, '$' | '#' | '@' | '!' | '"' | '\'' | '\\'))
+        .count();
 
     // Count additional special chars that often indicate garbage (but can be legitimate)
-    let additional_special = s.chars().filter(|&c| {
-        matches!(c, ':' | '+' | '=' | '*' | '&' | '%')
-    }).count();
+    let additional_special = s
+        .chars()
+        .filter(|&c| matches!(c, ':' | '+' | '=' | '*' | '&' | '%'))
+        .count();
 
     // Reject if we have ANY bad punctuation characters
     if bad_punct_count > 0 {
@@ -2628,23 +2706,121 @@ fn is_valid_xor_string(s: &str) -> bool {
 /// Used to boost confidence that decoded text is real vs garbage.
 const COMMON_WORDS: &[&str] = &[
     // Very common English words (3-5 letters)
-    "the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was", "one",
-    "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now", "old",
-    "see", "two", "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too",
-    "use", "your", "into", "just", "like", "make", "many", "over", "such", "take", "than",
-    "them", "then", "these", "think", "through", "time", "very", "when", "work", "would",
+    "the",
+    "and",
+    "for",
+    "are",
+    "but",
+    "not",
+    "you",
+    "all",
+    "can",
+    "her",
+    "was",
+    "one",
+    "our",
+    "out",
+    "day",
+    "get",
+    "has",
+    "him",
+    "his",
+    "how",
+    "man",
+    "new",
+    "now",
+    "old",
+    "see",
+    "two",
+    "way",
+    "who",
+    "boy",
+    "did",
+    "its",
+    "let",
+    "put",
+    "say",
+    "she",
+    "too",
+    "use",
+    "your",
+    "into",
+    "just",
+    "like",
+    "make",
+    "many",
+    "over",
+    "such",
+    "take",
+    "than",
+    "them",
+    "then",
+    "these",
+    "think",
+    "through",
+    "time",
+    "very",
+    "when",
+    "work",
+    "would",
     // System/Path words
-    "Users", "Library", "Application", "Support", "Local", "Storage", "AppData", "Program",
-    "Files", "System", "Windows", "Containers", "Cache", "Temp", "private", "public",
-    "Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos",
+    "Users",
+    "Library",
+    "Application",
+    "Support",
+    "Local",
+    "Storage",
+    "AppData",
+    "Program",
+    "Files",
+    "System",
+    "Windows",
+    "Containers",
+    "Cache",
+    "Temp",
+    "private",
+    "public",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Music",
+    "Videos",
     // Common file extensions (targets for exfiltration)
-    "plist", "json", "conf", "config", "sqlite", "wallet", "keystore", "screenshot",
-    "Bookmarks", "Cookies", "History", "Preferences",
+    "plist",
+    "json",
+    "conf",
+    "config",
+    "sqlite",
+    "wallet",
+    "keystore",
+    "screenshot",
+    "Bookmarks",
+    "Cookies",
+    "History",
+    "Preferences",
     // Application names
-    "Safari", "Chrome", "Firefox", "Telegram", "Discord", "Slack",
+    "Safari",
+    "Chrome",
+    "Firefox",
+    "Telegram",
+    "Discord",
+    "Slack",
     // Crypto/Security (exfiltration targets)
-    "Wallet", "Wallets", "Ethereum", "Exodus", "Electrum", "Monero", "Bitcoin",
-    "password", "passwd", "token", "session", "cookie", "credential", "secret",
+    "Wallet",
+    "Wallets",
+    "Ethereum",
+    "Exodus",
+    "Electrum",
+    "Monero",
+    "Bitcoin",
+    "password",
+    "passwd",
+    "token",
+    "session",
+    "cookie",
+    "credential",
+    "secret",
 ];
 
 /// Check if a string looks like well-formed text using linguistic patterns.
@@ -2702,10 +2878,19 @@ fn is_meaningful_string(s: &str) -> bool {
     }
 
     // Check for common file extensions (exfiltration targets)
-    let has_file_extension = s.contains(".plist") || s.contains(".json") || s.contains(".conf") ||
-        s.contains(".sqlite") || s.contains(".jpg") || s.contains(".png") || s.contains(".txt") ||
-        s.contains(".log") || s.contains(".xml") || s.contains(".db") || s.contains(".dat") ||
-        s.contains(".wallet") || s.contains(".keystore");
+    let has_file_extension = s.contains(".plist")
+        || s.contains(".json")
+        || s.contains(".conf")
+        || s.contains(".sqlite")
+        || s.contains(".jpg")
+        || s.contains(".png")
+        || s.contains(".txt")
+        || s.contains(".log")
+        || s.contains(".xml")
+        || s.contains(".db")
+        || s.contains(".dat")
+        || s.contains(".wallet")
+        || s.contains(".keystore");
 
     if has_file_extension {
         // File paths are high value - just check basic quality
@@ -2717,7 +2902,8 @@ fn is_meaningful_string(s: &str) -> bool {
 
     // Check if string contains common words (case-insensitive matching)
     let lower_s = s.to_ascii_lowercase();
-    let word_matches = COMMON_WORDS.iter()
+    let word_matches = COMMON_WORDS
+        .iter()
         .filter(|&word| {
             let word_lower = word.to_ascii_lowercase();
             lower_s.contains(&word_lower)
@@ -2730,17 +2916,17 @@ fn is_meaningful_string(s: &str) -> bool {
     }
 
     // Medium signal: 1 common word + reasonable quality
-    if word_matches >= 1 {
-        if alpha >= 5 {
-            // For non-ASCII text, skip vowel check (vowel is 0 for Russian/Chinese/etc.)
-            if has_non_ascii {
-                return true;
-            }
-            let vowel_ratio = if alpha > 0 { vowel * 100 / alpha } else { 0 };
-            // Very lenient with common words present
-            if vowel_ratio >= 8 {
-                return true;
-            }
+    if word_matches >= 1
+        && alpha >= 5
+    {
+        // For non-ASCII text, skip vowel check (vowel is 0 for Russian/Chinese/etc.)
+        if has_non_ascii {
+            return true;
+        }
+        let vowel_ratio = if alpha > 0 { vowel * 100 / alpha } else { 0 };
+        // Very lenient with common words present
+        if vowel_ratio >= 8 {
+            return true;
         }
     }
 
@@ -2759,7 +2945,7 @@ fn is_meaningful_string(s: &str) -> bool {
 
         // English text typically has 35-45% vowels
         // Be lenient: accept 12-65%
-        if vowel_ratio < 12 || vowel_ratio > 65 {
+        if !(12..=65).contains(&vowel_ratio) {
             return false;
         }
 
@@ -2770,7 +2956,9 @@ fn is_meaningful_string(s: &str) -> bool {
         let mut consonant_run = 0;
 
         for &c in &chars {
-            if c.is_ascii_alphabetic() && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u') {
+            if c.is_ascii_alphabetic()
+                && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+            {
                 consonant_run += 1;
                 max_consonant_run = max_consonant_run.max(consonant_run);
             } else {
@@ -2787,14 +2975,17 @@ fn is_meaningful_string(s: &str) -> bool {
         // Random case mixing like "rAnDoM" is suspicious
         if alpha > 8 && upper > 0 && lower > 0 {
             // If we have mixed case, check if it's structured
-            let has_spaces_or_separators = spaces > 0 || s.contains('/') || s.contains('.') || s.contains('_');
+            let has_spaces_or_separators =
+                spaces > 0 || s.contains('/') || s.contains('.') || s.contains('_');
 
             // Title Case or camelCase with separators is fine
             // Random mixing without structure is bad
             if !has_spaces_or_separators {
                 // Check if it's camelCase (starts lowercase, has capitals mid-word)
                 let starts_lower = chars[0].is_ascii_lowercase();
-                let has_mid_caps = chars.windows(2).any(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase());
+                let has_mid_caps = chars
+                    .windows(2)
+                    .any(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase());
 
                 if !starts_lower && !has_mid_caps {
                     // Not Title, not camel, not consistent - likely garbage
@@ -3333,9 +3524,22 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
 
     // Check for browser/app data exfiltration targets
     let exfil_indicators = [
-        "extension settings", "local storage", "cookies", "bookmarks",
-        "history", "preferences", "session", "cache", "telegram", "discord",
-        "slack", "signal", "whatsapp", "tdata", "desktop folder", "documents folder",
+        "extension settings",
+        "local storage",
+        "cookies",
+        "bookmarks",
+        "history",
+        "preferences",
+        "session",
+        "cache",
+        "telegram",
+        "discord",
+        "slack",
+        "signal",
+        "whatsapp",
+        "tdata",
+        "desktop folder",
+        "documents folder",
     ];
 
     for indicator in &exfil_indicators {
@@ -3356,9 +3560,11 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
     // Check for IP addresses (pattern: digits.digits.digits.digits)
     if s.chars().filter(|&c| c == '.').count() == 3 {
         let segments: Vec<&str> = s.split('.').collect();
-        if segments.len() == 4 && segments.iter().all(|seg| {
-            !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()) && seg.len() <= 3
-        }) {
+        if segments.len() == 4
+            && segments.iter().all(|seg| {
+                !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()) && seg.len() <= 3
+            })
+        {
             // Likely an IP address, allow through
             let kind = classify_string(s);
             if matches!(kind, StringKind::IP | StringKind::IPPort) {
@@ -3376,9 +3582,14 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         // Accept meaningful strings that classify as high-value IOCs
         // NOTE: Const is intentionally excluded - it must pass strict validation below
         // NOTE: Path is intentionally excluded - paths must go through strict validation below
-        if matches!(kind, StringKind::SuspiciousPath |
-                         StringKind::ShellCmd | StringKind::IP | StringKind::IPPort |
-                         StringKind::Url) {
+        if matches!(
+            kind,
+            StringKind::SuspiciousPath
+                | StringKind::ShellCmd
+                | StringKind::IP
+                | StringKind::IPPort
+                | StringKind::Url
+        ) {
             return Some(kind);
         }
     }
@@ -3423,7 +3634,7 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             let is_windows_path = s.len() > 3
                 && s.chars().nth(1) == Some(':')
                 && s.chars().nth(2) == Some('\\')
-                && s.chars().next().unwrap().is_ascii_alphabetic();
+                && s.chars().next().expect("s is not empty").is_ascii_alphabetic();
 
             // Check for relative paths with proper structure
             let is_relative_path = (s.starts_with("./") || s.starts_with("../"))
@@ -3526,9 +3737,12 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             let char_count = s.chars().count();
 
             // Reject strings with too many special characters
-            let special_chars = s.chars().filter(|&c| {
-                !c.is_alphanumeric() && !c.is_whitespace() && c != '-' && c != '_' && c != '.'
-            }).count();
+            let special_chars = s
+                .chars()
+                .filter(|&c| {
+                    !c.is_alphanumeric() && !c.is_whitespace() && c != '-' && c != '_' && c != '.'
+                })
+                .count();
 
             // Reject if > 40% special characters (garbage indicator)
             if char_count > 0 && special_chars * 10 > char_count * 4 {
@@ -3586,15 +3800,15 @@ fn is_locale_string(s: &str) -> bool {
     };
 
     // Check lowercase before separator
-    for i in 0..sep_idx {
-        if !chars[i].is_ascii_lowercase() {
+    for &ch in chars.iter().take(sep_idx) {
+        if !ch.is_ascii_lowercase() {
             return false;
         }
     }
 
     // Check uppercase after separator
-    for i in (sep_idx + 1)..chars.len() {
-        if !chars[i].is_ascii_uppercase() {
+    for &ch in chars.iter().skip(sep_idx + 1) {
+        if !ch.is_ascii_uppercase() {
             return false;
         }
     }
@@ -3619,7 +3833,7 @@ fn has_known_path_prefix(path: &str) -> bool {
             && after_dot_slash
                 .chars()
                 .next()
-                .unwrap()
+                .expect("checked above")
                 .is_ascii_alphanumeric();
     }
 
@@ -4277,11 +4491,11 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             },
             ExtractedString {
                 value: "cstr.SomeString".to_string(),
@@ -4291,11 +4505,11 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             },
             ExtractedString {
                 value: "ShortKey".to_string(),
@@ -4305,11 +4519,11 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             },
             ExtractedString {
                 value: key_string.to_string(), // The actual key
@@ -4319,11 +4533,11 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             },
         ];
 
@@ -4339,7 +4553,9 @@ mod tests {
         if let Some((_detected_key, detected_str, _offset)) = detected {
             // At minimum, the detected string should contain the URL we're trying to find
             assert!(
-                detected_str.contains("http") || detected_str.contains("evil") || detected_str.contains(".com"),
+                detected_str.contains("http")
+                    || detected_str.contains("evil")
+                    || detected_str.contains(".com"),
                 "Should extract meaningful strings from the key, got: '{}'",
                 detected_str
             );
@@ -4389,11 +4605,11 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             },
             ExtractedString {
                 value: key_string.to_string(),
@@ -4403,11 +4619,11 @@ mod tests {
                 kind: StringKind::Const,
                 library: None,
                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             },
         ];
 
@@ -4800,7 +5016,9 @@ mod tests {
             assert!(
                 found,
                 "Should PASS: '{}' - {} (got {} results)",
-                plaintext, description, results.len()
+                plaintext,
+                description,
+                results.len()
             );
         }
     }

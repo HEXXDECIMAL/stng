@@ -28,7 +28,8 @@ fn main() {
     }
 
     // Look for XOR decoded strings
-    let xor_strings: Vec<_> = extracted.iter()
+    let xor_strings: Vec<_> = extracted
+        .iter()
         .filter(|s| s.method == stng::StringMethod::XorDecode)
         .collect();
 
@@ -43,7 +44,9 @@ fn main() {
 
     // Look for critical indicators
     let has_osascript = xor_strings.iter().any(|s| s.value.contains("osascript"));
-    let has_c2 = xor_strings.iter().any(|s| s.value.contains("46.30.191") || s.value.contains("http://"));
+    let has_c2 = xor_strings
+        .iter()
+        .any(|s| s.value.contains("46.30.191") || s.value.contains("http://"));
     let has_electrum = xor_strings.iter().any(|s| s.value.contains("electrum"));
 
     println!("\nCritical indicators found:");
@@ -52,7 +55,8 @@ fn main() {
     println!("  electrum: {}", if has_electrum { "✓" } else { "✗" });
 
     // Look for XorKey strings
-    let xor_keys: Vec<_> = extracted.iter()
+    let xor_keys: Vec<_> = extracted
+        .iter()
         .filter(|s| s.kind == stng::StringKind::XorKey)
         .collect();
 

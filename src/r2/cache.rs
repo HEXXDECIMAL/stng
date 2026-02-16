@@ -63,7 +63,10 @@ impl R2Cache {
 
         let hash = compute_file_hash(file_path).ok()?;
         let filename = sanitize_command_for_filename(command);
-        let cache_path = self.cache_dir.join(&hash).join(format!("{}.json", filename));
+        let cache_path = self
+            .cache_dir
+            .join(&hash)
+            .join(format!("{}.json", filename));
 
         tracing::debug!(
             "r2::cache::get: checking cache for {} command '{}' -> {}",
@@ -91,12 +94,7 @@ impl R2Cache {
     }
 
     /// Set cached r2 command output.
-    pub fn set(
-        &self,
-        file_path: &str,
-        command: &str,
-        output: &str,
-    ) -> Result<(), std::io::Error> {
+    pub fn set(&self, file_path: &str, command: &str, output: &str) -> Result<(), std::io::Error> {
         if !self.enabled {
             return Ok(());
         }
@@ -167,7 +165,7 @@ impl R2Cache {
             stng_version: env!("CARGO_PKG_VERSION").to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("system time should be after UNIX_EPOCH")
                 .as_secs(),
         };
 

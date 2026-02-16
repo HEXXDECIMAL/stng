@@ -5,9 +5,9 @@
 
 pub mod cache;
 
-use cache::R2Cache;
 use crate::go::classify_string;
 use crate::{ExtractedString, FunctionMetadata, StringKind, StringMethod};
+use cache::R2Cache;
 use std::collections::HashSet;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -61,7 +61,10 @@ pub fn extract_string_boundaries(path: &str) -> Option<Vec<StringBoundary>> {
     // Check file size - skip for large files (izzj is too slow)
     let file_size = std::fs::metadata(path).ok()?.len();
     if file_size > 10 * 1024 * 1024 {
-        tracing::debug!("r2::extract_string_boundaries: skipping large file ({}MB)", file_size / 1024 / 1024);
+        tracing::debug!(
+            "r2::extract_string_boundaries: skipping large file ({}MB)",
+            file_size / 1024 / 1024
+        );
         return None;
     }
 
@@ -101,12 +104,16 @@ pub fn extract_string_boundaries(path: &str) -> Option<Vec<StringBoundary>> {
 /// For large files (>10MB), only extracts symbols/imports (fast mode) to avoid
 /// the very slow whole-binary string scan.
 /// Returns strings with R2String/R2Symbol methods for clear identification.
-pub fn extract_strings(path: &str, min_length: usize, use_cache: bool) -> Option<Vec<ExtractedString>> {
+pub fn extract_strings(
+    path: &str,
+    min_length: usize,
+    use_cache: bool,
+) -> Option<Vec<ExtractedString>> {
     let tool = get_tool()?;
 
     // Get file size to filter out symbols with invalid offsets
     let file_size = std::fs::metadata(path).ok()?.len();
-    let is_large_file = file_size > 10 * 1024 * 1024;  // >10MB
+    let is_large_file = file_size > 10 * 1024 * 1024; // >10MB
 
     tracing::debug!(
         "r2::extract_strings: file_size={} (0x{:x}), large_file={}",
@@ -119,8 +126,13 @@ pub fn extract_strings(path: &str, min_length: usize, use_cache: bool) -> Option
     // For small files: extract both strings and symbols
     let path_owned = path.to_string();
     let (data_result, symbols_result) = if is_large_file {
-        tracing::debug!("r2::extract_strings: large file, skipping izzj scan (slow), using symbols only");
-        (None, run_tool_command_with_cache(tool, &path_owned, "isj", use_cache))
+        tracing::debug!(
+            "r2::extract_strings: large file, skipping izzj scan (slow), using symbols only"
+        );
+        (
+            None,
+            run_tool_command_with_cache(tool, &path_owned, "isj", use_cache),
+        )
     } else {
         rayon::join(
             || run_tool_command_with_cache(tool, &path_owned, "izzj", use_cache),
@@ -173,8 +185,8 @@ pub fn extract_strings(path: &str, min_length: usize, use_cache: bool) -> Option
                         section_size: None,
                         section_executable: None,
                         section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                        architecture: None,
+                        function_meta: None,
                         kind,
                     });
                 } else if s.string.contains("fYzt") {
@@ -205,18 +217,22 @@ pub fn extract_strings(path: &str, min_length: usize, use_cache: bool) -> Option
 
                     // Look up function metadata if this is a function
                     let func_meta = if s.r#type == "FUNC" || s.r#type == "METH" {
-                        function_metadata.as_ref().and_then(|map: &std::collections::HashMap<String, FunctionMetadata>| {
-                            // Try exact match first
-                            map.get(&s.name).cloned()
-                                // Try without sym. prefix
-                                .or_else(|| {
-                                    let clean_name = s.name
-                                        .strip_prefix("sym.")
-                                        .or_else(|| s.name.strip_prefix("sym.imp."))
-                                        .unwrap_or(&s.name);
-                                    map.get(clean_name).cloned()
-                                })
-                        })
+                        function_metadata.as_ref().and_then(
+                            |map: &std::collections::HashMap<String, FunctionMetadata>| {
+                                // Try exact match first
+                                map.get(&s.name)
+                                    .cloned()
+                                    // Try without sym. prefix
+                                    .or_else(|| {
+                                        let clean_name = s
+                                            .name
+                                            .strip_prefix("sym.")
+                                            .or_else(|| s.name.strip_prefix("sym.imp."))
+                                            .unwrap_or(&s.name);
+                                        map.get(clean_name).cloned()
+                                    })
+                            },
+                        )
                     } else {
                         None
                     };
@@ -250,16 +266,26 @@ pub fn extract_strings(path: &str, min_length: usize, use_cache: bool) -> Option
 /// Extract function metadata using radare2/rizin analysis.
 /// Only runs for files < 2MB to avoid performance issues.
 /// Returns HashMap of function name -> metadata.
-pub fn extract_function_metadata(path: &str, file_size: u64, use_cache: bool) -> Option<std::collections::HashMap<String, FunctionMetadata>> {
+pub fn extract_function_metadata(
+    path: &str,
+    file_size: u64,
+    use_cache: bool,
+) -> Option<std::collections::HashMap<String, FunctionMetadata>> {
     // Only analyze functions for files < 2MB
     if file_size > 2 * 1024 * 1024 {
-        tracing::debug!("r2::extract_function_metadata: skipping large file ({}MB)", file_size / 1024 / 1024);
+        tracing::debug!(
+            "r2::extract_function_metadata: skipping large file ({}MB)",
+            file_size / 1024 / 1024
+        );
         return None;
     }
 
     let tool = get_tool()?;
 
-    tracing::debug!("r2::extract_function_metadata: analyzing functions for {}", path);
+    tracing::debug!(
+        "r2::extract_function_metadata: analyzing functions for {}",
+        path
+    );
 
     // Run analysis and get function list as JSON
     // aaa = analyze all, aflj = list functions as JSON
@@ -271,11 +297,11 @@ pub fn extract_function_metadata(path: &str, file_size: u64, use_cache: bool) ->
         #[serde(default)]
         size: u64,
         #[serde(default)]
-        nbbs: u64,  // number of basic blocks
+        nbbs: u64, // number of basic blocks
         #[serde(default)]
-        edges: u64,  // number of branches
+        edges: u64, // number of branches
         #[serde(default)]
-        ninstrs: u64,  // number of instructions
+        ninstrs: u64, // number of instructions
         #[serde(default)]
         signature: Option<String>,
         #[serde(default)]
@@ -287,7 +313,8 @@ pub fn extract_function_metadata(path: &str, file_size: u64, use_cache: bool) ->
     let mut metadata_map = std::collections::HashMap::new();
     for func in functions {
         // Clean up function name (remove sym. prefix if present)
-        let clean_name = func.name
+        let clean_name = func
+            .name
             .strip_prefix("sym.")
             .or_else(|| func.name.strip_prefix("sym.imp."))
             .unwrap_or(&func.name)
@@ -306,7 +333,10 @@ pub fn extract_function_metadata(path: &str, file_size: u64, use_cache: bool) ->
         );
     }
 
-    tracing::debug!("r2::extract_function_metadata: extracted metadata for {} functions", metadata_map.len());
+    tracing::debug!(
+        "r2::extract_function_metadata: extracted metadata for {} functions",
+        metadata_map.len()
+    );
 
     Some(metadata_map)
 }
@@ -315,7 +345,12 @@ fn run_tool_command(tool: &str, path: &str, cmd: &str) -> Option<String> {
     run_tool_command_with_cache(tool, path, cmd, true)
 }
 
-fn run_tool_command_with_cache(tool: &str, path: &str, cmd: &str, use_cache: bool) -> Option<String> {
+fn run_tool_command_with_cache(
+    tool: &str,
+    path: &str,
+    cmd: &str,
+    use_cache: bool,
+) -> Option<String> {
     // Try cache first if enabled
     if use_cache {
         if let Ok(cache) = R2Cache::new() {
@@ -976,7 +1011,9 @@ pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
 
     // Check file size - skip R2 analysis for large files (aaa is very slow)
     if data.len() > 10 * 1024 * 1024 {
-        tracing::debug!("extract_connect_addrs: large file, skipping R2 analysis, using binary scan only");
+        tracing::debug!(
+            "extract_connect_addrs: large file, skipping R2 analysis, using binary scan only"
+        );
         // Scan binary directly without R2 analysis
         return scan_binary_for_connect_addrs(data);
     }
@@ -1167,7 +1204,7 @@ fn parse_sockaddr_from_disasm(disasm: &str, _data: &[u8]) -> Option<SockaddrIn> 
         // ARM32: strb r*, [stack_offset] (stores the byte)
         if (line.contains("strb") || line.contains("str ")) && pending_byte.is_some() {
             if let Some(sp_offset) = extract_stack_offset(line) {
-                let byte_val = pending_byte.unwrap();
+                let byte_val = pending_byte.expect("checked above");
                 tracing::debug!(
                     "parse_sockaddr: found byte 0x{:02x} at sp+{} from line: {}",
                     byte_val,

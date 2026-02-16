@@ -46,7 +46,7 @@ pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
 ///
 /// Returns the full XML plist as a single string for inline display.
 pub fn extract_macho_entitlements(
-    macho: &MachO,
+    macho: &MachO<'_>,
     data: &[u8],
     _min_length: usize,
 ) -> Vec<ExtractedString> {
@@ -83,11 +83,11 @@ pub fn extract_macho_entitlements(
                             kind: StringKind::EntitlementsXml,
                             library: None,
                             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                            section_size: None,
+                            section_executable: None,
+                            section_writable: None,
+                            architecture: None,
+                            function_meta: None,
                         });
                     }
                 }

@@ -1,6 +1,6 @@
 // Test direct extraction of desktopFolder strings
-use stng::ExtractOptions;
 use std::fs;
+use stng::ExtractOptions;
 
 fn main() {
     let data = fs::read("/Users/t/data/dissect/malware/macho/2026.homabrews_org/brew_agent")
@@ -15,16 +15,21 @@ fn main() {
     let results_filtered = stng::extract_strings_with_options(&data, &opts_filtered);
 
     println!("Total strings extracted: {}", results_filtered.len());
-    let xor_strings: Vec<_> = results_filtered.iter()
+    let xor_strings: Vec<_> = results_filtered
+        .iter()
         .filter(|s| s.method == stng::StringMethod::XorDecode)
         .collect();
     println!("  XOR strings: {}", xor_strings.len());
 
-    let desktop_strings: Vec<_> = results_filtered.iter()
+    let desktop_strings: Vec<_> = results_filtered
+        .iter()
         .filter(|s| s.value.to_lowercase().contains("desktop"))
         .collect();
 
-    println!("Found {} strings containing 'desktop':", desktop_strings.len());
+    println!(
+        "Found {} strings containing 'desktop':",
+        desktop_strings.len()
+    );
     for s in &desktop_strings {
         println!("  0x{:x} {:?}: {}", s.data_offset, s.kind, s.value);
     }
@@ -37,23 +42,29 @@ fn main() {
     let results_unfiltered = stng::extract_strings_with_options(&data, &opts_unfiltered);
 
     println!("Total strings extracted: {}", results_unfiltered.len());
-    let xor_strings_unf: Vec<_> = results_unfiltered.iter()
+    let xor_strings_unf: Vec<_> = results_unfiltered
+        .iter()
         .filter(|s| s.method == stng::StringMethod::XorDecode)
         .collect();
     println!("  XOR strings: {}", xor_strings_unf.len());
 
-    let desktop_strings_unf: Vec<_> = results_unfiltered.iter()
+    let desktop_strings_unf: Vec<_> = results_unfiltered
+        .iter()
         .filter(|s| s.value.to_lowercase().contains("desktop"))
         .collect();
 
-    println!("Found {} strings containing 'desktop':", desktop_strings_unf.len());
+    println!(
+        "Found {} strings containing 'desktop':",
+        desktop_strings_unf.len()
+    );
     for s in &desktop_strings_unf {
         println!("  0x{:x} {:?}: {}", s.data_offset, s.kind, s.value);
     }
 
     // Check specific offset
     println!("\n=== Checking offset 0x220f1 (start of multiline string) ===");
-    let at_220f1: Vec<_> = results_unfiltered.iter()
+    let at_220f1: Vec<_> = results_unfiltered
+        .iter()
         .filter(|s| s.data_offset == 0x220f1)
         .collect();
 
@@ -63,12 +74,19 @@ fn main() {
         for s in &at_220f1 {
             println!("  Unfiltered: 0x{:x} {:?}", s.data_offset, s.kind);
             println!("  Length: {} bytes", s.value.len());
-            println!("  First 100 chars: '{}'", s.value.chars().take(100).collect::<String>());
-            println!("  Contains 'desktopFolder': {}", s.value.contains("desktopFolder"));
+            println!(
+                "  First 100 chars: '{}'",
+                s.value.chars().take(100).collect::<String>()
+            );
+            println!(
+                "  Contains 'desktopFolder': {}",
+                s.value.contains("desktopFolder")
+            );
         }
     }
 
-    let at_220f1_filt: Vec<_> = results_filtered.iter()
+    let at_220f1_filt: Vec<_> = results_filtered
+        .iter()
         .filter(|s| s.data_offset == 0x220f1)
         .collect();
 
@@ -77,13 +95,21 @@ fn main() {
         println!("   → This is the BUG! The multiline AppleScript should be here.");
     } else {
         for s in &at_220f1_filt {
-            println!("  Filtered: 0x{:x} {:?}: '{}'", s.data_offset, s.kind, s.value);
+            println!(
+                "  Filtered: 0x{:x} {:?}: '{}'",
+                s.data_offset, s.kind, s.value
+            );
         }
     }
 
     println!("\n=== ALL unfiltered XOR strings from 0x22000 to 0x22300 ===");
-    let range_strings: Vec<_> = results_unfiltered.iter()
-        .filter(|s| s.data_offset >= 0x22000 && s.data_offset < 0x22300 && s.method == stng::StringMethod::XorDecode)
+    let range_strings: Vec<_> = results_unfiltered
+        .iter()
+        .filter(|s| {
+            s.data_offset >= 0x22000
+                && s.data_offset < 0x22300
+                && s.method == stng::StringMethod::XorDecode
+        })
         .collect();
     println!("Found {} strings in range:", range_strings.len());
     for s in range_strings {

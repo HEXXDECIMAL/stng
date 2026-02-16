@@ -16,7 +16,13 @@ const EM_68K: u16 = 4;
 fn is_data_section_elf(section: &str) -> bool {
     matches!(
         section,
-        ".data" | ".data.rel.ro" | ".rodata" | ".rodata.cst" | ".bss" | ".fini_array" | ".init_array"
+        ".data"
+            | ".data.rel.ro"
+            | ".rodata"
+            | ".rodata.cst"
+            | ".bss"
+            | ".fini_array"
+            | ".init_array"
     )
 }
 
@@ -43,8 +49,8 @@ pub fn scan_binary_ips(
     data: &[u8],
     min_length: usize,
     e_machine: u16,
-    elf_opt: Option<&crate::goblin::elf::Elf>,
-    pe_opt: Option<&crate::goblin::pe::PE>,
+    elf_opt: Option<&crate::goblin::elf::Elf<'_>>,
+    pe_opt: Option<&crate::goblin::pe::PE<'_>>,
 ) -> Vec<ExtractedString> {
     // Skip M68000 binaries - their instruction stream naturally contains 0x0002 patterns
     if e_machine == EM_68K {
@@ -187,7 +193,7 @@ fn scan_sockaddr_in(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
         }
 
         // Skip if IP octets look like text (3+ ASCII printable characters)
-        let ascii_count = octets.iter().filter(|&&b| b >= 32 && b <= 126).count();
+        let ascii_count = octets.iter().filter(|&&b| (32..=126).contains(&b)).count();
         if ascii_count >= 3 {
             continue;
         }
@@ -213,8 +219,8 @@ fn scan_sockaddr_in(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
             section_size: None,
             section_executable: None,
             section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            architecture: None,
+            function_meta: None,
         });
     }
 
@@ -228,9 +234,9 @@ mod tests {
     #[test]
     fn test_sockaddr_in_little_endian() {
         // sockaddr_in with AF_INET (0x0002) in little-endian
-        let mut data = vec![0xAA; 300];  // Larger buffer to bypass 256-byte skip
-        data[270] = 0x02;      // AF_INET LE first byte
-        data[271] = 0x00;      // AF_INET LE second byte
+        let mut data = vec![0xAA; 300]; // Larger buffer to bypass 256-byte skip
+        data[270] = 0x02; // AF_INET LE first byte
+        data[271] = 0x00; // AF_INET LE second byte
         data[272..274].copy_from_slice(&[0x1F, 0x90]); // Port 8080 BE
         data[274..278].copy_from_slice(&[0xC0, 0xA8, 0x01, 0x01]); // IP 192.168.1.1 BE
 
@@ -238,7 +244,10 @@ mod tests {
 
         // Should find our target
         let found = results.iter().find(|s| s.value == "192.168.1.1:8080");
-        assert!(found.is_some(), "Should find 192.168.1.1:8080 in sockaddr_in");
+        assert!(
+            found.is_some(),
+            "Should find 192.168.1.1:8080 in sockaddr_in"
+        );
         assert_eq!(found.unwrap().data_offset, 270);
         assert_eq!(found.unwrap().kind, StringKind::IPPort);
         assert_eq!(found.unwrap().library, Some("sockaddr_in".to_string()));
@@ -247,23 +256,26 @@ mod tests {
     #[test]
     fn test_sockaddr_in_big_endian() {
         // sockaddr_in with AF_INET (0x0200) in big-endian
-        let mut data = vec![0xAA; 300];  // Larger buffer to bypass 256-byte skip
-        data[270] = 0x00;      // AF_INET BE first byte
-        data[271] = 0x02;      // AF_INET BE second byte
+        let mut data = vec![0xAA; 300]; // Larger buffer to bypass 256-byte skip
+        data[270] = 0x00; // AF_INET BE first byte
+        data[271] = 0x02; // AF_INET BE second byte
         data[272..274].copy_from_slice(&[0x1F, 0x90]); // Port 8080 BE
         data[274..278].copy_from_slice(&[0xC0, 0xA8, 0x01, 0x01]); // IP 192.168.1.1 BE
 
         let results = scan_sockaddr_in(&data, 4);
 
         let found = results.iter().find(|s| s.value == "192.168.1.1:8080");
-        assert!(found.is_some(), "Should find 192.168.1.1:8080 with AF_INET BE");
+        assert!(
+            found.is_some(),
+            "Should find 192.168.1.1:8080 with AF_INET BE"
+        );
     }
 
     #[test]
     fn test_sockaddr_in_min_length_filter() {
         // sockaddr_in but with min_length that's too high
-        let mut data = vec![0xAA; 300];  // Larger buffer to bypass 256-byte skip
-        data[270] = 0x02;      // AF_INET LE
+        let mut data = vec![0xAA; 300]; // Larger buffer to bypass 256-byte skip
+        data[270] = 0x02; // AF_INET LE
         data[271] = 0x00;
         data[272..274].copy_from_slice(&[0x00, 0x50]); // Port 80
         data[274..278].copy_from_slice(&[0xC0, 0x00, 0x02, 0x01]);
@@ -278,17 +290,20 @@ mod tests {
     #[test]
     fn test_sockaddr_in_no_false_positives_from_text() {
         // Data that looks like sockaddr_in but has text-like octets in the IP
-        let mut data = vec![0xAA; 300];  // Larger buffer to bypass 256-byte skip
-        data[270] = 0x02;      // AF_INET LE
+        let mut data = vec![0xAA; 300]; // Larger buffer to bypass 256-byte skip
+        data[270] = 0x02; // AF_INET LE
         data[271] = 0x00;
         data[272..274].copy_from_slice(&[0x1F, 0x90]); // Port 8080
-        // IP with 3+ ASCII chars (E=0x45, L=0x4C, F=0x46)
+                                                       // IP with 3+ ASCII chars (E=0x45, L=0x4C, F=0x46)
         data[274..278].copy_from_slice(&[0x7F, 0x45, 0x4C, 0x46]);
 
         let results = scan_sockaddr_in(&data, 4);
 
         // Should filter out because IP looks like "ELF" text
-        assert!(results.is_empty(), "Should filter sockaddr_in with text-like IP");
+        assert!(
+            results.is_empty(),
+            "Should filter sockaddr_in with text-like IP"
+        );
     }
 
     #[test]
@@ -299,14 +314,14 @@ mod tests {
         data[5] = 0x02;
         data[6] = 0x00;
         data[7..9].copy_from_slice(&[0x1F, 0x90]); // Port 8080
-        // Use IP 172.16.1.1 (0xAC 0x10 0x01 0x01) to avoid accidental AF_INET patterns
+                                                   // Use IP 172.16.1.1 (0xAC 0x10 0x01 0x01) to avoid accidental AF_INET patterns
         data[9..13].copy_from_slice(&[0xAC, 0x10, 0x01, 0x01]); // 172.16.1.1
 
         // Second sockaddr_in at offset 50 (well-separated to avoid overlaps)
         data[50] = 0x00;
         data[51] = 0x02;
         data[52..54].copy_from_slice(&[0x00, 0x50]); // Port 80
-        // Use IP 10.20.30.40 (0x0A 0x14 0x1E 0x28) to avoid accidental AF_INET patterns
+                                                     // Use IP 10.20.30.40 (0x0A 0x14 0x1E 0x28) to avoid accidental AF_INET patterns
         data[54..58].copy_from_slice(&[0x0A, 0x14, 0x1E, 0x28]); // 10.20.30.40
 
         let elf_arm = 40; // EM_ARM from ELF header
@@ -314,7 +329,8 @@ mod tests {
 
         // Should find at least the two main structures (deduplication may occur)
         assert!(results.len() >= 2);
-        let ips: std::collections::HashSet<&str> = results.iter().map(|s| s.value.as_str()).collect();
+        let ips: std::collections::HashSet<&str> =
+            results.iter().map(|s| s.value.as_str()).collect();
         assert!(ips.contains("172.16.1.1:8080"));
         assert!(ips.contains("10.20.30.40:80"));
     }
@@ -362,17 +378,36 @@ mod tests {
 
         let results = scan_sockaddr_in(&data, 4);
 
-        let ips: std::collections::HashSet<&str> = results.iter().map(|s| s.value.as_str()).collect();
+        let ips: std::collections::HashSet<&str> =
+            results.iter().map(|s| s.value.as_str()).collect();
 
         // Should NOT find the invalid IPs
-        assert!(!ips.iter().any(|ip| ip.contains("5.20.30.65")), "Should reject 5.20.30.65 (low first octet)");
-        assert!(!ips.iter().any(|ip| ip.contains("103.214.143.0")), "Should reject 103.214.143.0 (zero octet)");
-        assert!(!ips.iter().any(|ip| ip.contains("234.0.1.112")), "Should reject 234.0.1.112 (multicast)");
-        assert!(!ips.iter().any(|ip| ip.contains("51.0.100.80")), "Should reject 51.0.100.80 (zero octet)");
-        assert!(!ips.iter().any(|ip| ip.contains("123.45.0.67")), "Should reject 123.45.0.67 (zero octet)");
+        assert!(
+            !ips.iter().any(|ip| ip.contains("5.20.30.65")),
+            "Should reject 5.20.30.65 (low first octet)"
+        );
+        assert!(
+            !ips.iter().any(|ip| ip.contains("103.214.143.0")),
+            "Should reject 103.214.143.0 (zero octet)"
+        );
+        assert!(
+            !ips.iter().any(|ip| ip.contains("234.0.1.112")),
+            "Should reject 234.0.1.112 (multicast)"
+        );
+        assert!(
+            !ips.iter().any(|ip| ip.contains("51.0.100.80")),
+            "Should reject 51.0.100.80 (zero octet)"
+        );
+        assert!(
+            !ips.iter().any(|ip| ip.contains("123.45.0.67")),
+            "Should reject 123.45.0.67 (zero octet)"
+        );
 
         // Should find the valid IP
-        assert!(ips.contains("103.214.143.214:8085"), "Should find 103.214.143.214:8085");
+        assert!(
+            ips.contains("103.214.143.214:8085"),
+            "Should find 103.214.143.214:8085"
+        );
     }
 
     #[test]
@@ -391,7 +426,10 @@ mod tests {
         let results = scan_binary_ips(&data, 4, elf_m68k, None, None);
 
         // Should return empty for M68000 binaries
-        assert!(results.is_empty(), "Should skip all results for M68000 binaries");
+        assert!(
+            results.is_empty(),
+            "Should skip all results for M68000 binaries"
+        );
     }
 
     #[test]
@@ -407,15 +445,19 @@ mod tests {
 
         // Test with various non-M68000 architectures
         let arch_samples = vec![
-            (40, "ARM"),        // EM_ARM
-            (183, "ARM64"),     // EM_AARCH64
-            (62, "x86_64"),     // EM_X86_64
-            (3, "x86"),         // EM_386
+            (40, "ARM"),    // EM_ARM
+            (183, "ARM64"), // EM_AARCH64
+            (62, "x86_64"), // EM_X86_64
+            (3, "x86"),     // EM_386
         ];
 
         for (e_machine, arch_name) in arch_samples {
             let results = scan_binary_ips(&data, 4, e_machine, None, None);
-            assert!(!results.is_empty(), "Should process {} architecture", arch_name);
+            assert!(
+                !results.is_empty(),
+                "Should process {} architecture",
+                arch_name
+            );
             assert!(
                 results.iter().any(|r| r.value.contains("192.168.1.1:8080")),
                 "Should find IP for {} architecture",

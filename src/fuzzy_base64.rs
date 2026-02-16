@@ -16,23 +16,10 @@ const MIN_BASE64_SEGMENT: usize = 32;
 const MIN_BASE64_PURITY: f32 = 0.65;
 
 /// Common obfuscation patterns found in JavaScript/VBScript malware
-const JS_CONCAT_PATTERNS: &[&str] = &[
-    "' + '",
-    "\" + \"",
-    "' +  '",
-    "\" +  \"",
-    " + ",
-    "'+",
-    "\"+",
-];
+const JS_CONCAT_PATTERNS: &[&str] = &["' + '", "\" + \"", "' +  '", "\" +  \"", " + ", "'+", "\"+"];
 
 /// Common character substitution patterns (placeholder -> real)
-const COMMON_SUBSTITUTIONS: &[(char, char)] = &[
-    ('A', '+'),
-    ('9', '/'),
-    ('_', '/'),
-    ('-', '+'),
-];
+const COMMON_SUBSTITUTIONS: &[(char, char)] = &[('A', '+'), ('9', '/'), ('_', '/'), ('-', '+')];
 
 /// Result of fuzzy base64 extraction
 #[derive(Debug)]
@@ -58,29 +45,41 @@ pub fn extract_fuzzy_base64(strings: &[ExtractedString]) -> Vec<ExtractedString>
 
         // Try different extraction strategies
         if let Some(decoded) = try_deobfuscate_js_base64(&s.value) {
-            tracing::debug!("Fuzzy base64: decoded {} bytes from offset 0x{:x} via JSObfuscation",
-                decoded.decoded.len(), s.data_offset);
+            tracing::debug!(
+                "Fuzzy base64: decoded {} bytes from offset 0x{:x} via JSObfuscation",
+                decoded.decoded.len(),
+                s.data_offset
+            );
             results.push(create_decoded_string(s, decoded, "JSObfuscation"));
         }
 
         if let Some(decoded) = try_fuzzy_extract(&s.value) {
-            tracing::debug!("Fuzzy base64: decoded {} bytes from offset 0x{:x} via FuzzyExtract",
-                decoded.decoded.len(), s.data_offset);
+            tracing::debug!(
+                "Fuzzy base64: decoded {} bytes from offset 0x{:x} via FuzzyExtract",
+                decoded.decoded.len(),
+                s.data_offset
+            );
             results.push(create_decoded_string(s, decoded, "FuzzyExtract"));
         }
 
         // Try extracting from substrings if this looks like a variable assignment
         if s.value.contains('=') && s.value.contains('"') {
             if let Some(decoded) = extract_from_assignment(&s.value) {
-                tracing::debug!("Fuzzy base64: decoded {} bytes from offset 0x{:x} via Assignment",
-                    decoded.decoded.len(), s.data_offset);
+                tracing::debug!(
+                    "Fuzzy base64: decoded {} bytes from offset 0x{:x} via Assignment",
+                    decoded.decoded.len(),
+                    s.data_offset
+                );
                 results.push(create_decoded_string(s, decoded, "Assignment"));
             }
         }
     }
 
     if !results.is_empty() {
-        tracing::info!("Fuzzy base64: extracted {} obfuscated base64 strings", results.len());
+        tracing::info!(
+            "Fuzzy base64: extracted {} obfuscated base64 strings",
+            results.len()
+        );
     }
 
     results
@@ -137,7 +136,8 @@ fn try_deobfuscate_js_base64(input: &str) -> Option<FuzzyBase64Result> {
     cleaned = cleaned.replace(',', "");
 
     // Extract only valid base64 characters
-    let base64_only: String = cleaned.chars()
+    let base64_only: String = cleaned
+        .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
         .collect();
 
@@ -158,7 +158,8 @@ fn detect_substitutions(input: &str) -> Vec<(char, char)> {
     let mut substitutions = Vec::new();
 
     // Look for single-character patterns between concatenation operators
-    let Ok(concat_re) = regex::Regex::new(r#"['"]\s*\+\s*['"]([A-Za-z0-9])['"]\s*\+\s*['"]"#) else {
+    let Ok(concat_re) = regex::Regex::new(r#"['"]\s*\+\s*['"]([A-Za-z0-9])['"]\s*\+\s*['"]"#)
+    else {
         return substitutions;
     };
 
@@ -226,7 +227,8 @@ fn try_fuzzy_extract(input: &str) -> Option<FuzzyBase64Result> {
         } else {
             // End of segment
             if current_segment.len() > best_segment.len()
-                && is_base64_like(&current_segment, MIN_BASE64_PURITY) {
+                && is_base64_like(&current_segment, MIN_BASE64_PURITY)
+            {
                 best_segment = current_segment.clone();
             }
             current_segment.clear();
@@ -235,7 +237,8 @@ fn try_fuzzy_extract(input: &str) -> Option<FuzzyBase64Result> {
 
     // Check final segment
     if current_segment.len() > best_segment.len()
-        && is_base64_like(&current_segment, MIN_BASE64_PURITY) {
+        && is_base64_like(&current_segment, MIN_BASE64_PURITY)
+    {
         best_segment = current_segment;
     }
 
@@ -244,7 +247,8 @@ fn try_fuzzy_extract(input: &str) -> Option<FuzzyBase64Result> {
     }
 
     // Clean up the segment
-    let cleaned: String = best_segment.chars()
+    let cleaned: String = best_segment
+        .chars()
         .filter(|c| is_base64_char(*c))
         .collect();
 
@@ -319,7 +323,8 @@ fn is_meaningful_decoded(s: &str) -> bool {
     }
 
     // Check for reasonable printable character ratio
-    let printable = s.chars()
+    let printable = s
+        .chars()
         .filter(|c| c.is_ascii_graphic() || c.is_whitespace())
         .count();
 
@@ -386,8 +391,10 @@ mod tests {
 
         // May not decode if requirements not met, that's OK
         if let Some(decoded) = result {
-            assert!(decoded.decoded.to_lowercase().contains("function")
-                || decoded.decoded.to_lowercase().contains("powershell"));
+            assert!(
+                decoded.decoded.to_lowercase().contains("function")
+                    || decoded.decoded.to_lowercase().contains("powershell")
+            );
         }
     }
 
@@ -405,7 +412,10 @@ mod tests {
     #[test]
     fn test_is_base64_like() {
         // Must be >= MIN_BASE64_SEGMENT (32 chars)
-        assert!(is_base64_like("SGVsbG8gV29ybGQhCg==SGVsbG8gV29ybGQhCg==", 0.8)); // 40 chars
+        assert!(is_base64_like(
+            "SGVsbG8gV29ybGQhCg==SGVsbG8gV29ybGQhCg==",
+            0.8
+        )); // 40 chars
         assert!(!is_base64_like("not base64!!!", 0.8));
         assert!(!is_base64_like("short", 0.8));
         assert!(!is_base64_like("SGVsbG8gV29ybGQhCg==", 0.8)); // Too short (20 chars < 32)

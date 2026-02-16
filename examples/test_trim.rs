@@ -4,13 +4,19 @@ fn main() {
     let original = "?2ftell application \"Finder\"\nset desktopFolder to path to desktop folder\nset documentsFolder to path to documents folder\nset srcFiles to every file of desktopFolder whose name extension is in %s\nset docsFiles to every file of documentsFolder whose name extension is in %s\nset allFiles to srcFiles &";
 
     println!("Original length: {}", original.len());
-    println!("Original first 100 chars: '{}'", original.chars().take(100).collect::<String>());
+    println!(
+        "Original first 100 chars: '{}'",
+        original.chars().take(100).collect::<String>()
+    );
     println!();
 
     let trimmed = trim_leading_garbage(original);
     println!("After trim_leading_garbage:");
     println!("  Length: {}", trimmed.len());
-    println!("  First 100 chars: '{}'", trimmed.chars().take(100).collect::<String>());
+    println!(
+        "  First 100 chars: '{}'",
+        trimmed.chars().take(100).collect::<String>()
+    );
     println!("  Bytes trimmed: {}", original.len() - trimmed.len());
     println!();
 
@@ -71,7 +77,10 @@ fn trim_leading_garbage(s: &str) -> &str {
             && !first.is_whitespace()
             && second.is_ascii_alphabetic()
         {
-            println!("  Trimmed one garbage byte: '{}' (0x{:02x})", first, first as u8);
+            println!(
+                "  Trimmed one garbage byte: '{}' (0x{:02x})",
+                first, first as u8
+            );
             return &s[first.len_utf8()..];
         }
     }

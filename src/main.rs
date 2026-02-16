@@ -492,7 +492,11 @@ fn main() -> Result<()> {
     };
 
     // Show brief status message only if we'll actually scan (file is within size limits)
-    if !cli.no_xor && !cli.debug && io::stderr().is_terminal() && data.len() <= stng::xor::MAX_XOR_SCAN_SIZE {
+    if !cli.no_xor
+        && !cli.debug
+        && io::stderr().is_terminal()
+        && data.len() <= stng::xor::MAX_XOR_SCAN_SIZE
+    {
         eprintln!("Scanning file for encoded material...");
     }
 
@@ -521,7 +525,8 @@ fn main() -> Result<()> {
                     let method_b = method_priority(strings[b].method);
 
                     // Higher priority method first
-                    method_a.cmp(&method_b)
+                    method_a
+                        .cmp(&method_b)
                         // Then longer string
                         .then_with(|| strings[a].value.len().cmp(&strings[b].value.len()))
                 })
@@ -636,8 +641,14 @@ fn main() -> Result<()> {
 
             // Sort by section's minimum offset, then by string offset within section
             strings.sort_by(|a, b| {
-                let a_section_offset = section_min_offset.get(&a.section).copied().unwrap_or(u64::MAX);
-                let b_section_offset = section_min_offset.get(&b.section).copied().unwrap_or(u64::MAX);
+                let a_section_offset = section_min_offset
+                    .get(&a.section)
+                    .copied()
+                    .unwrap_or(u64::MAX);
+                let b_section_offset = section_min_offset
+                    .get(&b.section)
+                    .copied()
+                    .unwrap_or(u64::MAX);
                 a_section_offset
                     .cmp(&b_section_offset)
                     .then(a.data_offset.cmp(&b.data_offset))
@@ -723,7 +734,8 @@ fn main() -> Result<()> {
         let mut current_arch: Option<Option<&str>> = None;
 
         // Track section offsets (first string's offset in each section)
-        let mut section_offsets: std::collections::HashMap<Option<String>, u64> = std::collections::HashMap::new();
+        let mut section_offsets: std::collections::HashMap<Option<String>, u64> =
+            std::collections::HashMap::new();
 
         // Collect high-severity items for summary
         let mut notable: Vec<&stng::ExtractedString> = Vec::new();
@@ -749,7 +761,9 @@ fn main() -> Result<()> {
 
                 // Record offset for this section (first string's offset)
                 let section_key = section.map(|s| s.to_string());
-                section_offsets.entry(section_key.clone()).or_insert(s.data_offset);
+                section_offsets
+                    .entry(section_key.clone())
+                    .or_insert(s.data_offset);
                 let section_offset = section_offsets.get(&section_key).copied().unwrap_or(0);
 
                 let section_name = section.unwrap_or("(analysis)");
@@ -757,12 +771,12 @@ fn main() -> Result<()> {
                 // Build section header with optional architecture
                 let mut section_header = if let Some(sect) = section {
                     // Try exact match first, then prefix match for section strings with trailing garbage
-                    let metadata = section_metadata.get(sect)
-                        .or_else(|| {
-                            section_metadata.iter()
-                                .find(|(k, _)| k.starts_with(sect) || sect.starts_with(k.as_str()))
-                                .map(|(_, v)| v)
-                        });
+                    let metadata = section_metadata.get(sect).or_else(|| {
+                        section_metadata
+                            .iter()
+                            .find(|(k, _)| k.starts_with(sect) || sect.starts_with(k.as_str()))
+                            .map(|(_, v)| v)
+                    });
 
                     if let Some(meta) = metadata {
                         format!("{} {}", section_name, meta)
@@ -1027,8 +1041,10 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     }
 
     // Special handling for multi-line decoded strings (XOR or obfuscated base64)
-    if (s.method == stng::StringMethod::XorDecode || s.method == stng::StringMethod::Base64ObfuscatedDecode)
-        && s.value.contains('\n') {
+    if (s.method == stng::StringMethod::XorDecode
+        || s.method == stng::StringMethod::Base64ObfuscatedDecode)
+        && s.value.contains('\n')
+    {
         let (method, classification) = if s.method == stng::StringMethod::XorDecode {
             ("xor", s.kind.short_name())
         } else {
@@ -1082,7 +1098,8 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     } else if s.method == stng::StringMethod::CodeSignature {
         // All CodeSignature strings get the "codesig" method tag
         ("codesig", s.kind.short_name())
-    } else if s.method == stng::StringMethod::WideString && s.kind != stng::StringKind::OverlayWide {
+    } else if s.method == stng::StringMethod::WideString && s.kind != stng::StringKind::OverlayWide
+    {
         ("wide", s.kind.short_name())
     } else {
         ("", s.kind.short_name())
@@ -1091,7 +1108,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
     // Get color based on method and severity
     let (color, kind_color) = if use_color {
         // XOR-decoded and obfuscated base64 content uses bright yellow to stand out
-        if s.method == stng::StringMethod::XorDecode || s.method == stng::StringMethod::Base64ObfuscatedDecode {
+        if s.method == stng::StringMethod::XorDecode
+            || s.method == stng::StringMethod::Base64ObfuscatedDecode
+        {
             (BRIGHT_YELLOW, BRIGHT_YELLOW)
         } else if s.kind == stng::StringKind::Section {
             // Section names are rarely interesting - show in dim grey
@@ -1276,7 +1295,7 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
             let is_interesting = meta.basic_blocks >= 5  // Complex branching
                 || meta.branches >= 3                     // Multiple branches
                 || meta.size > 300                        // Large function
-                || meta.noreturn == Some(true);           // Never returns
+                || meta.noreturn == Some(true); // Never returns
 
             if is_interesting {
                 let mut metadata_parts = Vec::new();

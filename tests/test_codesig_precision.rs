@@ -6,9 +6,9 @@
 //! - Random strings in __LINKEDIT are NOT marked as code signature
 //! - Only Base64 CD hashes get CodeSignatureHash kind
 
-use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
 use std::fs;
 use std::path::Path;
+use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
 
 #[test]
 fn test_imports_not_marked_as_codesig() {
@@ -24,14 +24,12 @@ fn test_imports_not_marked_as_codesig() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find all imports
-    let imports: Vec<_> = strings.iter()
+    let imports: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Import)
         .collect();
 
-    assert!(
-        !imports.is_empty(),
-        "Should find imports in /bin/ls"
-    );
+    assert!(!imports.is_empty(), "Should find imports in /bin/ls");
 
     // None of the imports should be marked as CodeSignature method
     for import in &imports {
@@ -59,7 +57,8 @@ fn test_only_base64_gets_codesig_hash_kind() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // All CodeSignatureHash strings must be base64-encoded
-    let codesig_hashes: Vec<_> = strings.iter()
+    let codesig_hashes: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::CodeSignatureHash)
         .collect();
 
@@ -115,27 +114,29 @@ fn test_linkedit_const_strings_selective_codesig() {
     // Helper to check if string is certificate-related (matches lib.rs implementation)
     fn is_certificate_string(s: &str) -> bool {
         // Certificate Authority names
-        if s.contains("Certification Authority") ||
-           s.contains("Certificate Authority") ||
-           s.contains("Root CA") {
+        if s.contains("Certification Authority")
+            || s.contains("Certificate Authority")
+            || s.contains("Root CA")
+        {
             return true;
         }
         // Code signing related
-        if s.contains("Code Signing") ||
-           s.contains("Software Signing") {
+        if s.contains("Code Signing") || s.contains("Software Signing") {
             return true;
         }
         // CRL URLs
-        if s.contains("crl.apple.com") ||
-           s.contains("appleca") ||
-           (s.contains(".crl") && s.contains("http")) {
+        if s.contains("crl.apple.com")
+            || s.contains("appleca")
+            || (s.contains(".crl") && s.contains("http"))
+        {
             return true;
         }
         // ASN.1 date format: YYMMDDHHMMSSZ or YYYYMMDDHHMMSSZ
         if s.len() >= 13 && s.ends_with('Z') {
-            let without_z = &s[..s.len()-1];
-            if without_z.chars().all(|c| c.is_ascii_digit()) &&
-               (without_z.len() == 12 || without_z.len() == 14) {
+            let without_z = &s[..s.len() - 1];
+            if without_z.chars().all(|c| c.is_ascii_digit())
+                && (without_z.len() == 12 || without_z.len() == 14)
+            {
                 return true;
             }
         }
@@ -151,27 +152,28 @@ fn test_linkedit_const_strings_selective_codesig() {
             }
         }
         // Certificate policy text
-        if s.contains("certificate is to be used") ||
-           s.contains("Reliance on this certificate") ||
-           s.contains("terms and conditions") {
+        if s.contains("certificate is to be used")
+            || s.contains("Reliance on this certificate")
+            || s.contains("terms and conditions")
+        {
             return true;
         }
         // Apple organizational units
-        if (s.contains("Apple Inc.") || s.contains("Apple Software")) &&
-           s.len() < 50 {
+        if (s.contains("Apple Inc.") || s.contains("Apple Software")) && s.len() < 50 {
             return true;
         }
         false
     }
 
     // Find Const strings in __LINKEDIT that are NOT XML/plist or certificate related
-    let non_codesig_consts: Vec<_> = strings.iter()
+    let non_codesig_consts: Vec<_> = strings
+        .iter()
         .filter(|s| {
-            s.kind == StringKind::Const &&
-            s.section.as_deref() == Some("__LINKEDIT") &&
-            !s.value.starts_with('<') &&
-            !s.value.starts_with("<?xml") &&
-            !is_certificate_string(&s.value)
+            s.kind == StringKind::Const
+                && s.section.as_deref() == Some("__LINKEDIT")
+                && !s.value.starts_with('<')
+                && !s.value.starts_with("<?xml")
+                && !is_certificate_string(&s.value)
         })
         .collect();
 
@@ -192,11 +194,14 @@ fn test_linkedit_const_strings_selective_codesig() {
     }
 
     // XML/plist strings in __LINKEDIT SHOULD be marked as CodeSignature
-    let xml_strings: Vec<_> = strings.iter()
+    let xml_strings: Vec<_> = strings
+        .iter()
         .filter(|s| {
-            s.section.as_deref() == Some("__LINKEDIT") &&
-            (s.value.starts_with("<?xml") || s.value.starts_with("<plist") ||
-             s.value.starts_with("<dict") || s.value.starts_with("<key>"))
+            s.section.as_deref() == Some("__LINKEDIT")
+                && (s.value.starts_with("<?xml")
+                    || s.value.starts_with("<plist")
+                    || s.value.starts_with("<dict")
+                    || s.value.starts_with("<key>"))
         })
         .collect();
 
@@ -227,7 +232,8 @@ fn test_codesig_method_on_signatures() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find all strings with CodeSignature method
-    let codesig_method: Vec<_> = strings.iter()
+    let codesig_method: Vec<_> = strings
+        .iter()
         .filter(|s| s.method == StringMethod::CodeSignature)
         .collect();
 
@@ -239,27 +245,29 @@ fn test_codesig_method_on_signatures() {
     // Helper to check if string is certificate-related (matches lib.rs implementation)
     fn is_certificate_string(s: &str) -> bool {
         // Certificate Authority names
-        if s.contains("Certification Authority") ||
-           s.contains("Certificate Authority") ||
-           s.contains("Root CA") {
+        if s.contains("Certification Authority")
+            || s.contains("Certificate Authority")
+            || s.contains("Root CA")
+        {
             return true;
         }
         // Code signing related
-        if s.contains("Code Signing") ||
-           s.contains("Software Signing") {
+        if s.contains("Code Signing") || s.contains("Software Signing") {
             return true;
         }
         // CRL URLs
-        if s.contains("crl.apple.com") ||
-           s.contains("appleca") ||
-           (s.contains(".crl") && s.contains("http")) {
+        if s.contains("crl.apple.com")
+            || s.contains("appleca")
+            || (s.contains(".crl") && s.contains("http"))
+        {
             return true;
         }
         // ASN.1 date format: YYMMDDHHMMSSZ or YYYYMMDDHHMMSSZ
         if s.len() >= 13 && s.ends_with('Z') {
-            let without_z = &s[..s.len()-1];
-            if without_z.chars().all(|c| c.is_ascii_digit()) &&
-               (without_z.len() == 12 || without_z.len() == 14) {
+            let without_z = &s[..s.len() - 1];
+            if without_z.chars().all(|c| c.is_ascii_digit())
+                && (without_z.len() == 12 || without_z.len() == 14)
+            {
                 return true;
             }
         }
@@ -275,14 +283,14 @@ fn test_codesig_method_on_signatures() {
             }
         }
         // Certificate policy text
-        if s.contains("certificate is to be used") ||
-           s.contains("Reliance on this certificate") ||
-           s.contains("terms and conditions") {
+        if s.contains("certificate is to be used")
+            || s.contains("Reliance on this certificate")
+            || s.contains("terms and conditions")
+        {
             return true;
         }
         // Apple organizational units
-        if (s.contains("Apple Inc.") || s.contains("Apple Software")) &&
-           s.len() < 50 {
+        if (s.contains("Apple Inc.") || s.contains("Apple Software")) && s.len() < 50 {
             return true;
         }
         false
@@ -293,19 +301,19 @@ fn test_codesig_method_on_signatures() {
     // 2. XML/plist strings from code signature blob
     // 3. Certificate strings (X.509 certificate chain components)
     for s in &codesig_method {
-        let is_valid = s.kind == StringKind::CodeSignatureHash ||
-                      s.value.starts_with("<?xml") ||
-                      s.value.starts_with("<!DOCTYPE") ||
-                      s.value.starts_with("<plist") ||
-                      s.value.starts_with("<dict") ||
-                      s.value.starts_with("</dict>") ||
-                      s.value.starts_with("</plist>") ||
-                      s.value.starts_with("<key>") ||
-                      s.value.starts_with("<array>") ||
-                      s.value.starts_with("</array>") ||
-                      s.value.starts_with("<data>") ||
-                      s.value.starts_with("</data>") ||
-                      is_certificate_string(&s.value);
+        let is_valid = s.kind == StringKind::CodeSignatureHash
+            || s.value.starts_with("<?xml")
+            || s.value.starts_with("<!DOCTYPE")
+            || s.value.starts_with("<plist")
+            || s.value.starts_with("<dict")
+            || s.value.starts_with("</dict>")
+            || s.value.starts_with("</plist>")
+            || s.value.starts_with("<key>")
+            || s.value.starts_with("<array>")
+            || s.value.starts_with("</array>")
+            || s.value.starts_with("<data>")
+            || s.value.starts_with("</data>")
+            || is_certificate_string(&s.value);
 
         assert!(
             is_valid,
@@ -331,7 +339,8 @@ fn test_no_base64_kind_in_linkedit() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find any Base64 strings in __LINKEDIT
-    let base64_in_linkedit: Vec<_> = strings.iter()
+    let base64_in_linkedit: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.section.as_deref() == Some("__LINKEDIT"))
         .collect();
 
@@ -358,7 +367,8 @@ fn test_cert_strings_not_marked_as_hashes() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find certificate-related strings (Apple Certification Authority, etc.)
-    let cert_strings: Vec<_> = strings.iter()
+    let cert_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.value.contains("Apple") && s.value.contains("Cert"))
         .collect();
 
@@ -392,20 +402,21 @@ fn test_exact_hash_count() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Count CodeSignatureHash kind strings (the actual CD hashes)
-    let hash_count = strings.iter()
+    let hash_count = strings
+        .iter()
         .filter(|s| s.kind == StringKind::CodeSignatureHash)
         .count();
 
     // /bin/ls should have exactly 2 CD hashes (one per architecture)
     assert_eq!(
-        hash_count,
-        2,
+        hash_count, 2,
         "/bin/ls should have exactly 2 CD hashes (one per arch), found {}",
         hash_count
     );
 
     // Count CodeSignature method strings (includes hashes + XML)
-    let codesig_count = strings.iter()
+    let codesig_count = strings
+        .iter()
         .filter(|s| s.method == StringMethod::CodeSignature)
         .count();
 
@@ -418,7 +429,8 @@ fn test_exact_hash_count() {
     );
 
     // Count AppId strings (bundle identifiers)
-    let appid_count = strings.iter()
+    let appid_count = strings
+        .iter()
         .filter(|s| s.kind == StringKind::AppId)
         .count();
 

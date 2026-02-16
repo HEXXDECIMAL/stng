@@ -2,8 +2,11 @@
 //!
 //! Tests core type definitions, methods, serialization, and edge cases.
 
-use stng::{BinaryInfo, ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod, StringStruct};
 use serde_json;
+use stng::{
+    BinaryInfo, ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod,
+    StringStruct,
+};
 
 // ===== ExtractedString Tests =====
 

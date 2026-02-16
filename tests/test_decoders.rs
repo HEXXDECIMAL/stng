@@ -1,7 +1,6 @@
 /// Comprehensive tests for decoder edge cases and batch processing
 /// Covers src/decoders.rs edge cases and untested code paths
 /// Targets: 45% → 80% coverage (+1.8%)
-
 use stng::decoders::{
     decode_base32_strings, decode_base64_strings, decode_base85_strings, decode_hex_strings,
     decode_unicode_escape_strings, decode_url_strings, deobfuscate_concatenation,
@@ -101,9 +100,7 @@ fn test_decode_base64_strings_batch() {
 
 #[test]
 fn test_decode_base64_strings_with_concatenation() {
-    let inputs = vec![
-        make_string(r#""SGVsbG8g" + "V29ybGQh""#, StringKind::Const),
-    ];
+    let inputs = vec![make_string(r#""SGVsbG8g" + "V29ybGQh""#, StringKind::Const)];
 
     let results = decode_base64_strings(&inputs);
 
@@ -272,7 +269,10 @@ fn test_url_no_change_after_decode() {
 
 #[test]
 fn test_url_special_chars() {
-    let input = make_string("path%2Fto%2Ffile%3Fquery%3Dvalue%26foo%3Dbar", StringKind::UrlEncoded);
+    let input = make_string(
+        "path%2Fto%2Ffile%3Fquery%3Dvalue%26foo%3Dbar",
+        StringKind::UrlEncoded,
+    );
     let results = decode_url_strings(&[input]);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "path/to/file?query=value&foo=bar");
@@ -326,7 +326,10 @@ fn test_unicode_escape_x_format() {
 
 #[test]
 fn test_unicode_escape_u_format() {
-    let input = make_string("\\u0048\\u0065\\u006c\\u006c\\u006f", StringKind::UnicodeEscaped);
+    let input = make_string(
+        "\\u0048\\u0065\\u006c\\u006c\\u006f",
+        StringKind::UnicodeEscaped,
+    );
     let results = decode_unicode_escape_strings(&[input]);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "Hello");
@@ -334,7 +337,10 @@ fn test_unicode_escape_u_format() {
 
 #[test]
 fn test_unicode_escape_U_format() {
-    let input = make_string("\\U00000048\\U00000065\\U0000006c\\U0000006c\\U0000006f", StringKind::UnicodeEscaped);
+    let input = make_string(
+        "\\U00000048\\U00000065\\U0000006c\\U0000006c\\U0000006f",
+        StringKind::UnicodeEscaped,
+    );
     let results = decode_unicode_escape_strings(&[input]);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "Hello");

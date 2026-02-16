@@ -1,7 +1,6 @@
 /// Comprehensive tests for instruction-based string extraction
 /// Covers src/instr.rs (~1,062 lines, 0% → 80% coverage)
-
-use stng::instr::{extract_inline_strings_arm64, extract_inline_strings_amd64};
+use stng::instr::{extract_inline_strings_amd64, extract_inline_strings_arm64};
 use stng::{StringKind, StringMethod};
 
 /// Test ARM64 ADRP+ADD+MOV pattern extraction
@@ -13,10 +12,8 @@ fn test_arm64_basic_string_extraction() {
 
     let text_data = vec![
         // Various ARM64 instructions
-        0x00, 0x00, 0x00, 0x90,
-        0x00, 0x40, 0x01, 0x91,
-        0x41, 0x01, 0x80, 0xD2,
-        0x00, 0x00, 0x00, 0x94,
+        0x00, 0x00, 0x00, 0x90, 0x00, 0x40, 0x01, 0x91, 0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00,
+        0x94,
     ];
 
     let mut rodata_data = vec![0u8; 0x100];
@@ -26,13 +23,7 @@ fn test_arm64_basic_string_extraction() {
     let text_addr = 0x100000;
     let rodata_addr = 0x101000;
 
-    let results = extract_inline_strings_arm64(
-        &text_data,
-        text_addr,
-        &rodata_data,
-        rodata_addr,
-        4,
-    );
+    let results = extract_inline_strings_arm64(&text_data, text_addr, &rodata_data, rodata_addr, 4);
 
     // Results may be empty with synthetic instructions - just verify no crash
     // All results should have correct method
@@ -54,16 +45,13 @@ fn test_arm64_no_patterns() {
 
     let rodata_data = vec![0u8; 0x100];
 
-    let results = extract_inline_strings_arm64(
-        &text_data,
-        0x100000,
-        &rodata_data,
-        0x101000,
-        4,
-    );
+    let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 4);
 
     // Should find nothing without BL instructions
-    assert!(results.is_empty(), "Should not find strings without BL patterns");
+    assert!(
+        results.is_empty(),
+        "Should not find strings without BL patterns"
+    );
 }
 
 /// Test ARM64 with minimum length filter
@@ -71,12 +59,9 @@ fn test_arm64_no_patterns() {
 fn test_arm64_min_length_filter() {
     let text_data = vec![
         // ADRP x0, #0x1000
-        0x00, 0x00, 0x00, 0x90,
-        // ADD x0, x0, #0
-        0x00, 0x00, 0x00, 0x91,
-        // MOV x1, #3 (very short string)
-        0x61, 0x00, 0x80, 0xD2,
-        // BL function
+        0x00, 0x00, 0x00, 0x90, // ADD x0, x0, #0
+        0x00, 0x00, 0x00, 0x91, // MOV x1, #3 (very short string)
+        0x61, 0x00, 0x80, 0xD2, // BL function
         0x00, 0x00, 0x00, 0x94,
     ];
 
@@ -105,9 +90,8 @@ fn test_amd64_basic_string_extraction() {
 
     let text_data = vec![
         // Various x86_64 instructions
-        0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00,
-        0xBE, 0x0B, 0x00, 0x00, 0x00,
-        0xE8, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00, 0xBE, 0x0B, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00,
+        0x00, 0x00,
     ];
 
     let mut rodata_data = vec![0u8; 0x200];
@@ -117,13 +101,7 @@ fn test_amd64_basic_string_extraction() {
     let text_addr = 0x100000;
     let rodata_addr = 0x101000;
 
-    let results = extract_inline_strings_amd64(
-        &text_data,
-        text_addr,
-        &rodata_data,
-        rodata_addr,
-        4,
-    );
+    let results = extract_inline_strings_amd64(&text_data, text_addr, &rodata_data, rodata_addr, 4);
 
     // Results may be empty with synthetic instructions - just verify no crash
     // All results should have correct method
@@ -146,16 +124,13 @@ fn test_amd64_no_calls() {
 
     let rodata_data = b"test string data";
 
-    let results = extract_inline_strings_amd64(
-        &text_data,
-        0x100000,
-        rodata_data,
-        0x102000,
-        4,
-    );
+    let results = extract_inline_strings_amd64(&text_data, 0x100000, rodata_data, 0x102000, 4);
 
     // Should find nothing without CALL patterns
-    assert!(results.is_empty(), "Should not find strings without CALL patterns");
+    assert!(
+        results.is_empty(),
+        "Should not find strings without CALL patterns"
+    );
 }
 
 /// Test AMD64 map key extraction (second argument)
@@ -167,10 +142,8 @@ fn test_amd64_map_key_pattern() {
 
     let text_data = vec![
         // LEA rdx, [rip + 0x50]
-        0x48, 0x8D, 0x15, 0x50, 0x00, 0x00, 0x00,
-        // MOV ecx, 7
-        0xB9, 0x07, 0x00, 0x00, 0x00,
-        // CALL
+        0x48, 0x8D, 0x15, 0x50, 0x00, 0x00, 0x00, // MOV ecx, 7
+        0xB9, 0x07, 0x00, 0x00, 0x00, // CALL
         0xE8, 0x00, 0x00, 0x00, 0x00,
     ];
 
@@ -180,13 +153,7 @@ fn test_amd64_map_key_pattern() {
     let text_addr = 0x100000;
     let rodata_addr = text_addr + text_data.len() as u64 + 0x50 - 7;
 
-    let results = extract_inline_strings_amd64(
-        &text_data,
-        text_addr,
-        &rodata_data,
-        rodata_addr,
-        4,
-    );
+    let results = extract_inline_strings_amd64(&text_data, text_addr, &rodata_data, rodata_addr, 4);
 
     // Should extract map keys from second argument position
     let map_keys: Vec<_> = results
@@ -205,22 +172,10 @@ fn test_amd64_map_key_pattern() {
 /// Test empty input handling
 #[test]
 fn test_empty_inputs() {
-    let results_arm64 = extract_inline_strings_arm64(
-        &[],
-        0x100000,
-        &[],
-        0x101000,
-        4,
-    );
+    let results_arm64 = extract_inline_strings_arm64(&[], 0x100000, &[], 0x101000, 4);
     assert!(results_arm64.is_empty());
 
-    let results_amd64 = extract_inline_strings_amd64(
-        &[],
-        0x100000,
-        &[],
-        0x101000,
-        4,
-    );
+    let results_amd64 = extract_inline_strings_amd64(&[], 0x100000, &[], 0x101000, 4);
     assert!(results_amd64.is_empty());
 }
 
@@ -230,13 +185,7 @@ fn test_truncated_instructions() {
     // ARM64: incomplete instruction (only 2 bytes)
     let text_data = vec![0x00, 0x00];
 
-    let results = extract_inline_strings_arm64(
-        &text_data,
-        0x100000,
-        &[],
-        0x101000,
-        4,
-    );
+    let results = extract_inline_strings_arm64(&text_data, 0x100000, &[], 0x101000, 4);
 
     // Should handle gracefully without panicking
     assert!(results.is_empty());
@@ -248,30 +197,24 @@ fn test_large_code_section() {
     use std::time::Instant;
 
     // Generate 64KB of random-ish code
-    let text_data: Vec<u8> = (0..65536)
-        .map(|i| (i % 256) as u8)
-        .collect();
+    let text_data: Vec<u8> = (0..65536).map(|i| (i % 256) as u8).collect();
 
     let rodata_data = vec![0u8; 4096];
 
     let start = Instant::now();
-    let results = extract_inline_strings_arm64(
-        &text_data,
-        0x100000,
-        &rodata_data,
-        0x110000,
-        4,
-    );
+    let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x110000, 4);
     let elapsed = start.elapsed();
 
     // Should complete in reasonable time (<100ms for 64KB)
     assert!(elapsed.as_millis() < 100, "Took too long: {:?}", elapsed);
 
     // Results can be empty or non-empty, just checking it doesn't crash
-    println!("Processed {} KB in {:?}, found {} strings",
-             text_data.len() / 1024,
-             elapsed,
-             results.len());
+    println!(
+        "Processed {} KB in {:?}, found {} strings",
+        text_data.len() / 1024,
+        elapsed,
+        results.len()
+    );
 }
 
 /// Test string deduplication
@@ -294,13 +237,7 @@ fn test_string_deduplication() {
     let mut rodata_data = vec![0u8; 0x1100];
     rodata_data[0..10].copy_from_slice(b"duplicated");
 
-    let results = extract_inline_strings_arm64(
-        &text_data,
-        0x100000,
-        &rodata_data,
-        0x101000,
-        4,
-    );
+    let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 4);
 
     // Should deduplicate same string value
     let unique_strings: std::collections::HashSet<_> =
@@ -316,21 +253,13 @@ fn test_out_of_bounds_addresses() {
     // Pattern that references address outside rodata
     let text_data = vec![
         // ADRP x0, #0xFFFFFFFF (huge offset)
-        0x00, 0x00, 0xFF, 0xFF,
-        0x00, 0x00, 0x00, 0x91,
-        0x41, 0x01, 0x80, 0xD2,
-        0x00, 0x00, 0x00, 0x94,
+        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x91, 0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00,
+        0x94,
     ];
 
     let rodata_data = vec![0u8; 0x100];
 
-    let results = extract_inline_strings_arm64(
-        &text_data,
-        0x100000,
-        &rodata_data,
-        0x101000,
-        4,
-    );
+    let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 4);
 
     // Should handle out-of-bounds gracefully
     // Either no results or only valid strings
@@ -343,16 +272,13 @@ fn test_out_of_bounds_addresses() {
 #[test]
 fn test_min_length_enforcement() {
     let text_arm64 = vec![
-        0x00, 0x00, 0x00, 0x90,
-        0x00, 0x00, 0x00, 0x91,
-        0x41, 0x01, 0x80, 0xD2,
-        0x00, 0x00, 0x00, 0x94,
+        0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91, 0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00,
+        0x94,
     ];
 
     let text_amd64 = vec![
-        0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00,
-        0xBE, 0x0B, 0x00, 0x00, 0x00,
-        0xE8, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00, 0xBE, 0x0B, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00,
+        0x00, 0x00,
     ];
 
     let mut rodata = vec![0u8; 0x200];
@@ -360,13 +286,19 @@ fn test_min_length_enforcement() {
 
     let min_len = 25;
 
-    let results_arm = extract_inline_strings_arm64(&text_arm64, 0x100000, &rodata, 0x101000, min_len);
-    let results_amd = extract_inline_strings_amd64(&text_amd64, 0x100000, &rodata, 0x101000, min_len);
+    let results_arm =
+        extract_inline_strings_arm64(&text_arm64, 0x100000, &rodata, 0x101000, min_len);
+    let results_amd =
+        extract_inline_strings_amd64(&text_amd64, 0x100000, &rodata, 0x101000, min_len);
 
     // All results should meet minimum length
     for s in results_arm.iter().chain(results_amd.iter()) {
-        assert!(s.value.len() >= min_len,
-                "String '{}' is {} chars, expected >= {}",
-                s.value, s.value.len(), min_len);
+        assert!(
+            s.value.len() >= min_len,
+            "String '{}' is {} chars, expected >= {}",
+            s.value,
+            s.value.len(),
+            min_len
+        );
     }
 }

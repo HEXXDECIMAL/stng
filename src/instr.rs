@@ -197,8 +197,8 @@ fn extract_arm64_string_pattern(
                     section_size: None,
                     section_executable: None,
                     section_writable: None,
-                        architecture: None,
-                        function_meta: None,
+                    architecture: None,
+                    function_meta: None,
                 });
             }
         }
@@ -539,9 +539,9 @@ fn extract_amd64_first_arg_string(
                         kind: final_kind,
                         library: None,
                         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
                         architecture: None,
                         function_meta: None,
                     });
@@ -639,9 +639,9 @@ fn extract_amd64_key_string(
                         kind: final_kind,
                         library: None,
                         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
                         architecture: None,
                         function_meta: None,
                     });
@@ -738,9 +738,9 @@ fn extract_amd64_value_string(
                         kind: final_kind,
                         library: None,
                         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
                         architecture: None,
                         function_meta: None,
                     });
@@ -764,8 +764,8 @@ fn is_valid_utf8_string(s: &str) -> bool {
         .chars()
         .filter(|&c| {
             // ASCII printable range OR Unicode alphabetic/numeric (includes Cyrillic, Chinese, Arabic, etc.)
-            ('\x20'..='\x7E').contains(&c) ||
-            (!c.is_ascii() && (c.is_alphabetic() || c.is_numeric()))
+            ('\x20'..='\x7E').contains(&c)
+                || (!c.is_ascii() && (c.is_alphabetic() || c.is_numeric()))
         })
         .count();
 

@@ -5,7 +5,7 @@ use crate::types::{ExtractedString, StringKind, StringMethod};
 use goblin::mach::MachO;
 use std::collections::HashSet;
 
-pub fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedString> {
+pub fn extract_macho_imports(macho: &MachO<'_>, min_length: usize) -> Vec<ExtractedString> {
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -65,7 +65,7 @@ pub fn extract_macho_imports(macho: &MachO, min_length: usize) -> Vec<ExtractedS
 }
 
 /// Extract imports from an ELF binary.
-pub fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> Vec<ExtractedString> {
+pub fn extract_elf_imports(elf: &goblin::elf::Elf<'_>, min_length: usize) -> Vec<ExtractedString> {
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -121,11 +121,11 @@ pub fn extract_elf_imports(elf: &goblin::elf::Elf, min_length: usize) -> Vec<Ext
             kind,
             library,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         });
     }
 

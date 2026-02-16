@@ -53,9 +53,7 @@ fn test_crypto_wallet_paths_from_brew_agent() {
     let mut missing = Vec::new();
 
     for (wallet_path, description) in &expected_wallets {
-        let found = xor_strings
-            .iter()
-            .any(|s| s.contains(wallet_path));
+        let found = xor_strings.iter().any(|s| s.contains(wallet_path));
 
         if found {
             found_count += 1;
@@ -68,7 +66,11 @@ fn test_crypto_wallet_paths_from_brew_agent() {
 
     // Print summary
     println!("\n=== Summary ===");
-    println!("Found {}/{} expected wallet paths", found_count, expected_wallets.len());
+    println!(
+        "Found {}/{} expected wallet paths",
+        found_count,
+        expected_wallets.len()
+    );
 
     if !missing.is_empty() {
         eprintln!("\nMissing {} wallet paths:", missing.len());
@@ -117,7 +119,10 @@ fn test_wallet_keyword_detection() {
         .map(|s| s.value.as_str())
         .collect();
 
-    println!("Found {} strings containing 'wallet':", wallet_strings.len());
+    println!(
+        "Found {} strings containing 'wallet':",
+        wallet_strings.len()
+    );
     for s in wallet_strings.iter().take(10) {
         println!("  - {}", s);
     }
@@ -161,9 +166,7 @@ fn test_crypto_terms_detection() {
     let crypto_terms = ["ethereum", "exodus", "electrum", "monero"];
 
     for term in &crypto_terms {
-        let found = xor_strings
-            .iter()
-            .any(|s| s.to_lowercase().contains(term));
+        let found = xor_strings.iter().any(|s| s.to_lowercase().contains(term));
 
         assert!(
             found,

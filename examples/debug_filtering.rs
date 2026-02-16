@@ -10,13 +10,19 @@ fn main() {
 
     println!("=== Testing the actual multiline AppleScript string ===");
     println!("Length: {} bytes", multiline_applescript.len());
-    println!("First 100 chars: '{}'", multiline_applescript.chars().take(100).collect::<String>());
+    println!(
+        "First 100 chars: '{}'",
+        multiline_applescript.chars().take(100).collect::<String>()
+    );
     println!();
 
     // Test classify_xor_string
     println!("Testing classify_xor_string:");
     let classified = classify_test(multiline_applescript);
-    println!("  Result: {}", if classified { "Some(ShellCmd)" } else { "None" });
+    println!(
+        "  Result: {}",
+        if classified { "Some(ShellCmd)" } else { "None" }
+    );
     println!();
 
     // Test is_garbage (simplified version from validation.rs)
@@ -41,9 +47,18 @@ fn classify_test(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
 
     let applescript_indicators = [
-        "set ", "tell application", "path to desktop", "path to documents",
-        "every file of", "whose name extension", "posix file", "end tell",
-        "do shell script", "display dialog", "choose file", "choose folder",
+        "set ",
+        "tell application",
+        "path to desktop",
+        "path to documents",
+        "every file of",
+        "whose name extension",
+        "posix file",
+        "end tell",
+        "do shell script",
+        "display dialog",
+        "choose file",
+        "choose folder",
     ];
 
     for indicator in &applescript_indicators {
@@ -84,13 +99,21 @@ fn is_garbage_test(s: &str) -> bool {
                 })
                 .count();
             let percentage = simple_chars * 100 / bytes.len();
-            println!("    Simple chars: {}/{} = {}%", simple_chars, bytes.len(), percentage);
+            println!(
+                "    Simple chars: {}/{} = {}%",
+                simple_chars,
+                bytes.len(),
+                percentage
+            );
             if percentage >= 80 {
                 println!("    ✓ Fast path PASS (>=80% simple chars)");
                 return false;
             }
         } else {
-            println!("    First char '{}' (0x{:02x}) is not alphabetic", first as char, first);
+            println!(
+                "    First char '{}' (0x{:02x}) is not alphabetic",
+                first as char, first
+            );
         }
     }
 

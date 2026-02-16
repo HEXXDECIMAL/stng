@@ -73,7 +73,10 @@ fn test_string_wrapping_long_lines() {
     let output = run_stng(&[test_file]);
 
     // Count how many times we see offset 0 (wrapped lines)
-    let offset_0_count = output.lines().filter(|line| line.trim().starts_with("0 ")).count();
+    let offset_0_count = output
+        .lines()
+        .filter(|line| line.trim().starts_with("0 "))
+        .count();
 
     // For a 200-character line with typical terminal width (120), we should see wrapping
     // The exact count depends on terminal width and prefix columns

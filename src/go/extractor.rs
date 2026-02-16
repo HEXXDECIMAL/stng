@@ -24,7 +24,7 @@ impl GoStringExtractor {
     }
 
     /// Extract strings from a Mach-O binary.
-    pub fn extract_macho(&self, macho: &MachO, _data: &[u8]) -> Vec<ExtractedString> {
+    pub fn extract_macho(&self, macho: &MachO<'_>, _data: &[u8]) -> Vec<ExtractedString> {
         let mut strings = Vec::new();
         // Mach-O is always little-endian on modern systems (x86_64, ARM64)
         let info = BinaryInfo::from_macho(macho.is_64);
@@ -129,7 +129,7 @@ impl GoStringExtractor {
     }
 
     /// Extract strings from an ELF binary.
-    pub fn extract_elf(&self, elf: &Elf, data: &[u8]) -> Vec<ExtractedString> {
+    pub fn extract_elf(&self, elf: &Elf<'_>, data: &[u8]) -> Vec<ExtractedString> {
         let mut strings = Vec::new();
         let info = BinaryInfo::from_elf(elf.is_64, elf.little_endian);
 
@@ -229,7 +229,7 @@ impl GoStringExtractor {
     }
 
     /// Extract strings from a PE binary.
-    pub fn extract_pe(&self, pe: &PE, data: &[u8]) -> Vec<ExtractedString> {
+    pub fn extract_pe(&self, pe: &PE<'_>, data: &[u8]) -> Vec<ExtractedString> {
         let mut strings = Vec::new();
         let info = BinaryInfo::from_pe(pe.is_64);
 
@@ -287,7 +287,7 @@ impl GoStringExtractor {
     }
 
     /// Find .rodata section in ELF
-    fn find_rodata_elf<'a>(&self, elf: &Elf, data: &'a [u8]) -> Option<(u64, &'a [u8])> {
+    fn find_rodata_elf<'a>(&self, elf: &Elf<'_>, data: &'a [u8]) -> Option<(u64, &'a [u8])> {
         // Try .rodata first
         let rodata_sh = elf
             .section_headers
@@ -305,7 +305,7 @@ impl GoStringExtractor {
     }
 
     /// Find .rodata or .rdata section in PE
-    fn find_rodata_pe<'a>(&self, pe: &PE, data: &'a [u8]) -> Option<(u64, &'a [u8])> {
+    fn find_rodata_pe<'a>(&self, pe: &PE<'_>, data: &'a [u8]) -> Option<(u64, &'a [u8])> {
         // Try .rodata or .rdata
         for section in &pe.sections {
             let name = String::from_utf8_lossy(&section.name);
@@ -347,11 +347,11 @@ impl GoStringExtractor {
                         kind: super::classifier::classify_gopclntab_string(&current),
                         library: None,
                         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
+                        architecture: None,
+                        function_meta: None,
                     });
                 }
                 current.clear();
@@ -374,11 +374,11 @@ impl GoStringExtractor {
                 kind: StringKind::FuncName,
                 library: None,
                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             });
         }
 

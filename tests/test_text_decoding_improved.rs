@@ -113,7 +113,8 @@ fn test_embedded_base64_regex_pattern() {
     let re = Regex::new(r"([A-Za-z0-9+/]{12,}={0,2})").unwrap();
 
     let command = r#"eval "$(echo SGVsbG8gV29ybGQ= | base64 -d)""#;
-    let captures: Vec<_> = re.captures_iter(command)
+    let captures: Vec<_> = re
+        .captures_iter(command)
         .filter_map(|cap| cap.get(1))
         .map(|m| m.as_str())
         .collect();
@@ -130,13 +131,16 @@ fn test_embedded_base64_in_variable_assignment() {
     let re = Regex::new(r"([A-Za-z0-9+/]{12,}={0,2})").unwrap();
 
     let assignment = r#"token="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9""#;
-    let captures: Vec<_> = re.captures_iter(assignment)
+    let captures: Vec<_> = re
+        .captures_iter(assignment)
         .filter_map(|cap| cap.get(1))
         .map(|m| m.as_str())
         .collect();
 
     assert!(!captures.is_empty());
-    assert!(captures.iter().any(|s| s.starts_with("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")));
+    assert!(captures
+        .iter()
+        .any(|s| s.starts_with("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")));
 }
 
 #[test]
@@ -203,7 +207,8 @@ fn test_multiple_base64_in_one_line() {
 
     // Use longer base64 strings that meet the 12-char minimum
     let line = "token1=SGVsbG8gV29ybGQ= token2=VGhpcyBpcyBhIHRlc3Q=";
-    let captures: Vec<_> = re.captures_iter(line)
+    let captures: Vec<_> = re
+        .captures_iter(line)
         .filter_map(|cap| cap.get(1))
         .map(|m| m.as_str())
         .collect();
@@ -222,7 +227,8 @@ fn test_base64_in_json() {
 
     // Use base64 strings that meet the 12-char minimum
     let json = r#"{"token":"SGVsbG8gV29ybGQ=","data":"VGhpcyBpcyBhIHRlc3Q="}"#;
-    let captures: Vec<_> = re.captures_iter(json)
+    let captures: Vec<_> = re
+        .captures_iter(json)
         .filter_map(|cap| cap.get(1))
         .map(|m| m.as_str())
         .collect();
@@ -240,9 +246,9 @@ fn test_base64_padding_variations() {
 
     // Test different padding scenarios
     let test_cases = vec![
-        ("SGVsbG8=", "Hello"),      // One padding
+        ("SGVsbG8=", "Hello"),               // One padding
         ("SGVsbG8gV29ybGQ=", "Hello World"), // One padding
-        ("Zm9vYmFy", "foobar"),     // No padding
+        ("Zm9vYmFy", "foobar"),              // No padding
     ];
 
     for (encoded, expected) in test_cases {

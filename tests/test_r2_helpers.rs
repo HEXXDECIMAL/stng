@@ -1,6 +1,5 @@
 /// Additional tests for r2 module helper functions
 /// Covers src/r2.rs helper functions and edge cases
-
 use std::fs;
 use std::path::PathBuf;
 
@@ -198,7 +197,10 @@ fn test_extract_function_metadata_small_file() {
         // Verify structure if functions were found
         for (name, meta) in metadata {
             assert!(!name.is_empty(), "Function name should not be empty");
-            assert!(meta.size > 0 || meta.size == 0, "Size should be non-negative");
+            assert!(
+                meta.size > 0 || meta.size == 0,
+                "Size should be non-negative"
+            );
         }
     }
 
@@ -271,7 +273,10 @@ fn test_verify_xor_keys_invalid_lengths() {
     let result = stng::r2::verify_xor_keys(file_path, &candidates);
 
     // Should return empty since all candidates are filtered out by length
-    assert!(result.is_empty(), "Should filter out invalid length candidates");
+    assert!(
+        result.is_empty(),
+        "Should filter out invalid length candidates"
+    );
 
     let _ = fs::remove_file(temp_path);
 }
@@ -284,7 +289,10 @@ fn test_extract_connect_addrs_nonexistent() {
     let result = stng::r2::extract_connect_addrs("/nonexistent/path.bin", fake_data);
 
     // Should return empty for non-existent file
-    assert!(result.is_empty(), "Should return empty for non-existent file");
+    assert!(
+        result.is_empty(),
+        "Should return empty for non-existent file"
+    );
 }
 
 /// Test extract_connect_addrs with large file (should use fast scan)

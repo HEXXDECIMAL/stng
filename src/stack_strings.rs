@@ -98,7 +98,7 @@ impl<'a> StackStringExtractor<'a> {
 
             // --- 1. mov reg, imm ---
             // B8+rd: mov r32/r64, imm
-            if opcode >= 0xB8 && opcode <= 0xBF {
+            if (0xB8..=0xBF).contains(&opcode) {
                 let reg = (opcode & 0x07) + if (rex & 1) != 0 { 8 } else { 0 };
                 let is_64 = (rex & 8) != 0;
                 let imm_len = if is_64 { 8 } else { 4 };
@@ -340,7 +340,7 @@ impl<'a> StackStringExtractor<'a> {
             let disp32 = u32::from_le_bytes(
                 self.data[offset + len..offset + len + 4]
                     .try_into()
-                    .unwrap(),
+                    .expect("bounds checked above"),
             );
             disp = disp32 as i32 as i64;
             len += 4;
@@ -386,11 +386,11 @@ impl<'a> StackStringExtractor<'a> {
                 kind: StringKind::StackString,
                 library: None,
                 fragments: Some(Vec::new()),
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                section_size: None,
+                section_executable: None,
+                section_writable: None,
+                architecture: None,
+                function_meta: None,
             };
 
             // We need to initialize 'current' with the first write
@@ -475,8 +475,8 @@ impl<'a> StackStringExtractor<'a> {
                         section_size: None,
                         section_executable: None,
                         section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                        architecture: None,
+                        function_meta: None,
                     };
                     current_end_disp = w.disp + w.string.len() as i64;
                 }
@@ -505,7 +505,7 @@ impl<'a> StackStringExtractor<'a> {
         let mut current_group = vec![strings.remove(0)];
 
         for next_str in strings {
-            let last = current_group.last().unwrap();
+            let last = current_group.last().expect("current_group is never empty");
 
             // Check if this string is adjacent to the last one (within a small gap)
             // and both are short (suggesting character-by-character assembly)
@@ -516,7 +516,7 @@ impl<'a> StackStringExtractor<'a> {
             // 1. Strings are adjacent or very close (gap < 8 bytes, accounting for instruction padding)
             // 2. At least one of them is short (< 4 bytes, suggesting fragments)
             // 3. Neither is suspiciously garbage-like
-            if gap >= -4 && gap < 8 && (last.value.len() < 4 || next_str.value.len() < 4) {
+            if (-4..8).contains(&gap) && (last.value.len() < 4 || next_str.value.len() < 4) {
                 // They likely belong together
                 current_group.push(next_str);
             } else {
@@ -556,8 +556,8 @@ impl<'a> StackStringExtractor<'a> {
                 section_size: None,
                 section_executable: None,
                 section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                architecture: None,
+                function_meta: None,
             };
         }
 
@@ -569,7 +569,7 @@ impl<'a> StackStringExtractor<'a> {
         let first_offset = group[0].data_offset;
         let mut merged_fragments = Vec::new();
 
-        for (_idx, s) in group.iter().enumerate() {
+        for s in group.iter() {
             merged_value.push_str(&s.value);
             if let Some(frags) = &s.fragments {
                 merged_fragments.extend(frags.clone());

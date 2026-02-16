@@ -5,9 +5,9 @@
 //! - Code signature hashes (CD hashes) in __LINKEDIT section
 //! - Application identifiers and individual entitlement keys
 
-use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
 use std::fs;
 use std::path::Path;
+use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
 
 #[test]
 fn test_codesig_base64_categorization() {
@@ -23,7 +23,8 @@ fn test_codesig_base64_categorization() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find all code signature hash strings
-    let codesig_hashes: Vec<_> = strings.iter()
+    let codesig_hashes: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::CodeSignatureHash)
         .collect();
 
@@ -61,8 +62,10 @@ fn test_codesig_base64_categorization() {
     use base64::Engine;
 
     for s in &codesig_hashes {
-        let decoded = BASE64.decode(s.value.trim())
-            .expect(&format!("Failed to decode CD hash at 0x{:x}", s.data_offset));
+        let decoded = BASE64.decode(s.value.trim()).expect(&format!(
+            "Failed to decode CD hash at 0x{:x}",
+            s.data_offset
+        ));
 
         assert_eq!(
             decoded.len(),
@@ -88,7 +91,8 @@ fn test_entitlements_extraction_brew_agent() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find entitlements XML
-    let entitlements: Vec<_> = strings.iter()
+    let entitlements: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::EntitlementsXml)
         .collect();
 
@@ -151,7 +155,8 @@ fn test_entitlements_extraction_securityd() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find entitlements XML
-    let entitlements: Vec<_> = strings.iter()
+    let entitlements: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::EntitlementsXml)
         .collect();
 
@@ -195,11 +200,23 @@ fn test_entitlements_extraction_securityd() {
     );
 
     // Verify it's valid XML structure
-    assert!(ent.value.starts_with("<?xml"), "Should start with XML declaration");
-    assert!(ent.value.contains("<!DOCTYPE plist"), "Should have plist DOCTYPE");
-    assert!(ent.value.contains("<plist version=\"1.0\">"), "Should have plist root");
+    assert!(
+        ent.value.starts_with("<?xml"),
+        "Should start with XML declaration"
+    );
+    assert!(
+        ent.value.contains("<!DOCTYPE plist"),
+        "Should have plist DOCTYPE"
+    );
+    assert!(
+        ent.value.contains("<plist version=\"1.0\">"),
+        "Should have plist root"
+    );
     assert!(ent.value.contains("<dict>"), "Should have dict element");
-    assert!(ent.value.ends_with("</plist>"), "Should end with closing plist");
+    assert!(
+        ent.value.ends_with("</plist>"),
+        "Should end with closing plist"
+    );
 }
 
 #[test]
@@ -216,8 +233,11 @@ fn test_linkedit_section_enrichment() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Find all CodeSignatureHash strings in __LINKEDIT section
-    let linkedit_hashes: Vec<_> = strings.iter()
-        .filter(|s| s.section.as_deref() == Some("__LINKEDIT") && s.kind == StringKind::CodeSignatureHash)
+    let linkedit_hashes: Vec<_> = strings
+        .iter()
+        .filter(|s| {
+            s.section.as_deref() == Some("__LINKEDIT") && s.kind == StringKind::CodeSignatureHash
+        })
         .collect();
 
     assert!(
@@ -251,7 +271,8 @@ fn test_codesig_hash_format() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Only check CodeSignatureHash kind (not all CodeSignature method strings)
-    let codesig_hashes: Vec<_> = strings.iter()
+    let codesig_hashes: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::CodeSignatureHash)
         .collect();
 
@@ -280,7 +301,9 @@ fn test_codesig_hash_format() {
         };
 
         assert!(
-            base64_part.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='),
+            base64_part
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='),
             "Code signature hash should contain only valid base64 characters, got: {}",
             base64_part
         );
@@ -301,11 +324,16 @@ fn test_entitlements_vs_codesign_count() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Count entitlement keys in our extraction
-    let entitlements: Vec<_> = strings.iter()
+    let entitlements: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::EntitlementsXml)
         .collect();
 
-    assert_eq!(entitlements.len(), 1, "Should have one entitlements XML block");
+    assert_eq!(
+        entitlements.len(),
+        1,
+        "Should have one entitlements XML block"
+    );
 
     let ent_xml = &entitlements[0].value;
 
@@ -342,7 +370,8 @@ fn test_no_entitlements_in_clean_binaries() {
     let opts = ExtractOptions::new(10);
     let strings = extract_strings_with_options(&data, &opts);
 
-    let entitlements: Vec<_> = strings.iter()
+    let entitlements: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::EntitlementsXml)
         .collect();
 
@@ -367,11 +396,16 @@ fn test_entitlements_offset_accuracy() {
     let opts = ExtractOptions::new(10);
     let strings = extract_strings_with_options(&data, &opts);
 
-    let entitlements: Vec<_> = strings.iter()
+    let entitlements: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::EntitlementsXml)
         .collect();
 
-    assert_eq!(entitlements.len(), 1, "Should have exactly one entitlements block");
+    assert_eq!(
+        entitlements.len(),
+        1,
+        "Should have exactly one entitlements block"
+    );
 
     let ent = entitlements[0];
 
@@ -407,8 +441,11 @@ fn test_codesig_hashes_are_sha1() {
     let opts = ExtractOptions::new(10);
     let strings = extract_strings_with_options(&data, &opts);
 
-    let codesig_hashes: Vec<_> = strings.iter()
-        .filter(|s| s.method == StringMethod::CodeSignature && s.kind == StringKind::CodeSignatureHash)
+    let codesig_hashes: Vec<_> = strings
+        .iter()
+        .filter(|s| {
+            s.method == StringMethod::CodeSignature && s.kind == StringKind::CodeSignatureHash
+        })
         .collect();
 
     if codesig_hashes.is_empty() {
@@ -427,8 +464,10 @@ fn test_codesig_hashes_are_sha1() {
             hash.value.as_str()
         };
 
-        let decoded = BASE64.decode(base64_part)
-            .expect(&format!("Failed to decode hash at 0x{:x}", hash.data_offset));
+        let decoded = BASE64.decode(base64_part).expect(&format!(
+            "Failed to decode hash at 0x{:x}",
+            hash.data_offset
+        ));
 
         // CD hashes are SHA-1 (20 bytes) or SHA-256 (32 bytes)
         assert!(

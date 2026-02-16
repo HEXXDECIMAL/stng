@@ -192,7 +192,7 @@ pub fn decode_hex_strings(strings: &[ExtractedString]) -> Vec<ExtractedString> {
 
 /// Attempt to decode a single hex-encoded string.
 fn decode_hex_string(s: &ExtractedString) -> Option<ExtractedString> {
-    if s.value.len() < MIN_HEX_LENGTH || s.value.len() % 2 != 0 {
+    if s.value.len() < MIN_HEX_LENGTH || !s.value.len().is_multiple_of(2) {
         return None;
     }
 
@@ -251,7 +251,7 @@ pub fn decode_url_strings(strings: &[ExtractedString]) -> Vec<ExtractedString> {
     strings
         .iter()
         .filter(|s| s.kind == StringKind::UrlEncoded || is_likely_url_encoded(&s.value))
-        .filter_map(|s| decode_url_string(s))
+        .filter_map(decode_url_string)
         .collect()
 }
 
@@ -301,7 +301,7 @@ pub fn decode_unicode_escape_strings(strings: &[ExtractedString]) -> Vec<Extract
     strings
         .iter()
         .filter(|s| s.kind == StringKind::UnicodeEscaped || is_likely_unicode_escaped(&s.value))
-        .filter_map(|s| decode_unicode_escape_string(s))
+        .filter_map(decode_unicode_escape_string)
         .collect()
 }
 
@@ -402,7 +402,7 @@ fn decode_unicode_escapes(s: &str) -> Option<String> {
 }
 
 /// Parse a hex escape sequence of the specified length.
-fn parse_hex_escape(chars: &mut std::iter::Peekable<std::str::Chars>, len: usize) -> Option<char> {
+fn parse_hex_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, len: usize) -> Option<char> {
     let hex_str: String = chars.take(len).collect();
     if hex_str.len() != len {
         return None;
@@ -429,7 +429,7 @@ fn is_likely_base64(s: &str) -> bool {
 
 /// Check if a string looks like hex-encoded data.
 fn is_likely_hex(s: &str) -> bool {
-    if s.len() < MIN_HEX_LENGTH || s.len() % 2 != 0 {
+    if s.len() < MIN_HEX_LENGTH || !s.len().is_multiple_of(2) {
         return false;
     }
 
@@ -473,7 +473,7 @@ pub fn decode_base32_strings(strings: &[ExtractedString]) -> Vec<ExtractedString
     strings
         .iter()
         .filter(|s| s.kind == StringKind::Base32 || is_likely_base32(&s.value))
-        .filter_map(|s| decode_base32_string(s))
+        .filter_map(decode_base32_string)
         .collect()
 }
 
@@ -542,7 +542,7 @@ pub fn decode_base85_strings(strings: &[ExtractedString]) -> Vec<ExtractedString
     strings
         .iter()
         .filter(|s| s.kind == StringKind::Base85 || is_likely_base85(&s.value))
-        .filter_map(|s| decode_base85_string(s))
+        .filter_map(decode_base85_string)
         .collect()
 }
 

@@ -14,7 +14,7 @@ fn make_test_data(content: &str) -> Vec<u8> {
     // Add some binary header
     data.extend_from_slice(&[0x7f, 0x45, 0x4c, 0x46]); // ELF magic
     data.extend_from_slice(&[0; 100]); // Padding
-    // Add the content
+                                       // Add the content
     data.extend_from_slice(content.as_bytes());
     // Add trailing data
     data.extend_from_slice(&[0; 100]);
@@ -31,7 +31,8 @@ fn test_long_valid_base64_detection() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should detect as base64
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.value.len() > 50)
         .collect();
 
@@ -51,11 +52,11 @@ fn test_base64_decoding_enabled() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should either detect as base64 or decode it
-    let has_base64_or_decoded = strings.iter().any(|s|
-        s.kind == StringKind::Base64 ||
-        s.method == StringMethod::Base64Decode ||
-        s.value.contains("Hello World")
-    );
+    let has_base64_or_decoded = strings.iter().any(|s| {
+        s.kind == StringKind::Base64
+            || s.method == StringMethod::Base64Decode
+            || s.value.contains("Hello World")
+    });
 
     assert!(
         has_base64_or_decoded,
@@ -73,7 +74,8 @@ fn test_no_false_positive_on_plain_text() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should find the plain string but not classify it as base64
-    let wrong_base64: Vec<_> = strings.iter()
+    let wrong_base64: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.value.contains("regular"))
         .collect();
 
@@ -93,7 +95,8 @@ fn test_invalid_base64_chars_rejected() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should not detect as base64
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64)
         .collect();
 
@@ -114,15 +117,12 @@ fn test_base64_in_http_auth_header() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should find the base64 credential
-    let has_base64 = strings.iter().any(|s|
-        s.value.contains("dXNlcjpwYXNzd29yZA") ||
-        (s.method == StringMethod::Base64Decode && s.value.contains("user:password"))
-    );
+    let has_base64 = strings.iter().any(|s| {
+        s.value.contains("dXNlcjpwYXNzd29yZA")
+            || (s.method == StringMethod::Base64Decode && s.value.contains("user:password"))
+    });
 
-    assert!(
-        has_base64,
-        "Should extract base64 from HTTP auth header"
-    );
+    assert!(has_base64, "Should extract base64 from HTTP auth header");
 }
 
 #[test]
@@ -135,7 +135,8 @@ fn test_malware_pe_header_base64() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should detect as base64
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.value.contains("TVq"))
         .collect();
 
@@ -155,7 +156,8 @@ fn test_base64_minimum_length_threshold() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should not detect very short strings as base64
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.value == "abc=")
         .collect();
 
@@ -187,7 +189,8 @@ fn test_binary_only_no_false_positives() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should find no base64
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64)
         .collect();
 
@@ -207,7 +210,8 @@ fn test_base64_with_standard_padding() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should detect as base64
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.value.len() > 30)
         .collect();
 
@@ -227,7 +231,8 @@ fn test_multiple_base64_in_data() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should detect at least one base64 string
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.value.len() > 30)
         .collect();
 
@@ -247,7 +252,8 @@ fn test_base64_quality_threshold() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should not detect low quality strings as base64
-    let base64_strings: Vec<_> = strings.iter()
+    let base64_strings: Vec<_> = strings
+        .iter()
         .filter(|s| s.kind == StringKind::Base64 && s.value.contains("!!!"))
         .collect();
 
@@ -267,15 +273,11 @@ fn test_pem_certificate_base64() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should find base64 sections
-    let has_base64 = strings.iter().any(|s|
-        s.kind == StringKind::Base64 ||
-        s.value.contains("MIIDXTCCAkWgAw")
-    );
+    let has_base64 = strings
+        .iter()
+        .any(|s| s.kind == StringKind::Base64 || s.value.contains("MIIDXTCCAkWgAw"));
 
-    assert!(
-        has_base64,
-        "Should extract base64 from PEM certificate"
-    );
+    assert!(has_base64, "Should extract base64 from PEM certificate");
 }
 
 #[test]
@@ -288,10 +290,9 @@ fn test_jwt_token_base64() {
     let strings = extract_strings_with_options(&data, &opts);
 
     // Should find the JWT components
-    let has_jwt_parts = strings.iter().any(|s|
-        s.value.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") ||
-        s.kind == StringKind::Base64
-    );
+    let has_jwt_parts = strings.iter().any(|s| {
+        s.value.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") || s.kind == StringKind::Base64
+    });
 
     assert!(
         has_jwt_parts,
@@ -323,10 +324,10 @@ fn test_base64_offset_tracking() {
 fn test_base64_no_crash_on_malformed() {
     // Malformed base64-like strings should not crash
     let malformed = vec![
-        "AAAA====",  // Too much padding
-        "A",  // Too short
-        "AA",  // Incomplete
-        "!!!BASE64!!!",  // Invalid chars
+        "AAAA====",     // Too much padding
+        "A",            // Too short
+        "AA",           // Incomplete
+        "!!!BASE64!!!", // Invalid chars
     ];
 
     for test_case in malformed {

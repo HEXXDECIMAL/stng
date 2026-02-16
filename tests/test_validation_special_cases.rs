@@ -192,11 +192,11 @@ use stng::is_garbage;
 fn test_c2_url_not_garbage() {
     // The actual C2 URL from brew_agent malware
     let c2_url = "http://46.30.191.141n;uJ";
-    
+
     println!("\nTesting: {:?}", c2_url);
     let result = is_garbage(c2_url);
     println!("is_garbage() returned: {}", result);
-    
+
     assert!(!result, "C2 URL should NOT be marked as garbage");
 }
 
@@ -204,11 +204,14 @@ fn test_c2_url_not_garbage() {
 fn test_competing_garbage_string() {
     // The garbage string at offset -1 from C2
     let garbage = "fWWz^/21MU6.Tw";
-    
+
     println!("\nTesting: {:?}", garbage);
     let result = is_garbage(garbage);
     println!("is_garbage() returned: {}", result);
-    
+
     // This one might be garbage
-    println!("Garbage string result: {}", if result { "GARBAGE" } else { "NOT GARBAGE" });
+    println!(
+        "Garbage string result: {}",
+        if result { "GARBAGE" } else { "NOT GARBAGE" }
+    );
 }

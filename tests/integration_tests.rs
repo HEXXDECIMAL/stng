@@ -2183,18 +2183,27 @@ mod extract_from_tests {
     #[ignore] // Only run when debugging specific binary
     fn test_real_overlay_uplugplay() {
         use std::fs;
-        let data = fs::read("/Users/t/data/dissect/malware/elf_linux/2026.Prometei/uplugplay").unwrap();
+        let data =
+            fs::read("/Users/t/data/dissect/malware/elf_linux/2026.Prometei/uplugplay").unwrap();
 
         // Detect overlay
         if let Some(overlay) = detect_elf_overlay(&data) {
-            println!("Overlay: start=0x{:x}, size={}", overlay.start_offset, overlay.size);
+            println!(
+                "Overlay: start=0x{:x}, size={}",
+                overlay.start_offset, overlay.size
+            );
 
             // Extract overlay strings
             let strings = extract_overlay_strings(&data, 4);
             println!("Extracted {} overlay strings", strings.len());
 
             for s in &strings {
-                println!("  0x{:x}: {} (len={})", s.data_offset, s.value, s.value.len());
+                println!(
+                    "  0x{:x}: {} (len={})",
+                    s.data_offset,
+                    s.value,
+                    s.value.len()
+                );
             }
 
             // Look for the JSON config string
@@ -2225,8 +2234,10 @@ mod extract_from_tests {
         // Section header at offset 512 (0x200)
         // This section ends at offset 512 + 64 = 576 (0x240)
         let section_header_start = 512;
-        data[section_header_start..section_header_start + 4].copy_from_slice(&[0x01, 0x00, 0x00, 0x00]); // sh_name
-        data[section_header_start + 4..section_header_start + 8].copy_from_slice(&[0x01, 0x00, 0x00, 0x00]); // sh_type
+        data[section_header_start..section_header_start + 4]
+            .copy_from_slice(&[0x01, 0x00, 0x00, 0x00]); // sh_name
+        data[section_header_start + 4..section_header_start + 8]
+            .copy_from_slice(&[0x01, 0x00, 0x00, 0x00]); // sh_type
 
         // ELF structure ends at 576 (0x240)
         let elf_end = 576;
@@ -2252,8 +2263,12 @@ mod extract_from_tests {
         assert!(!strings.is_empty(), "Should find overlay strings");
 
         // Find our test strings
-        let test_aaa = strings.iter().find(|s| s.value.contains("OVERLAY_TEST_AAA"));
-        let test_bbb = strings.iter().find(|s| s.value.contains("OVERLAY_TEST_BBB"));
+        let test_aaa = strings
+            .iter()
+            .find(|s| s.value.contains("OVERLAY_TEST_AAA"));
+        let test_bbb = strings
+            .iter()
+            .find(|s| s.value.contains("OVERLAY_TEST_BBB"));
 
         // Verify offsets are absolute file offsets, not relative to overlay start
         if let Some(s) = test_aaa {
@@ -2262,7 +2277,11 @@ mod extract_from_tests {
                 "First overlay string offset should be absolute file offset 0x{:x}, not relative to overlay",
                 first_string_offset
             );
-            assert_eq!(s.kind, stng::StringKind::Overlay, "Should be marked as overlay");
+            assert_eq!(
+                s.kind,
+                stng::StringKind::Overlay,
+                "Should be marked as overlay"
+            );
         } else {
             panic!("Should find OVERLAY_TEST_AAA string");
         }
@@ -2273,7 +2292,11 @@ mod extract_from_tests {
                 "Second overlay string offset should be absolute file offset 0x{:x}, not relative to overlay",
                 second_string_offset
             );
-            assert_eq!(s.kind, stng::StringKind::Overlay, "Should be marked as overlay");
+            assert_eq!(
+                s.kind,
+                stng::StringKind::Overlay,
+                "Should be marked as overlay"
+            );
         } else {
             panic!("Should find OVERLAY_TEST_BBB string");
         }
@@ -2581,7 +2604,8 @@ mod string_kind_tests {
     fn test_hex_encoded_detection() {
         // Hex-encoded JavaScript (from actual malware)
         // Decodes to: "const _0x1c310003=_0x230d;function _0x230d"
-        let hex_str = "636F6E7374205F307831633331303030333D5F3078323330643B66756E6374696F6E205F307832333064";
+        let hex_str =
+            "636F6E7374205F307831633331303030333D5F3078323330643B66756E6374696F6E205F307832333064";
         let expected_decoded = "const _0x1c310003=_0x230d;function _0x230d";
         let data = minimal_elf_with_string(hex_str);
         let strings = extract_strings(&data, 4);
@@ -2642,7 +2666,8 @@ mod string_kind_tests {
     #[test]
     fn test_unicode_escaped_u_format() {
         // \uXXXX format
-        let unicode_str = "\\u0048\\u0065\\u006c\\u006c\\u006f\\u0020\\u0057\\u006f\\u0072\\u006c\\u0064";
+        let unicode_str =
+            "\\u0048\\u0065\\u006c\\u006c\\u006f\\u0020\\u0057\\u006f\\u0072\\u006c\\u0064";
         let expected_decoded = "Hello World";
         let data = minimal_elf_with_string(unicode_str);
         let strings = extract_strings(&data, 4);
@@ -2750,10 +2775,7 @@ mod string_kind_tests {
             .filter(|s| s.kind == StringKind::Base32)
             .collect();
 
-        assert!(
-            !base32_strings.is_empty(),
-            "Should detect Base32 string"
-        );
+        assert!(!base32_strings.is_empty(), "Should detect Base32 string");
         assert_eq!(base32_strings[0].value, base32_str);
     }
 
@@ -2849,7 +2871,8 @@ mod string_kind_tests {
         let xored_str = String::from_utf8_lossy(&xored).to_string();
 
         // Hex-encode the XOR'd data (simulating malware obfuscation)
-        let hex_encoded = xored.iter()
+        let hex_encoded = xored
+            .iter()
             .map(|b| format!("{:02X}", b))
             .collect::<String>();
 
@@ -2860,22 +2883,30 @@ mod string_kind_tests {
         // The implementation automatically decodes hex strings and replaces them
         // with the decoded version (due to method priority in deduplication).
         // So we should find the decoded (XOR'd) version, not the hex-encoded original.
-        let decoded_version: Vec<_> = strings
-            .iter()
-            .filter(|s| s.value == xored_str)
-            .collect();
+        let decoded_version: Vec<_> = strings.iter().filter(|s| s.value == xored_str).collect();
 
         // Verify the hex layer was automatically decoded
         assert!(
             !decoded_version.is_empty(),
             "Should automatically decode hex to reveal XOR'd data. Found {} strings: {:?}",
             strings.len(),
-            strings.iter().map(|s| format!("{:?} at 0x{:x}: {}", s.method, s.data_offset, &s.value[..s.value.len().min(30)])).collect::<Vec<_>>()
+            strings
+                .iter()
+                .map(|s| format!(
+                    "{:?} at 0x{:x}: {}",
+                    s.method,
+                    s.data_offset,
+                    &s.value[..s.value.len().min(30)]
+                ))
+                .collect::<Vec<_>>()
         );
 
         // Verify the decoded string was extracted with HexDecode method
-        assert_eq!(decoded_version[0].method, StringMethod::HexDecode,
-            "Decoded string should have HexDecode method");
+        assert_eq!(
+            decoded_version[0].method,
+            StringMethod::HexDecode,
+            "Decoded string should have HexDecode method"
+        );
 
         // Verify we can manually decode the hex layer to confirm correctness
         let decoded_hex: Vec<u8> = (0..hex_encoded.len())
@@ -2886,7 +2917,10 @@ mod string_kind_tests {
 
         // Verify we can manually decode XOR to get original plaintext
         let decoded_xor: Vec<u8> = decoded_hex.iter().map(|&b| b ^ xor_key).collect();
-        assert_eq!(decoded_xor, plaintext, "XOR decoding should recover plaintext");
+        assert_eq!(
+            decoded_xor, plaintext,
+            "XOR decoding should recover plaintext"
+        );
 
         // Summary of what this test demonstrates:
         // ✓ The tool automatically decodes hex-encoded strings

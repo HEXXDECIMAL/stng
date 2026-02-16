@@ -417,7 +417,10 @@ fn test_xor_brew_agent_malware_full_sample() {
         .map(|s| s.value.as_str())
         .collect();
 
-    println!("Full sample extraction found {} XOR strings", xor_strings.len());
+    println!(
+        "Full sample extraction found {} XOR strings",
+        xor_strings.len()
+    );
 
     // Test critical indicators that identify the malware
     assert!(
@@ -560,7 +563,7 @@ fn test_xor_brew_agent_auto_detection() {
     // Enable XOR scanning WITHOUT providing a key
     // The extractor will try to auto-detect the key from high-entropy strings in the binary
     let opts = stng::ExtractOptions::new(10)
-        .with_xor(Some(10))  // Enable XOR auto-detection
+        .with_xor(Some(10)) // Enable XOR auto-detection
         .with_garbage_filter(true);
 
     let extracted = stng::extract_strings_with_options(&data, &opts);
@@ -635,9 +638,9 @@ fn test_c2_url_extraction_from_brew_agent() {
     let results = stng::xor::extract_custom_xor_strings(&data, &key, min_length);
 
     // Look for the C2 URL
-    let c2_url = results.iter().find(|s| {
-        s.value.contains("46.30.191.141") || s.data_offset == 0x211b0
-    });
+    let c2_url = results
+        .iter()
+        .find(|s| s.value.contains("46.30.191.141") || s.data_offset == 0x211b0);
 
     match c2_url {
         Some(s) => {
@@ -650,7 +653,10 @@ fn test_c2_url_extraction_from_brew_agent() {
             // Debug: show what's near that offset
             println!("✗ C2 URL NOT FOUND at offset 0x211b0!");
             println!("\nStrings near 0x211b0:");
-            for s in results.iter().filter(|s| s.data_offset >= 0x211a0 && s.data_offset <= 0x211d0) {
+            for s in results
+                .iter()
+                .filter(|s| s.data_offset >= 0x211a0 && s.data_offset <= 0x211d0)
+            {
                 println!("  0x{:x}: {:?} ({:?})", s.data_offset, s.value, s.kind);
             }
             panic!("C2 URL should be extracted!");

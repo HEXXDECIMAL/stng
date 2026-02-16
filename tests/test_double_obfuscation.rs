@@ -15,13 +15,19 @@
 //! XOR'd data is embedded in binary code (non-printable), so this isn't an issue.
 
 use base64::Engine;
-use stng::{classify_string, extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
+use stng::{
+    classify_string, extract_strings_with_options, ExtractOptions, StringKind, StringMethod,
+};
 
 #[test]
 fn test_classify_base64() {
     let base64_str = "Y3VybCBodHRwOi8vbWFsaWNpb3VzLmNvbS9wYXlsb2FkLnNoIHwgYmFzaA==";
     let kind = classify_string(base64_str);
-    assert_eq!(kind, StringKind::Base64, "Base64 string should be classified as Base64");
+    assert_eq!(
+        kind,
+        StringKind::Base64,
+        "Base64 string should be classified as Base64"
+    );
 }
 
 #[test]
@@ -47,10 +53,18 @@ fn test_all_encoding_classifications() {
     let url_str = "%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E";
     let unicode_str = "\\x48\\x65\\x6c\\x6c\\x6f\\x20\\x57\\x6f\\x72\\x6c\\x64";
 
-    println!("Base64 ({}): {:?}", base64_str.len(), classify_string(base64_str));
+    println!(
+        "Base64 ({}): {:?}",
+        base64_str.len(),
+        classify_string(base64_str)
+    );
     println!("Hex ({}): {:?}", hex_str.len(), classify_string(hex_str));
     println!("URL ({}): {:?}", url_str.len(), classify_string(url_str));
-    println!("Unicode ({}): {:?}", unicode_str.len(), classify_string(unicode_str));
+    println!(
+        "Unicode ({}): {:?}",
+        unicode_str.len(),
+        classify_string(unicode_str)
+    );
 
     assert_eq!(classify_string(base64_str), StringKind::Base64);
     assert_eq!(classify_string(hex_str), StringKind::HexEncoded);
@@ -67,12 +81,24 @@ fn test_base64_length_requirements() {
     let kind_short = classify_string(short_base64);
     let kind_long = classify_string(long_base64);
 
-    println!("Short base64 ({} chars): {:?}", short_base64.len(), kind_short);
+    println!(
+        "Short base64 ({} chars): {:?}",
+        short_base64.len(),
+        kind_short
+    );
     println!("Long base64 ({} chars): {:?}", long_base64.len(), kind_long);
 
     // Both should be classified as Base64
-    assert_eq!(kind_short, StringKind::Base64, "Short base64 should be classified as Base64");
-    assert_eq!(kind_long, StringKind::Base64, "Long base64 should be classified as Base64");
+    assert_eq!(
+        kind_short,
+        StringKind::Base64,
+        "Short base64 should be classified as Base64"
+    );
+    assert_eq!(
+        kind_long,
+        StringKind::Base64,
+        "Long base64 should be classified as Base64"
+    );
 }
 
 #[test]
@@ -96,26 +122,39 @@ fn test_decoders_run_on_xor_strings() {
 
     println!("Found {} strings total", strings.len());
     for s in &strings {
-        println!("  {:?} {:?} @ {}: {}", s.method, s.kind, s.data_offset, &s.value[..s.value.len().min(40)]);
+        println!(
+            "  {:?} {:?} @ {}: {}",
+            s.method,
+            s.kind,
+            s.data_offset,
+            &s.value[..s.value.len().min(40)]
+        );
     }
 
     // Check for XOR-decoded string
-    let xor_decoded: Vec<_> = strings.iter()
+    let xor_decoded: Vec<_> = strings
+        .iter()
         .filter(|s| s.method == StringMethod::XorDecode)
         .collect();
     assert!(!xor_decoded.is_empty(), "Should have XOR-decoded strings");
 
     // The XOR-decoded string should be classified as Base64
-    let base64_classified: Vec<_> = xor_decoded.iter()
+    let base64_classified: Vec<_> = xor_decoded
+        .iter()
         .filter(|s| s.kind == StringKind::Base64)
         .collect();
 
     println!("\nXOR-decoded strings: {}", xor_decoded.len());
-    println!("XOR-decoded strings classified as Base64: {}", base64_classified.len());
+    println!(
+        "XOR-decoded strings classified as Base64: {}",
+        base64_classified.len()
+    );
 
-    assert!(!base64_classified.is_empty(),
+    assert!(
+        !base64_classified.is_empty(),
         "XOR-decoded strings should be classified as Base64. Found kinds: {:?}",
-        xor_decoded.iter().map(|s| s.kind).collect::<Vec<_>>());
+        xor_decoded.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
 
     // Verify the value is the expected base64 string
     assert_eq!(base64_classified[0].value, base64_str);
@@ -138,7 +177,9 @@ fn test_xor_then_base64() {
     data[512..512 + xored.len()].copy_from_slice(&xored);
 
     // Extract with XOR key
-    let opts = ExtractOptions::new(4).with_xor_key(vec![0x42]).with_garbage_filter(true);
+    let opts = ExtractOptions::new(4)
+        .with_xor_key(vec![0x42])
+        .with_garbage_filter(true);
     let strings = stng::extract_strings_with_options(&data, &opts);
 
     // Should find the XOR-decoded base64 string
@@ -161,12 +202,18 @@ fn test_xor_then_base64() {
     assert!(
         !base64_strings.is_empty(),
         "XOR-decoded string should be classified as Base64. Found: {:?}",
-        xor_decoded.iter().map(|s| (s.kind, &s.value[..s.value.len().min(40)])).collect::<Vec<_>>()
+        xor_decoded
+            .iter()
+            .map(|s| (s.kind, &s.value[..s.value.len().min(40)]))
+            .collect::<Vec<_>>()
     );
 
     // Verify the base64 string is correct
-    assert_eq!(base64_strings[0].value, base64_encoded,
-        "Expected base64: {}, Got: {}", base64_encoded, base64_strings[0].value);
+    assert_eq!(
+        base64_strings[0].value, base64_encoded,
+        "Expected base64: {}, Got: {}",
+        base64_encoded, base64_strings[0].value
+    );
 }
 
 #[test]
@@ -179,8 +226,11 @@ fn test_xor_then_hex() {
     // Verify a hex string is classified as HexEncoded
     let hex_string = "687474703A2F2F6576696C2E636F6D2F6D616C776172652E7368";
     let kind = classify_string(hex_string);
-    assert_eq!(kind, StringKind::HexEncoded,
-        "Hex string should be classified as HexEncoded");
+    assert_eq!(
+        kind,
+        StringKind::HexEncoded,
+        "Hex string should be classified as HexEncoded"
+    );
 
     // This verifies the classification logic works
     // In practice, malware with hex+XOR will be detected when the XOR'd
@@ -195,8 +245,11 @@ fn test_xor_then_url_encoding() {
     // Verify a URL-encoded string is classified as UrlEncoded
     let url_string = "%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E";
     let kind = classify_string(url_string);
-    assert_eq!(kind, StringKind::UrlEncoded,
-        "URL-encoded string should be classified as UrlEncoded");
+    assert_eq!(
+        kind,
+        StringKind::UrlEncoded,
+        "URL-encoded string should be classified as UrlEncoded"
+    );
 
     // This verifies the classification logic works
     // The full XOR+URL extraction works when XOR'd data has control chars
@@ -214,7 +267,9 @@ fn test_xor_then_unicode_escapes() {
     data[100..100 + xored.len()].copy_from_slice(&xored);
 
     // Extract with XOR key
-    let opts = ExtractOptions::new(4).with_xor_key(vec![0x42]).with_garbage_filter(true);
+    let opts = ExtractOptions::new(4)
+        .with_xor_key(vec![0x42])
+        .with_garbage_filter(true);
     let strings = stng::extract_strings_with_options(&data, &opts);
 
     // Should find the XOR-decoded unicode-escaped string
@@ -237,9 +292,15 @@ fn test_xor_then_unicode_escapes() {
     assert!(
         !unicode_strings.is_empty(),
         "XOR-decoded string should be classified as UnicodeEscaped. Found: {:?}",
-        xor_decoded.iter().map(|s| (s.kind, &s.value)).collect::<Vec<_>>()
+        xor_decoded
+            .iter()
+            .map(|s| (s.kind, &s.value))
+            .collect::<Vec<_>>()
     );
 
-    assert_eq!(unicode_strings[0].value, unicode_escaped,
-        "Expected: {}, Got: {}", unicode_escaped, unicode_strings[0].value);
+    assert_eq!(
+        unicode_strings[0].value, unicode_escaped,
+        "Expected: {}, Got: {}",
+        unicode_escaped, unicode_strings[0].value
+    );
 }

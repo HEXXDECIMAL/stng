@@ -36,11 +36,11 @@ fn get_pattern_regexes() -> &'static PatternRegexes {
     static REGEXES: OnceLock<PatternRegexes> = OnceLock::new();
     REGEXES.get_or_init(|| PatternRegexes {
         url: Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+")
-            .unwrap(),
-        path: Regex::new(r"/[a-zA-Z0-9_./\-]+").unwrap(),
-        env_var: Regex::new(r"[A-Z][A-Z0-9_]{3,}").unwrap(),
-        snake_case: Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+").unwrap(),
-        domain: Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+").unwrap(),
+            .expect("static regex pattern is valid"),
+        path: Regex::new(r"/[a-zA-Z0-9_./\-]+").expect("static regex pattern is valid"),
+        env_var: Regex::new(r"[A-Z][A-Z0-9_]{3,}").expect("static regex pattern is valid"),
+        snake_case: Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+").expect("static regex pattern is valid"),
+        domain: Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+").expect("static regex pattern is valid"),
     })
 }
 
@@ -63,7 +63,7 @@ impl RustStringExtractor {
     ///
     /// Rust stores &str slice structures (ptr+len) in `__DATA_CONST`,
     /// while the actual string data is in `__TEXT,__const` or `__cstring`.
-    pub fn extract_macho(&self, macho: &MachO, _data: &[u8]) -> Vec<ExtractedString> {
+    pub fn extract_macho(&self, macho: &MachO<'_>, _data: &[u8]) -> Vec<ExtractedString> {
         let mut strings = Vec::new();
         let info = BinaryInfo::from_macho(macho.is_64);
 
@@ -182,11 +182,11 @@ impl RustStringExtractor {
                         kind: s.kind,
                         library: None,
                         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                        section_size: None,
+                        section_executable: None,
+                        section_writable: None,
+                        architecture: None,
+                        function_meta: None,
                     });
                 }
             }
@@ -238,7 +238,7 @@ impl RustStringExtractor {
     }
 
     /// Extract strings from an ELF binary.
-    pub fn extract_elf(&self, elf: &Elf, data: &[u8]) -> Vec<ExtractedString> {
+    pub fn extract_elf(&self, elf: &Elf<'_>, data: &[u8]) -> Vec<ExtractedString> {
         let mut strings = Vec::new();
         // Use actual endianness from ELF header
         let info = BinaryInfo::from_elf(elf.is_64, elf.little_endian);
@@ -297,7 +297,7 @@ impl RustStringExtractor {
     /// Helper to find a section by name and return its address and data.
     fn find_section<'a>(
         &self,
-        elf: &Elf,
+        elf: &Elf<'_>,
         data: &'a [u8],
         section_name: &str,
     ) -> Option<(u64, &'a [u8])> {
@@ -316,7 +316,7 @@ impl RustStringExtractor {
 
     fn extract_from_section(
         &self,
-        elf: &Elf,
+        elf: &Elf<'_>,
         data: &[u8],
         target_section: &str,
         info: &BinaryInfo,
@@ -412,11 +412,11 @@ impl RustStringExtractor {
                                 kind: classify_string(trimmed),
                                 library: None,
                                 fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                                section_size: None,
+                                section_executable: None,
+                                section_writable: None,
+                                architecture: None,
+                                function_meta: None,
                             });
                         }
                     }
@@ -607,11 +607,11 @@ impl RustStringExtractor {
             kind: classify_string(trimmed),
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         });
     }
 }

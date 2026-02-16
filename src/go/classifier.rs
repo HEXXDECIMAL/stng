@@ -71,8 +71,11 @@ pub fn classify_string(s: &str) -> StringKind {
     // These checks come first because they're high-value security indicators
 
     // CTF flags: CTF{...}, flag{...}, FLAG{...}, picoCTF{...}, HTB{...}
-    if (s.starts_with("CTF{") || s.starts_with("flag{") || s.starts_with("FLAG{")
-        || s.starts_with("picoCTF{") || s.starts_with("HTB{"))
+    if (s.starts_with("CTF{")
+        || s.starts_with("flag{")
+        || s.starts_with("FLAG{")
+        || s.starts_with("picoCTF{")
+        || s.starts_with("HTB{"))
         && s.ends_with('}')
     {
         return StringKind::CTFFlag;
@@ -82,7 +85,7 @@ pub fn classify_string(s: &str) -> StringKind {
     if s.starts_with('{') && s.ends_with('}') && (36..=38).contains(&len) {
         let dash_count = s.chars().filter(|&c| c == '-').count();
         let hex_count = s.chars().filter(|c| c.is_ascii_hexdigit()).count();
-        if dash_count == 4 && hex_count >= 30 && hex_count <= 32 {
+        if dash_count == 4 && (30..=32).contains(&hex_count) {
             return StringKind::GUID;
         }
     }
@@ -114,7 +117,7 @@ pub fn classify_string(s: &str) -> StringKind {
                 let domain = parts[1];
 
                 // Local part must exist, not be empty, and start with alphanumeric
-                if local.is_empty() || !local.chars().next().unwrap().is_alphanumeric() {
+                if local.is_empty() || !local.chars().next().expect("checked above").is_alphanumeric() {
                     return StringKind::Const; // Skip - starts with @ or non-alphanumeric
                 }
 
@@ -157,9 +160,10 @@ pub fn classify_string(s: &str) -> StringKind {
                 }
 
                 // Valid email chars check
-                let valid_chars = s.chars().filter(|c| {
-                    c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+')
-                }).count();
+                let valid_chars = s
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+'))
+                    .count();
                 if valid_chars * 100 / len >= 85 {
                     return StringKind::Email;
                 }
@@ -176,9 +180,10 @@ pub fn classify_string(s: &str) -> StringKind {
     if s.matches('.').count() == 2 && len >= 50 {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() == 3 && parts.iter().all(|p| !p.is_empty()) {
-            let base64_chars = s.chars().filter(|c| {
-                c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '=')
-            }).count();
+            let base64_chars = s
+                .chars()
+                .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '='))
+                .count();
             if base64_chars * 100 / len >= 95 {
                 return StringKind::JWT;
             }
@@ -191,23 +196,21 @@ pub fn classify_string(s: &str) -> StringKind {
     }
 
     // SQL injection patterns - only check if contains ' or - which are key indicators
-    if memchr::memchr2(b'\'', b'-', bytes).is_some() || s.contains("UNION") {
-        if (s.contains("' OR '") || s.contains("1'='1"))
+    if (memchr::memchr2(b'\'', b'-', bytes).is_some() || s.contains("UNION"))
+        && ((s.contains("' OR '") || s.contains("1'='1"))
             || (s.contains("UNION") && s.contains("SELECT"))
-            || s.contains("admin'--")
-        {
-            return StringKind::SQLInjection;
-        }
+            || s.contains("admin'--"))
+    {
+        return StringKind::SQLInjection;
     }
 
     // XSS payloads - only check if contains < or = which are key indicators
-    if first == b'j' || memchr::memchr2(b'<', b'=', bytes).is_some() {
-        if (s.contains("<script>") && s.contains("</script>"))
+    if (first == b'j' || memchr::memchr2(b'<', b'=', bytes).is_some())
+        && ((s.contains("<script>") && s.contains("</script>"))
             || (s.contains("onerror=") && s.contains("alert("))
-            || s.starts_with("javascript:")
-        {
-            return StringKind::XSSPayload;
-        }
+            || s.starts_with("javascript:"))
+    {
+        return StringKind::XSSPayload;
     }
 
     // LDAP/AD paths
@@ -228,36 +231,39 @@ pub fn classify_string(s: &str) -> StringKind {
         }
     }
     // Ransomware file extensions
-    if s == ".locked" || s == ".encrypted" || s == ".crypted" || s == ".wannacry"
-        || s == ".ryuk" || s == ".locky" || s.ends_with("-DECRYPT-INSTRUCTIONS.txt")
+    if s == ".locked"
+        || s == ".encrypted"
+        || s == ".crypted"
+        || s == ".wannacry"
+        || s == ".ryuk"
+        || s == ".locky"
+        || s.ends_with("-DECRYPT-INSTRUCTIONS.txt")
         || s.ends_with("HOW-TO-DECRYPT.html")
     {
         return StringKind::RansomNote;
     }
 
     // Cryptocurrency mining pools - only check if contains ':' or 'pool'
-    if first == b's' || memchr::memchr2(b':', b'p', bytes).is_some() {
-        if (s.contains("stratum+tcp://") || s.contains("stratum+ssl://"))
+    if (first == b's' || memchr::memchr2(b':', b'p', bytes).is_some())
+        && ((s.contains("stratum+tcp://") || s.contains("stratum+ssl://"))
             || ((s.contains("pool.") || s.contains("nanopool") || s.contains("minergate"))
-                && (s.contains(".com") || s.contains(".org") || s.contains(":")))
-        {
-            return StringKind::MiningPool;
-        }
+                && (s.contains(".com") || s.contains(".org") || s.contains(":"))))
+    {
+        return StringKind::MiningPool;
     }
 
     // ===== ORIGINAL CLASSIFICATION CONTINUES =====
 
     // URLs (including database URLs) - check first char for fast path
-    if first == b'h'
+    if (first == b'h'
         || first == b'f'
         || first == b'p'
         || first == b'm'
         || first == b'r'
         || first == b's'
         || first == b't'
-        || first == b'u'
-    {
-        if s.starts_with("http://")
+        || first == b'u')
+        && (s.starts_with("http://")
             || s.starts_with("https://")
             || s.starts_with("ftp://")
             || s.starts_with("postgresql://")
@@ -266,14 +272,13 @@ pub fn classify_string(s: &str) -> StringKind {
             || s.starts_with("mongodb://")
             || s.starts_with("ssh://")
             || s.starts_with("tcp://")
-            || s.starts_with("udp://")
-        {
-            // Skip common benign URLs (Apple certs, etc.)
-            if s.starts_with("https://www.apple.com/appleca") {
-                return StringKind::Const;
-            }
-            return StringKind::Url;
+            || s.starts_with("udp://"))
+    {
+        // Skip common benign URLs (Apple certs, etc.)
+        if s.starts_with("https://www.apple.com/appleca") {
+            return StringKind::Const;
         }
+        return StringKind::Url;
     }
 
     // Check for embedded code first (most specific markers)
@@ -303,18 +308,18 @@ pub fn classify_string(s: &str) -> StringKind {
 
     // Command injection patterns - check AFTER code detection to avoid false positives
     // JavaScript/PHP code might contain command strings but should be detected as code first
-    if memchr::memchr3(b';', b'|', b'$', bytes).is_some() {
-        if (s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
-            || (s.contains("| ") && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
-            || s.contains("$(")
-        {
-            return StringKind::CommandInjection;
-        }
+    if memchr::memchr3(b';', b'|', b'$', bytes).is_some()
+        && ((s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
+            || (s.contains("| ")
+                && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
+            || s.contains("$("))
+    {
+        return StringKind::CommandInjection;
     }
 
     // Backtick command substitution - must be mostly ASCII and contain command-like content
     if s.starts_with('`') && s.ends_with('`') && len >= 5 {
-        let content = &s[1..len-1];
+        let content = &s[1..len - 1];
         let content_len = content.len();
 
         // Must be mostly ASCII (>90%) - reject garbage with non-ASCII chars
@@ -550,7 +555,9 @@ fn is_javascript_code(s: &str) -> bool {
 
     // Quick rejection: JavaScript code must contain certain characters
     let bytes = s.as_bytes();
-    let has_js_indicators = bytes.iter().any(|&b| matches!(b, b'(' | b'{' | b'=' | b'.'));
+    let has_js_indicators = bytes
+        .iter()
+        .any(|&b| matches!(b, b'(' | b'{' | b'=' | b'.'));
     if !has_js_indicators {
         return false;
     }
@@ -640,11 +647,24 @@ fn is_applescript(s: &str) -> bool {
     // AppleScript indicators - using word boundaries to avoid false positives
     // "set " must be followed by a variable assignment context, not just appear in a word
     let applescript_patterns = [
-        "tell application", "path to desktop", "path to documents",
-        "every file of", "whose name extension", "posix file", "end tell",
-        "do shell script", " dialog", "choose file", "choose folder",
-        "duplicate ", " to posix file", "repeat with", "end repeat",
-        " as alias", " with replacing", "set volume",
+        "tell application",
+        "path to desktop",
+        "path to documents",
+        "every file of",
+        "whose name extension",
+        "posix file",
+        "end tell",
+        "do shell script",
+        " dialog",
+        "choose file",
+        "choose folder",
+        "duplicate ",
+        " to posix file",
+        "repeat with",
+        "end repeat",
+        " as alias",
+        " with replacing",
+        "set volume",
     ];
 
     for pattern in &applescript_patterns {
@@ -655,7 +675,10 @@ fn is_applescript(s: &str) -> bool {
 
     // "set " only if it appears at word boundaries (start of line, after space/tab)
     // and is followed by a variable name
-    if (lower.starts_with("set ") || lower.contains("\nset ") || lower.contains("\tset ") || lower.contains(" set "))
+    if (lower.starts_with("set ")
+        || lower.contains("\nset ")
+        || lower.contains("\tset ")
+        || lower.contains(" set "))
         && (lower.contains(" to ") || lower.contains("="))
     {
         return true;
@@ -674,23 +697,24 @@ fn is_shell_command(s: &str) -> bool {
     }
 
     // Shebang is a strong indicator
-    if s.starts_with("#!/bin/bash") || s.starts_with("#!/bin/sh") || s.starts_with("#!/usr/bin/env") {
+    if s.starts_with("#!/bin/bash") || s.starts_with("#!/bin/sh") || s.starts_with("#!/usr/bin/env")
+    {
         return true;
     }
 
     // Quick byte-level check: shell commands typically contain key indicators
     // If none of these bytes are present, it's very unlikely to be a shell command
     let bytes = s.as_bytes();
-    let has_shell_indicators = bytes.iter().any(|&b| {
-        matches!(b, b' ' | b'/' | b'$' | b'|' | b'&' | b'>' | b';' | b'`')
-    });
+    let has_shell_indicators = bytes
+        .iter()
+        .any(|&b| matches!(b, b' ' | b'/' | b'$' | b'|' | b'&' | b'>' | b';' | b'`'));
     if !has_shell_indicators {
         return false;
     }
 
     // Fast path: shell commands almost always contain a space
     // Exceptions: paths like /bin/sh, command substitution $(...)
-    if !memchr::memchr(b' ', bytes).is_some() && !s.starts_with("/bin/") && !s.starts_with("$(") {
+    if memchr::memchr(b' ', bytes).is_none() && !s.starts_with("/bin/") && !s.starts_with("$(") {
         return false;
     }
 
@@ -1132,7 +1156,8 @@ fn is_url_encoded(s: &str) -> bool {
             // Check if followed by two hex digits
             if i + 2 < chars.len()
                 && chars[i + 1].is_ascii_hexdigit()
-                && chars[i + 2].is_ascii_hexdigit() {
+                && chars[i + 2].is_ascii_hexdigit()
+            {
                 valid_percent_count += 1;
                 i += 3;
                 continue;
@@ -1406,16 +1431,28 @@ fn is_base85(s: &str) -> bool {
     }
 
     // Reject strings that look like URLs, paths, function names, or normal text
-    if s.contains("://") || s.contains("http") || s.starts_with('@') || s.starts_with('/') ||
-        s.contains("apple") || s.contains("Apple") || s.contains("Authority") ||
-        s.contains("plist") || s.contains("version") || s.contains('.') && s.split('.').count() > 2 ||
-        s.starts_with('+') || s.starts_with(' ') {
+    if s.contains("://")
+        || s.contains("http")
+        || s.starts_with('@')
+        || s.starts_with('/')
+        || s.contains("apple")
+        || s.contains("Apple")
+        || s.contains("Authority")
+        || s.contains("plist")
+        || s.contains("version")
+        || s.contains('.') && s.split('.').count() > 2
+        || s.starts_with('+')
+        || s.starts_with(' ')
+    {
         return false;
     }
 
     // Reject passwd-style entries: username:*:uid:gid:comment:home:shell
     // Pattern: starts with alpha/underscore, has 6+ colons, contains "/usr/bin/" or "/bin/" or "/var/"
-    if s.contains(":*:") || (s.matches(':').count() >= 6 && (s.contains("/usr/bin/") || s.contains("/bin/") || s.contains("/var/"))) {
+    if s.contains(":*:")
+        || (s.matches(':').count() >= 6
+            && (s.contains("/usr/bin/") || s.contains("/bin/") || s.contains("/var/")))
+    {
         return false;
     }
 
@@ -1488,9 +1525,9 @@ fn classify_crypto_address(s: &str) -> Option<StringKind> {
     // Bitcoin (legacy): starts with 1 or 3, 26-35 chars, Base58 (excludes 0, O, I, l)
     if (s.starts_with('1') || s.starts_with('3')) && (26..=35).contains(&len) {
         // Must be valid Base58: no 0, O, I, or l characters
-        if s.chars().all(|c| {
-            c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l'
-        }) {
+        if s.chars()
+            .all(|c| c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l')
+        {
             return Some(StringKind::CryptoWallet);
         }
     }
@@ -1520,21 +1557,19 @@ fn classify_crypto_address(s: &str) -> Option<StringKind> {
     }
 
     // Litecoin: starts with L or M, 26-35 chars, Base58
-    if (s.starts_with('L') || s.starts_with('M')) && (26..=35).contains(&len) {
-        if s.chars().all(|c| {
-            c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l'
-        }) {
-            return Some(StringKind::CryptoWallet);
-        }
+    if (s.starts_with('L') || s.starts_with('M')) && (26..=35).contains(&len)
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l')
+    {
+        return Some(StringKind::CryptoWallet);
     }
 
     // Dogecoin: starts with D, 34 chars, Base58
-    if s.starts_with('D') && len == 34 {
-        if s.chars().all(|c| {
-            c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l'
-        }) {
-            return Some(StringKind::CryptoWallet);
-        }
+    if s.starts_with('D') && len == 34
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l')
+    {
+        return Some(StringKind::CryptoWallet);
     }
 
     None
@@ -1554,7 +1589,10 @@ fn classify_api_key(s: &str) -> Option<StringKind> {
 
     // GitHub token: starts with ghp_, 36+ chars
     if s.starts_with("ghp_") && len >= 36 {
-        let alnum_count = s.chars().filter(|c| c.is_alphanumeric() || *c == '_').count();
+        let alnum_count = s
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_')
+            .count();
         if alnum_count * 100 / len >= 90 {
             return Some(StringKind::APIKey);
         }
@@ -1562,7 +1600,10 @@ fn classify_api_key(s: &str) -> Option<StringKind> {
 
     // Stripe keys: starts with sk_live_ or pk_live_
     if (s.starts_with("sk_live_") || s.starts_with("pk_live_")) && len >= 20 {
-        let alnum_count = s.chars().filter(|c| c.is_alphanumeric() || *c == '_').count();
+        let alnum_count = s
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_')
+            .count();
         if alnum_count * 100 / len >= 90 {
             return Some(StringKind::APIKey);
         }
@@ -1570,7 +1611,10 @@ fn classify_api_key(s: &str) -> Option<StringKind> {
 
     // Slack tokens: starts with xox, 30+ chars
     if s.starts_with("xox") && len >= 30 {
-        let alnum_count = s.chars().filter(|c| c.is_alphanumeric() || *c == '-').count();
+        let alnum_count = s
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-')
+            .count();
         if alnum_count * 100 / len >= 90 {
             return Some(StringKind::APIKey);
         }
@@ -1940,10 +1984,7 @@ mod tests {
             classify_string("path to documents folder"),
             StringKind::AppleScript
         );
-        assert_eq!(
-            classify_string("end tell"),
-            StringKind::AppleScript
-        );
+        assert_eq!(classify_string("end tell"), StringKind::AppleScript);
         assert_eq!(
             classify_string("repeat with aFile in allFiles"),
             StringKind::AppleScript
@@ -1972,10 +2013,7 @@ mod tests {
             classify_string("curl http://example.com"),
             StringKind::AppleScript
         );
-        assert_ne!(
-            classify_string("cat /etc/passwd"),
-            StringKind::AppleScript
-        );
+        assert_ne!(classify_string("cat /etc/passwd"), StringKind::AppleScript);
 
         // Passwd entries should NOT be AppleScript (avoid "_assetcache" matching "set ")
         assert_ne!(
@@ -1988,10 +2026,7 @@ mod tests {
         );
 
         // AppleScript "set" must have proper context (variable assignment)
-        assert_eq!(
-            classify_string("set myVar to 10"),
-            StringKind::AppleScript
-        );
+        assert_eq!(classify_string("set myVar to 10"), StringKind::AppleScript);
         assert_eq!(
             classify_string("set desktopPath = \"/Users/test\""),
             StringKind::AppleScript
@@ -2028,7 +2063,9 @@ mod tests {
         assert!(!is_hex_encoded("48656C6C6F"));
 
         // Odd length (51 chars)
-        assert!(!is_hex_encoded("48656C6C6F20576F726C6421205468697320697320612074657"));
+        assert!(!is_hex_encoded(
+            "48656C6C6F20576F726C6421205468697320697320612074657"
+        ));
 
         // Not hex (contains 'G')
         assert!(!is_hex_encoded(
@@ -2061,7 +2098,9 @@ mod tests {
 
         // Hex-encoded function
         assert_eq!(
-            classify_string("66756E6374696F6E205F307832333064285F3078393961322C5F30783538613536297B"),
+            classify_string(
+                "66756E6374696F6E205F307832333064285F3078393961322C5F30783538613536297B"
+            ),
             StringKind::HexEncoded
         );
 
@@ -2100,9 +2139,7 @@ mod tests {
         ));
 
         // \uXXXX format
-        assert!(is_unicode_escaped(
-            "\\u0048\\u0065\\u006c\\u006c\\u006f"
-        ));
+        assert!(is_unicode_escaped("\\u0048\\u0065\\u006c\\u006c\\u006f"));
 
         // Mixed format
         assert!(is_unicode_escaped(
@@ -2164,7 +2201,8 @@ mod tests {
         assert_eq!(text, "const fs = require");
 
         // Test actual malware pattern
-        let decoded = decode_unicode_escapes("\\x27;\\x20const\\x20fs\\x20=\\x20require(\\x27fs\\x27);");
+        let decoded =
+            decode_unicode_escapes("\\x27;\\x20const\\x20fs\\x20=\\x20require(\\x27fs\\x27);");
         let text = String::from_utf8(decoded).unwrap();
         assert_eq!(text, "'; const fs = require('fs');");
     }
@@ -2172,7 +2210,9 @@ mod tests {
     #[test]
     fn test_is_url_encoded_valid() {
         // Valid URL-encoded strings (from web shells)
-        assert!(is_url_encoded("%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"));
+        assert!(is_url_encoded(
+            "%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"
+        ));
 
         // SQL injection payload
         assert!(is_url_encoded("%27%20OR%20%271%27%3D%271"));
@@ -2214,10 +2254,7 @@ mod tests {
         );
 
         // Should not be URL encoded (too few percent signs)
-        assert_ne!(
-            classify_string("Hello%20World"),
-            StringKind::UrlEncoded
-        );
+        assert_ne!(classify_string("Hello%20World"), StringKind::UrlEncoded);
     }
 
     #[test]
@@ -2282,10 +2319,7 @@ mod tests {
     #[test]
     fn test_classify_string_base32() {
         // Tor onion address
-        assert_eq!(
-            classify_string("THEHIDDENWIKI3IKNKD7A"),
-            StringKind::Base32
-        );
+        assert_eq!(classify_string("THEHIDDENWIKI3IKNKD7A"), StringKind::Base32);
 
         // With padding
         assert_eq!(
@@ -2294,10 +2328,7 @@ mod tests {
         );
 
         // Should not be Base32 (has lowercase)
-        assert_ne!(
-            classify_string("JbSwY3DpEbLw64TmMq"),
-            StringKind::Base32
-        );
+        assert_ne!(classify_string("JbSwY3DpEbLw64TmMq"), StringKind::Base32);
     }
 
     #[test]
@@ -2318,7 +2349,9 @@ mod tests {
         assert!(is_base58("4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV"));
 
         // Generic Base58 with good entropy
-        assert!(is_base58("5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"));
+        assert!(is_base58(
+            "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"
+        ));
     }
 
     #[test]
@@ -2391,14 +2424,15 @@ mod tests {
         assert!(!is_base58("XMLHttpRequestFactory1"));
         assert!(!is_base58("HTTPConnectionManager1"));
         assert!(!is_base58("SQLDatabaseConnectionPool1"));
-
     }
 
     #[test]
     fn test_is_base58_invalid_plain_text() {
         // Plain English text with many CamelCase transitions (7+)
         assert!(!is_base58("TheQuickBrownFoxJumpsOverTheLazyDog1"));
-        assert!(!is_base58("ThisIsAVeryLongStringWithManyCamelCaseWordsForTesting1"));
+        assert!(!is_base58(
+            "ThisIsAVeryLongStringWithManyCamelCaseWordsForTesting1"
+        ));
 
         // Code-like text with many transitions
         assert!(!is_base58("thisIsAVariableNameWithManyWordsInCamelCase1"));
@@ -2453,8 +2487,12 @@ mod tests {
     fn test_is_base64_valid() {
         // Valid base64 strings
         assert!(is_base64("SGVsbG8gV29ybGQhCg=="));
-        assert!(is_base64("VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdlIGZvciB0ZXN0aW5n"));
-        assert!(is_base64("YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw"));
+        assert!(is_base64(
+            "VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdlIGZvciB0ZXN0aW5n"
+        ));
+        assert!(is_base64(
+            "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw"
+        ));
     }
 
     #[test]
@@ -2513,11 +2551,21 @@ mod tests {
         assert!(!is_base85("regular text with spaces here"));
 
         // Passwd entries should NOT be classified as base85
-        assert!(!is_base85("_datadetectors:*:257:257:DataDetectors:/var/db/datadetectors:/usr/bin/false"));
-        assert!(!is_base85("_mmaintenanced:*:283:283:mmaintenanced:/var/db/mmaintenanced:/usr/bin/false"));
-        assert!(!is_base85("_biome:*:289:289:Biome:/var/db/biome:/usr/bin/false"));
-        assert!(!is_base85("_terminusd:*:295:295:Terminus:/var/db/terminus:/usr/bin/false"));
-        assert!(!is_base85("_nsurlsessiond:*:242:242:NSURLSession Daemon:/var/db/nsurlsessiond:/usr/bin/false"));
+        assert!(!is_base85(
+            "_datadetectors:*:257:257:DataDetectors:/var/db/datadetectors:/usr/bin/false"
+        ));
+        assert!(!is_base85(
+            "_mmaintenanced:*:283:283:mmaintenanced:/var/db/mmaintenanced:/usr/bin/false"
+        ));
+        assert!(!is_base85(
+            "_biome:*:289:289:Biome:/var/db/biome:/usr/bin/false"
+        ));
+        assert!(!is_base85(
+            "_terminusd:*:295:295:Terminus:/var/db/terminus:/usr/bin/false"
+        ));
+        assert!(!is_base85(
+            "_nsurlsessiond:*:242:242:NSURLSession Daemon:/var/db/nsurlsessiond:/usr/bin/false"
+        ));
     }
 
     #[test]

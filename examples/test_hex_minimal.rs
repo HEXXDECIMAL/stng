@@ -1,4 +1,4 @@
-use stng::{extract_strings_with_options, ExtractOptions, StringMethod, StringKind};
+use stng::{extract_strings_with_options, ExtractOptions, StringKind, StringMethod};
 
 fn main() {
     // Create the exact same data as the test
@@ -25,12 +25,21 @@ fn main() {
 
     println!("\nFound {} strings total", strings.len());
     for (i, s) in strings.iter().enumerate() {
-        println!("{}: {:?} {:?} @ {} len={}: {}",
-            i, s.method, s.kind, s.data_offset, s.value.len(),
-            &s.value[..s.value.len().min(60)]);
+        println!(
+            "{}: {:?} {:?} @ {} len={}: {}",
+            i,
+            s.method,
+            s.kind,
+            s.data_offset,
+            s.value.len(),
+            &s.value[..s.value.len().min(60)]
+        );
     }
 
     // Check for XOR strings
-    let xor_count = strings.iter().filter(|s| s.method == StringMethod::XorDecode).count();
+    let xor_count = strings
+        .iter()
+        .filter(|s| s.method == StringMethod::XorDecode)
+        .count();
     println!("\nXOR-decoded strings: {}", xor_count);
 }
