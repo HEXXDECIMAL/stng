@@ -727,7 +727,9 @@ pub fn is_garbage(s: &str) -> bool {
     }
 
     // Very low ratio of alphanumeric characters
-    if len > 6 && alphanumeric * 100 / len < 30 {
+    // Use character count for proper Unicode support (defined later, so compute it here too)
+    let char_count_temp = trimmed.chars().count();
+    if char_count_temp > 6 && alphanumeric * 100 / char_count_temp < 30 {
         return true;
     }
 
@@ -754,12 +756,26 @@ pub fn is_garbage(s: &str) -> bool {
     }
 
     // Strings with excessive non-ASCII characters are often misaligned reads or corrupted data
+    // BUT: legitimate Unicode text (Russian, Chinese, Arabic, etc.) is mostly non-ASCII
     let non_ascii_count = len - ascii_count;
+    let char_count = trimmed.chars().count();
 
-    // For short strings (< 30 chars), be strict about non-ASCII content
+    // For short strings (< 30 BYTES), be strict about non-ASCII content
     if non_ascii_count > 0 && len < 30 {
-        // If non-ASCII chars are more than 20% of the string, it's likely garbage
-        if non_ascii_count * 100 / len > 20 {
+        // Exception: if the string is mostly alphabetic characters AND has no/low "noise" punctuation,
+        // it's likely legitimate international text (Russian, Chinese, etc.), not garbage
+        let alpha_percentage = if char_count > 0 { alpha * 100 / char_count } else { 0 };
+
+        // Check for noise punctuation that indicates garbage
+        let has_noise_punct = trimmed.chars().any(|c| {
+            matches!(c, '?' | '¥' | 'µ' | '¨' | '´' | '»' | '«' | '°' | '·' | '¦' | '¯')
+        });
+
+        if alpha_percentage >= 90 && !has_noise_punct {
+            // Very high alphabetic percentage (e.g., Russian "Рабочий стол" is 92%)
+            // AND no garbage punctuation = legitimate international text
+        } else if non_ascii_count * 100 / len > 20 {
+            // If non-ASCII bytes are more than 20% AND doesn't meet quality bar, it's likely garbage
             return true;
         }
         // Even 1-2 non-ASCII chars in very short strings (< 10) is suspicious
@@ -960,12 +976,18 @@ pub fn is_valid_string(bytes: &[u8], min_length: usize) -> bool {
     }
 
     std::str::from_utf8(bytes).is_ok_and(|s| {
-        // Check printability
+        // Check printability - support Unicode characters (not just ASCII)
+        let char_count = s.chars().count();
         let printable = s
             .chars()
-            .filter(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
+            .filter(|c| {
+                // Accept ASCII graphic/whitespace OR any non-ASCII Unicode alphabetic/numeric
+                c.is_ascii_graphic() || c.is_ascii_whitespace() ||
+                (!c.is_ascii() && (c.is_alphabetic() || c.is_numeric()))
+            })
             .count();
-        printable * 2 >= s.len()
+        // At least 50% of characters should be printable
+        printable * 2 >= char_count
     })
 }
 

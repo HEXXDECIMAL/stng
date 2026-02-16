@@ -473,18 +473,25 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
                     let alpha = s.chars().filter(|c| c.is_alphabetic()).count();
 
                     // Reject if < 50% alphanumeric (likely garbage)
-                    if s.len() > 0 && alnum * 100 < s.len() * 50 {
+                    // Use character count for proper Unicode support
+                    let char_count = s.chars().count();
+                    if char_count > 0 && alnum * 100 < char_count * 50 {
                         continue;
                     }
 
-                    // Reject if has letters but poor vowel ratio
+                    // Reject if has letters but poor vowel ratio (English-specific check)
+                    // Only apply to ASCII text - skip for international text (Russian, Chinese, etc.)
                     if alpha >= 3 {
-                        let vowels = s.chars().filter(|c| {
-                            matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
-                        }).count();
-                        let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
-                        if vowel_ratio < 10 || vowel_ratio > 70 {
-                            continue;
+                        let has_non_ascii = s.chars().any(|c| !c.is_ascii());
+                        if !has_non_ascii {
+                            // Only check vowels for ASCII/English text
+                            let vowels = s.chars().filter(|c| {
+                                matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+                            }).count();
+                            let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
+                            if vowel_ratio < 10 || vowel_ratio > 70 {
+                                continue;
+                            }
                         }
                     }
 
@@ -763,7 +770,14 @@ fn extract_custom_xor_strings_file_level_cycling(
 
 /// Check if a byte is printable for file-level XOR extraction
 fn is_printable_byte_for_file_xor(b: u8) -> bool {
-    b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n'
+    // Accept ASCII printable characters
+    if b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n' {
+        return true;
+    }
+    // Accept UTF-8 continuation bytes (0x80-0xBF) and UTF-8 start bytes (0xC0-0xF7)
+    // This allows Unicode text (Russian, Chinese, Arabic, etc.) to pass through
+    // Invalid UTF-8 will be caught later by String::from_utf8()
+    b >= 0x80 && b <= 0xF7
 }
 
 /// Try XOR decoding at radare2 string boundary hints.
@@ -1259,27 +1273,34 @@ fn extract_custom_xor_strings_pattern_based_simple(
 
         // For auto-detected keys, require at least 60% alphanumeric (stricter)
         // For user-provided keys, require at least 50% alphanumeric
+        // Use character count for proper Unicode support
+        let char_count = s.chars().count();
         let min_alnum_pct = if key_is_likely_auto_detected { 60 } else { 50 };
-        if s.len() > 0 && alnum * 100 < s.len() * min_alnum_pct {
+        if char_count > 0 && alnum * 100 < char_count * min_alnum_pct {
             continue;
         }
 
         // Reject if has letters but poor vowel ratio (linguistic check)
+        // Only apply to ASCII/English text - skip for international text (Russian, Chinese, etc.)
         if alpha >= 3 {
-            let vowels = s.chars().filter(|c| {
-                matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
-            }).count();
-            let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
+            let has_non_ascii = s.chars().any(|c| !c.is_ascii());
+            if !has_non_ascii {
+                // Only check vowels for ASCII/English text
+                let vowels = s.chars().filter(|c| {
+                    matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+                }).count();
+                let vowel_ratio = if alpha > 0 { vowels * 100 / alpha } else { 0 };
 
-            // For auto-detected keys, be stricter with vowel ratios
-            let (min_vowel, max_vowel) = if key_is_likely_auto_detected {
-                (12, 65) // Stricter range matching is_meaningful_string
-            } else {
-                (10, 70) // Slightly more lenient for user keys
-            };
+                // For auto-detected keys, be stricter with vowel ratios
+                let (min_vowel, max_vowel) = if key_is_likely_auto_detected {
+                    (12, 65) // Stricter range matching is_meaningful_string
+                } else {
+                    (10, 70) // Slightly more lenient for user keys
+                };
 
-            if vowel_ratio < min_vowel || vowel_ratio > max_vowel {
-                continue;
+                if vowel_ratio < min_vowel || vowel_ratio > max_vowel {
+                    continue;
+                }
             }
         }
 
@@ -2217,7 +2238,14 @@ fn extract_ip_port_at_pos(data: &[u8], dot_pos: usize, key: u8) -> Option<(Strin
 }
 
 fn is_printable_char(b: u8) -> bool {
-    b.is_ascii_graphic() || b == b' ' || b == b'\t'
+    // Accept ASCII printable characters
+    if b.is_ascii_graphic() || b == b' ' || b == b'\t' {
+        return true;
+    }
+    // Accept UTF-8 continuation bytes (0x80-0xBF) and UTF-8 start bytes (0xC0-0xF7)
+    // This allows Unicode text (Russian, Chinese, Arabic, etc.) to pass through
+    // Invalid UTF-8 will be caught later by String::from_utf8()
+    b >= 0x80 && b <= 0xF7
 }
 
 /// Check if a string looks meaningful (not random garbage).
@@ -2364,7 +2392,9 @@ fn is_meaningful_string(s: &str) -> bool {
         return false;
     }
 
+    // Keep byte length for some legacy checks, but use char_count for Unicode correctness
     let len = s.len();
+    let char_count = s.chars().count();
     let mut alpha = 0usize;
     let mut digit = 0usize;
     let mut vowel = 0usize;
@@ -2372,19 +2402,27 @@ fn is_meaningful_string(s: &str) -> bool {
     let mut lower = 0usize;
     let mut punct = 0usize;
     let mut spaces = 0usize;
+    let mut has_non_ascii = false;
 
     for c in s.chars() {
-        if c.is_ascii_alphabetic() {
+        // Support Unicode alphabetic characters (Cyrillic, Chinese, Arabic, etc.)
+        if c.is_alphabetic() {
             alpha += 1;
-            if c.is_ascii_uppercase() {
-                upper += 1;
-            } else {
-                lower += 1;
+            if !c.is_ascii() {
+                has_non_ascii = true;
             }
-            if matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u') {
-                vowel += 1;
+            // Only track case and vowels for ASCII (English-specific)
+            if c.is_ascii_alphabetic() {
+                if c.is_ascii_uppercase() {
+                    upper += 1;
+                } else {
+                    lower += 1;
+                }
+                if matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u') {
+                    vowel += 1;
+                }
             }
-        } else if c.is_ascii_digit() {
+        } else if c.is_numeric() {
             digit += 1;
         } else if c.is_ascii_punctuation() {
             punct += 1;
@@ -2396,7 +2434,8 @@ fn is_meaningful_string(s: &str) -> bool {
     let alnum = alpha + digit;
 
     // Must be at least 50% alphanumeric (relaxed from 60% to catch "Bookmarks.plist")
-    if len > 0 && alnum * 100 / len < 50 {
+    // Use character count for proper Unicode support
+    if char_count > 0 && alnum * 100 / char_count < 50 {
         return false;
     }
 
@@ -2408,7 +2447,8 @@ fn is_meaningful_string(s: &str) -> bool {
 
     if has_file_extension {
         // File paths are high value - just check basic quality
-        if alpha >= 5 && vowel > 0 {
+        // For non-ASCII text (e.g., Russian folder names), vowel count is 0, so skip that check
+        if alpha >= 5 && (vowel > 0 || has_non_ascii) {
             return true;
         }
     }
@@ -2430,6 +2470,10 @@ fn is_meaningful_string(s: &str) -> bool {
     // Medium signal: 1 common word + reasonable quality
     if word_matches >= 1 {
         if alpha >= 5 {
+            // For non-ASCII text, skip vowel check (vowel is 0 for Russian/Chinese/etc.)
+            if has_non_ascii {
+                return true;
+            }
             let vowel_ratio = if alpha > 0 { vowel * 100 / alpha } else { 0 };
             // Very lenient with common words present
             if vowel_ratio >= 8 {
@@ -2439,7 +2483,16 @@ fn is_meaningful_string(s: &str) -> bool {
     }
 
     // Linguistic analysis for strings without known words
+    // ONLY apply English-specific checks (vowels, consonants) to ASCII text
     if alpha >= 5 {
+        // For non-ASCII text (Russian, Chinese, Arabic, etc.), skip English-specific analysis
+        // Just rely on the alphanumeric percentage check above (>=50%)
+        if has_non_ascii {
+            // Non-ASCII alphabetic text passed the alphanumeric check, accept it
+            return true;
+        }
+
+        // English-specific analysis for ASCII text
         let vowel_ratio = vowel * 100 / alpha;
 
         // English text typically has 35-45% vowels
@@ -3149,6 +3202,8 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         _ => {
             // Generic fallback for Const and other types
             // Apply additional quality checks to avoid false positives
+            // Use character count for proper Unicode support
+            let char_count = s.chars().count();
 
             // Reject strings with too many special characters
             let special_chars = s.chars().filter(|&c| {
@@ -3156,12 +3211,12 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             }).count();
 
             // Reject if > 40% special characters (garbage indicator)
-            if special_chars * 10 > s.len() * 4 {
+            if char_count > 0 && special_chars * 10 > char_count * 4 {
                 return None;
             }
 
             // Longer strings with spaces should look like natural text
-            if s.len() >= 30 && s.contains(' ') {
+            if char_count >= 30 && s.contains(' ') {
                 if looks_like_text(s) {
                     return Some(StringKind::Const);
                 } else {
@@ -3170,8 +3225,10 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             }
 
             // Short strings: must be mostly alphanumeric
+            // Use character count for proper Unicode support
+            let char_count = s.chars().count();
             let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
-            if alnum * 10 < s.len() * 6 {
+            if char_count > 0 && alnum * 10 < char_count * 6 {
                 // < 60% alphanumeric = likely garbage
                 return None;
             }

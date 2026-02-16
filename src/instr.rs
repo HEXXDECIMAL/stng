@@ -759,9 +759,14 @@ fn is_valid_utf8_string(s: &str) -> bool {
     }
 
     // Check that it's mostly printable
+    // Support Unicode: ASCII printable OR Unicode alphabetic/numeric characters
     let printable = s
         .chars()
-        .filter(|&c| ('\x20'..='\x7E').contains(&c) || c >= '\u{80}')
+        .filter(|&c| {
+            // ASCII printable range OR Unicode alphabetic/numeric (includes Cyrillic, Chinese, Arabic, etc.)
+            ('\x20'..='\x7E').contains(&c) ||
+            (!c.is_ascii() && (c.is_alphabetic() || c.is_numeric()))
+        })
         .count();
 
     (printable as f64 / s.chars().count() as f64) > 0.5
