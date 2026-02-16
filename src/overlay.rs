@@ -87,9 +87,10 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
                 &mut seen,
             );
 
-            // Mark all newly added strings as overlay
+            // Mark all newly added strings as overlay and adjust offsets
             for s in &mut strings[initial_count..] {
                 s.kind = StringKind::Overlay;
+                s.data_offset += start as u64;
             }
 
             // Extract wide strings
@@ -97,6 +98,7 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
                 extract_wide_strings(overlay_data, min_length, Some("overlay".to_string()), &[], &empty_section_info);
             for mut s in wide_strings {
                 s.kind = StringKind::OverlayWide;
+                s.data_offset += start as u64;
                 strings.push(s);
             }
         }

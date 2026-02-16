@@ -2180,6 +2180,106 @@ mod extract_from_tests {
     }
 
     #[test]
+    #[ignore] // Only run when debugging specific binary
+    fn test_real_overlay_uplugplay() {
+        use std::fs;
+        let data = fs::read("/Users/t/data/dissect/malware/elf_linux/2026.Prometei/uplugplay").unwrap();
+
+        // Detect overlay
+        if let Some(overlay) = detect_elf_overlay(&data) {
+            println!("Overlay: start=0x{:x}, size={}", overlay.start_offset, overlay.size);
+
+            // Extract overlay strings
+            let strings = extract_overlay_strings(&data, 4);
+            println!("Extracted {} overlay strings", strings.len());
+
+            for s in &strings {
+                println!("  0x{:x}: {} (len={})", s.data_offset, s.value, s.value.len());
+            }
+
+            // Look for the JSON config string
+            let has_config = strings.iter().any(|s| s.value.contains("config"));
+            println!("Has 'config' string: {}", has_config);
+        }
+    }
+
+    #[test]
+    fn test_overlay_string_offsets_are_absolute() {
+        // Create a minimal ELF that ends at a known offset
+        let mut data = vec![0u8; 1024];
+        // ELF magic
+        data[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        data[4] = 2; // 64-bit
+        data[5] = 1; // little-endian
+        data[6] = 1; // version
+        data[16..18].copy_from_slice(&[2, 0]); // executable
+        data[18..20].copy_from_slice(&[0x3E, 0]); // x86_64
+
+        // Set e_shoff (section header offset) to 512
+        data[40..48].copy_from_slice(&[0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // Set e_shnum (section header count) to 1
+        data[60..62].copy_from_slice(&[0x01, 0x00]);
+        // Set e_shentsize (section header entry size) to 64
+        data[58..60].copy_from_slice(&[0x40, 0x00]);
+
+        // Section header at offset 512 (0x200)
+        // This section ends at offset 512 + 64 = 576 (0x240)
+        let section_header_start = 512;
+        data[section_header_start..section_header_start + 4].copy_from_slice(&[0x01, 0x00, 0x00, 0x00]); // sh_name
+        data[section_header_start + 4..section_header_start + 8].copy_from_slice(&[0x01, 0x00, 0x00, 0x00]); // sh_type
+
+        // ELF structure ends at 576 (0x240)
+        let elf_end = 576;
+
+        // Append overlay data starting at offset 576 (0x240)
+        // Add some padding to reach exactly 576 bytes
+        data.truncate(elf_end);
+
+        // Add overlay strings at known positions
+        // First string "OVERLAY_TEST_AAA" starts at offset 576 (0x240)
+        let overlay_start = data.len();
+        data.extend_from_slice(b"OVERLAY_TEST_AAA\0");
+        let first_string_offset = overlay_start;
+
+        // Second string "OVERLAY_TEST_BBB" starts at offset 593 (0x251)
+        data.extend_from_slice(b"OVERLAY_TEST_BBB\0");
+        let second_string_offset = overlay_start + 17;
+
+        // Extract overlay strings
+        let strings = extract_overlay_strings(&data, 4);
+
+        // Verify we found the strings
+        assert!(!strings.is_empty(), "Should find overlay strings");
+
+        // Find our test strings
+        let test_aaa = strings.iter().find(|s| s.value.contains("OVERLAY_TEST_AAA"));
+        let test_bbb = strings.iter().find(|s| s.value.contains("OVERLAY_TEST_BBB"));
+
+        // Verify offsets are absolute file offsets, not relative to overlay start
+        if let Some(s) = test_aaa {
+            assert_eq!(
+                s.data_offset as usize, first_string_offset,
+                "First overlay string offset should be absolute file offset 0x{:x}, not relative to overlay",
+                first_string_offset
+            );
+            assert_eq!(s.kind, stng::StringKind::Overlay, "Should be marked as overlay");
+        } else {
+            panic!("Should find OVERLAY_TEST_AAA string");
+        }
+
+        if let Some(s) = test_bbb {
+            assert_eq!(
+                s.data_offset as usize, second_string_offset,
+                "Second overlay string offset should be absolute file offset 0x{:x}, not relative to overlay",
+                second_string_offset
+            );
+            assert_eq!(s.kind, stng::StringKind::Overlay, "Should be marked as overlay");
+        } else {
+            panic!("Should find OVERLAY_TEST_BBB string");
+        }
+    }
+
+    #[test]
     fn test_extract_from_elf_with_garbage_filter() {
         let data = minimal_elf_with_strings(&["valid_string", "@@##$$"]);
         let mut opts = ExtractOptions::new(4);

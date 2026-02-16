@@ -6,6 +6,7 @@ use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use clap::Parser;
+use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -390,13 +391,45 @@ fn main() -> Result<()> {
             byte_offset += line.len() as u64 + 1;
         }
 
-        // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
-        let mut decoded = Vec::new();
-        decoded.extend(stng::decoders::decode_base64_strings(&strings));
-        decoded.extend(stng::decoders::decode_hex_strings(&strings));
-        decoded.extend(stng::decoders::decode_url_strings(&strings));
-        decoded.extend(stng::decoders::decode_unicode_escape_strings(&strings));
-        strings.extend(decoded);
+        // Extract embedded base64 from within commands and strings
+        let mut embedded_decoded = Vec::new();
+        for s in &strings {
+            // Look for base64 patterns within strings (e.g., in shell commands)
+            // Pattern: alphanumeric + +/= characters, min 12 chars, ends with optional =
+            let re = Regex::new(r"([A-Za-z0-9+/]{12,}={0,2})").unwrap();
+            for cap in re.captures_iter(&s.value) {
+                if let Some(b64_match) = cap.get(1) {
+                    let b64_str = b64_match.as_str();
+                    // Check if it's likely base64 and not the whole string
+                    if b64_str != s.value && b64_str.len() % 4 == 0 {
+                        // Try to decode it
+                        if let Ok(decoded) = BASE64.decode(b64_str.trim()) {
+                            // Validate it's printable
+                            if let Ok(decoded_str) = String::from_utf8(decoded.clone()) {
+                                let trimmed = decoded_str.trim();
+                                if trimmed.len() >= 4 {
+                                    embedded_decoded.push(stng::ExtractedString {
+                                        value: trimmed.to_string(),
+                                        data_offset: s.data_offset + 1, // Offset slightly to sort after parent
+                                        section: None,
+                                        method: stng::StringMethod::Base64Decode,
+                                        kind: stng::classify_string(trimmed),
+                                        library: Some(format!("b64:{}", b64_str)),
+                                        fragments: None,
+                                        section_size: None,
+                                        section_executable: None,
+                                        section_writable: None,
+                                        architecture: None,
+                                        function_meta: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        strings.extend(embedded_decoded);
 
         // Jump to output section
         if strings.is_empty() {
@@ -1034,6 +1067,18 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         ("xor", s.kind.short_name())
     } else if s.method == stng::StringMethod::Base64ObfuscatedDecode {
         ("b64+obf", s.kind.short_name())
+    } else if s.method == stng::StringMethod::Base64Decode {
+        ("b64", s.kind.short_name())
+    } else if s.method == stng::StringMethod::HexDecode {
+        ("hex", s.kind.short_name())
+    } else if s.method == stng::StringMethod::UrlDecode {
+        ("url", s.kind.short_name())
+    } else if s.method == stng::StringMethod::UnicodeEscapeDecode {
+        ("unicode", s.kind.short_name())
+    } else if s.method == stng::StringMethod::Base32Decode {
+        ("b32", s.kind.short_name())
+    } else if s.method == stng::StringMethod::Base85Decode {
+        ("b85", s.kind.short_name())
     } else if s.method == stng::StringMethod::CodeSignature {
         // All CodeSignature strings get the "codesig" method tag
         ("codesig", s.kind.short_name())
@@ -1072,103 +1117,115 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         value = format!("{} {}", value, metadata);
     }
 
-    // Decode base64 strings and show plaintext/hex in brackets
-    if s.kind == stng::StringKind::Base64 {
-        if let Ok(decoded) = BASE64.decode(s.value.trim()) {
-            if !decoded.is_empty() {
-                let printable = decoded
-                    .iter()
-                    .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
-                    .count();
+    // For encoded strings that haven't been decoded separately, show preview inline
+    // Skip inline preview if this is a decoded string (to avoid duplication)
+    let show_inline_preview = !matches!(
+        s.method,
+        stng::StringMethod::Base64Decode
+            | stng::StringMethod::HexDecode
+            | stng::StringMethod::UrlDecode
+            | stng::StringMethod::UnicodeEscapeDecode
+    );
 
-                // Show decoded content (text or hex)
-                if printable > decoded.len() / 2 {
-                    // Mostly printable - show as text
-                    if let Ok(text) = String::from_utf8(decoded) {
-                        let text = text.trim();
-                        if !text.is_empty() {
-                            if use_color {
-                                value = format!("{value} {DIM}[{text}]{RESET}");
-                            } else {
-                                value = format!("{value} [{text}]");
+    if show_inline_preview {
+        // Decode base64 strings and show plaintext/hex in brackets
+        if s.kind == stng::StringKind::Base64 {
+            if let Ok(decoded) = BASE64.decode(s.value.trim()) {
+                if !decoded.is_empty() {
+                    let printable = decoded
+                        .iter()
+                        .filter(|&&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+                        .count();
+
+                    // Show decoded content (text or hex)
+                    if printable > decoded.len() / 2 {
+                        // Mostly printable - show as text
+                        if let Ok(text) = String::from_utf8(decoded) {
+                            let text = text.trim();
+                            if !text.is_empty() {
+                                if use_color {
+                                    value = format!("{value} {DIM}→ {text}{RESET}");
+                                } else {
+                                    value = format!("{value} -> {text}");
+                                }
                             }
                         }
-                    }
-                } else {
-                    // Binary data - show as hex (especially useful for XOR-decoded base64)
-                    let hex_preview = if decoded.len() <= 16 {
-                        decoded
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<String>()
                     } else {
-                        format!(
-                            "{}...",
-                            decoded[..16]
+                        // Binary data - show as hex (especially useful for XOR-decoded base64)
+                        let hex_preview = if decoded.len() <= 16 {
+                            decoded
                                 .iter()
                                 .map(|b| format!("{b:02x}"))
                                 .collect::<String>()
-                        )
-                    };
-                    if use_color {
-                        value = format!("{value} {DIM}[0x{hex_preview}]{RESET}");
-                    } else {
-                        value = format!("{value} [0x{hex_preview}]");
+                        } else {
+                            format!(
+                                "{}...",
+                                decoded[..16]
+                                    .iter()
+                                    .map(|b| format!("{b:02x}"))
+                                    .collect::<String>()
+                            )
+                        };
+                        if use_color {
+                            value = format!("{value} {DIM}→ 0x{hex_preview}{RESET}");
+                        } else {
+                            value = format!("{value} -> 0x{hex_preview}");
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Decode hex-encoded strings
-    if s.kind == stng::StringKind::HexEncoded {
-        let decoded: Vec<u8> = (0..s.value.len())
-            .step_by(2)
-            .filter_map(|i| u8::from_str_radix(&s.value[i..i + 2], 16).ok())
-            .collect();
+        // Decode hex-encoded strings
+        if s.kind == stng::StringKind::HexEncoded {
+            let decoded: Vec<u8> = (0..s.value.len())
+                .step_by(2)
+                .filter_map(|i| u8::from_str_radix(&s.value[i..i + 2], 16).ok())
+                .collect();
 
-        if !decoded.is_empty() {
-            if let Ok(text) = String::from_utf8(decoded) {
-                let text = text.trim();
-                if !text.is_empty() {
-                    if use_color {
-                        value = format!("{value} {DIM}[{text}]{RESET}");
-                    } else {
-                        value = format!("{value} [{text}]");
+            if !decoded.is_empty() {
+                if let Ok(text) = String::from_utf8(decoded) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        if use_color {
+                            value = format!("{value} {DIM}→ {text}{RESET}");
+                        } else {
+                            value = format!("{value} -> {text}");
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Decode Unicode escape sequences
-    if s.kind == stng::StringKind::UnicodeEscaped {
-        let decoded = decode_unicode_escapes(&s.value);
-        if !decoded.is_empty() {
-            if let Ok(text) = String::from_utf8(decoded) {
-                let text = text.trim();
-                if !text.is_empty() {
-                    if use_color {
-                        value = format!("{value} {DIM}[{text}]{RESET}");
-                    } else {
-                        value = format!("{value} [{text}]");
+        // Decode Unicode escape sequences
+        if s.kind == stng::StringKind::UnicodeEscaped {
+            let decoded = decode_unicode_escapes(&s.value);
+            if !decoded.is_empty() {
+                if let Ok(text) = String::from_utf8(decoded) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        if use_color {
+                            value = format!("{value} {DIM}→ {text}{RESET}");
+                        } else {
+                            value = format!("{value} -> {text}");
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Decode URL-encoded strings
-    if s.kind == stng::StringKind::UrlEncoded {
-        let decoded = decode_url_encoding(&s.value);
-        if !decoded.is_empty() {
-            if let Ok(text) = String::from_utf8(decoded) {
-                let text = text.trim();
-                if !text.is_empty() {
-                    if use_color {
-                        value = format!("{value} {DIM}[{text}]{RESET}");
-                    } else {
-                        value = format!("{value} [{text}]");
+        // Decode URL-encoded strings
+        if s.kind == stng::StringKind::UrlEncoded {
+            let decoded = decode_url_encoding(&s.value);
+            if !decoded.is_empty() {
+                if let Ok(text) = String::from_utf8(decoded) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        if use_color {
+                            value = format!("{value} {DIM}→ {text}{RESET}");
+                        } else {
+                            value = format!("{value} -> {text}");
+                        }
                     }
                 }
             }
@@ -1191,6 +1248,14 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
                 } else {
                     format!("{value} [{lib}]")
                 }
+            }
+        } else if s.method == stng::StringMethod::Base64Decode && lib.starts_with("b64:") {
+            // For embedded base64, show the original encoded string
+            let encoded = &lib[4..]; // Strip "b64:" prefix
+            if use_color {
+                format!("  ↳ {value} {DIM}(from {encoded}){RESET}")
+            } else {
+                format!("  ↳ {value} (from {encoded})")
             }
         } else {
             // For imports, show with arrow

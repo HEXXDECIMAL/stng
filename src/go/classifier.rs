@@ -766,7 +766,8 @@ fn is_ipv4(s: &str) -> bool {
 /// Check if a string looks like base64-encoded data
 fn is_base64(s: &str) -> bool {
     // Must be reasonably long (short base64 could be anything)
-    if s.len() < 20 {
+    // Lowered from 20 to 16 to catch common short base64 strings
+    if s.len() < 16 {
         return false;
     }
 
@@ -805,8 +806,9 @@ fn is_base64(s: &str) -> bool {
 
 /// Check if a string looks like hex-encoded ASCII data
 fn is_hex_encoded(s: &str) -> bool {
-    // Must be reasonably long (at least 40 chars = 20 decoded bytes)
-    if s.len() < 40 {
+    // Must be reasonably long (at least 16 chars = 8 decoded bytes)
+    // Lowered from 40 to catch common short hex-encoded strings
+    if s.len() < 16 {
         return false;
     }
 
@@ -943,7 +945,8 @@ fn decode_unicode_escapes(s: &str) -> Vec<u8> {
 /// Check if a string looks like URL-encoded data (%XX format)
 fn is_url_encoded(s: &str) -> bool {
     // Must be reasonably long
-    if s.len() < 20 {
+    // Lowered from 20 to catch common short URL-encoded strings
+    if s.len() < 12 {
         return false;
     }
 
@@ -973,8 +976,9 @@ fn is_url_encoded(s: &str) -> bool {
         i += 1;
     }
 
-    // Need at least 3 VALID %XX sequences (not just % signs)
-    if valid_percent_count < 3 {
+    // Need at least 2 VALID %XX sequences (not just % signs)
+    // Lowered from 3 to catch shorter URL-encoded strings
+    if valid_percent_count < 2 {
         return false;
     }
 

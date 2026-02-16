@@ -968,6 +968,15 @@ pub fn extract_from_object(
             let segments = collect_elf_segments(elf);
             let section_info = collect_elf_section_info(elf);
 
+            // Detect overlay first to avoid scanning it during normal extraction
+            let overlay_info = detect_elf_overlay(data);
+            let scan_data = if let Some(ref overlay) = overlay_info {
+                // Only scan up to overlay start
+                &data[..overlay.start_offset as usize]
+            } else {
+                data
+            };
+
             // Check for Go sections
             let has_go = elf.section_headers.iter().any(|sh| {
                 let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
@@ -983,10 +992,10 @@ pub fn extract_from_object(
             if has_go {
                 is_go_binary = true;
                 let extractor = GoStringExtractor::new(min_length);
-                strings.extend(extractor.extract_elf(elf, data));
+                strings.extend(extractor.extract_elf(elf, scan_data));
             } else if has_rust {
                 let extractor = RustStringExtractor::new(min_length);
-                strings.extend(extractor.extract_elf(elf, data));
+                strings.extend(extractor.extract_elf(elf, scan_data));
             } else {
                 // Unknown ELF - use r2 if available + raw scan
                 if let Some(r2_strings) = get_r2_strings(opts) {
@@ -994,19 +1003,19 @@ pub fn extract_from_object(
                 }
                 // Also do raw scan to catch anything r2 missed
                 let extractor = RustStringExtractor::new(min_length);
-                let rust_strings = extractor.extract_elf(elf, data);
+                let rust_strings = extractor.extract_elf(elf, scan_data);
                 if rust_strings.is_empty() {
-                    strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
+                    strings.extend(extract_raw_strings(scan_data, min_length, None, &segments, &section_info));
                 } else {
                     strings.extend(rust_strings);
                 }
             }
             // Extract UTF-16LE wide strings (less common in ELF but can occur, especially in malware)
-            strings.extend(extract_wide_strings(data, min_length, None, &segments, &section_info));
+            strings.extend(extract_wide_strings(scan_data, min_length, None, &segments, &section_info));
 
             // Extract binary network data (IPs and ports in network byte order)
             strings.extend(scan_binary_ips(
-                data,
+                scan_data,
                 min_length,
                 elf.header.e_machine,
                 Some(elf),
@@ -1015,7 +1024,7 @@ pub fn extract_from_object(
 
             // Skip stack string extraction for Go binaries (they don't use stack-based obfuscation)
             if !is_go_binary {
-                strings.extend(extract_stack_strings(data, min_length));
+                strings.extend(extract_stack_strings(scan_data, min_length));
             }
             // Add imports/exports from dynamic symbols, upgrading existing strings
             let imports = extract_elf_imports(elf, min_length);
@@ -1035,6 +1044,12 @@ pub fn extract_from_object(
                 .filter(|s| !seen.contains(s.value.as_str()))
                 .collect();
             strings.extend(new_imports);
+
+            // Filter out any strings that fall within the overlay region
+            // (they'll be re-extracted with proper section="overlay" marking)
+            if let Some(ref overlay) = overlay_info {
+                strings.retain(|s| s.data_offset < overlay.start_offset);
+            }
 
             // Extract overlay/appended data (common malware technique)
             strings.extend(extract_overlay_strings(data, min_length));
@@ -1467,6 +1482,15 @@ pub fn extract_from_elf(
     let segments = collect_elf_segments(elf);
     let section_info = collect_elf_section_info(elf);
 
+    // Detect overlay first to avoid scanning it during normal extraction
+    let overlay_info = detect_elf_overlay(data);
+    let scan_data = if let Some(ref overlay) = overlay_info {
+        // Only scan up to overlay start
+        &data[..overlay.start_offset as usize]
+    } else {
+        data
+    };
+
     // Check for Go sections
     let has_go = elf.section_headers.iter().any(|sh| {
         let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
@@ -1481,19 +1505,19 @@ pub fn extract_from_elf(
 
     if has_go {
         let extractor = GoStringExtractor::new(min_length);
-        strings.extend(extractor.extract_elf(elf, data));
+        strings.extend(extractor.extract_elf(elf, scan_data));
     } else if has_rust {
         let extractor = RustStringExtractor::new(min_length);
-        strings.extend(extractor.extract_elf(elf, data));
+        strings.extend(extractor.extract_elf(elf, scan_data));
     } else {
         // Unknown ELF - use r2 if available + raw scan
         if let Some(r2_strings) = get_r2_strings(opts) {
             strings.extend(r2_strings);
         }
         let extractor = RustStringExtractor::new(min_length);
-        let rust_strings = extractor.extract_elf(elf, data);
+        let rust_strings = extractor.extract_elf(elf, scan_data);
         if rust_strings.is_empty() {
-            strings.extend(extract_raw_strings(data, min_length, None, &segments, &section_info));
+            strings.extend(extract_raw_strings(scan_data, min_length, None, &segments, &section_info));
         } else {
             strings.extend(rust_strings);
         }
@@ -1517,6 +1541,12 @@ pub fn extract_from_elf(
         .filter(|s| !seen.contains(s.value.as_str()))
         .collect();
     strings.extend(new_imports);
+
+    // Filter out any strings that fall within the overlay region
+    // (they'll be re-extracted with proper section="overlay" marking)
+    if let Some(ref overlay) = overlay_info {
+        strings.retain(|s| s.data_offset < overlay.start_offset);
+    }
 
     // Extract overlay/appended data (common malware technique)
     strings.extend(extract_overlay_strings(data, min_length));
