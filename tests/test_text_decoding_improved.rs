@@ -1,6 +1,6 @@
 //! Tests for improved text file decoding with embedded base64 extraction
 
-use stng::{classify_string, StringKind, StringMethod};
+use stng::{classify_string, StringKind};
 
 #[test]
 fn test_base64_classification_short_strings() {
@@ -220,15 +220,17 @@ fn test_base64_in_json() {
 
     let re = Regex::new(r"([A-Za-z0-9+/]{12,}={0,2})").unwrap();
 
-    let json = r#"{"token":"SGVsbG8gV29ybGQ=","data":"Zm9vYmFy"}"#;
+    // Use base64 strings that meet the 12-char minimum
+    let json = r#"{"token":"SGVsbG8gV29ybGQ=","data":"VGhpcyBpcyBhIHRlc3Q="}"#;
     let captures: Vec<_> = re.captures_iter(json)
         .filter_map(|cap| cap.get(1))
         .map(|m| m.as_str())
         .collect();
 
-    // Should capture at least the base64 strings
-    assert!(!captures.is_empty());
+    // Should capture both base64 strings
+    assert_eq!(captures.len(), 2);
     assert!(captures.iter().any(|s| s.contains("SGVsbG8gV29ybGQ")));
+    assert!(captures.iter().any(|s| s.contains("VGhpcyBpcyBhIHRlc3Q")));
 }
 
 #[test]
