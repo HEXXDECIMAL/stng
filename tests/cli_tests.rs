@@ -442,3 +442,107 @@ fn test_cli_simple_mode_trims_newlines() {
 
     std::fs::remove_file(&temp_file).ok();
 }
+
+#[test]
+fn test_cli_interesting_flag() {
+    let binary_path = if std::path::Path::new("/bin/ls").exists() {
+        "/bin/ls"
+    } else if std::path::Path::new("/usr/bin/ls").exists() {
+        "/usr/bin/ls"
+    } else {
+        return;
+    };
+
+    let output = stng_cmd()
+        .arg("--interesting")
+        .arg("--json")
+        .arg("--no-r2")
+        .arg(binary_path)
+        .output()
+        .expect("Failed to execute stng");
+
+    assert!(
+        output.status.success(),
+        "--interesting flag should not cause a failure"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with('['),
+        "--interesting with --json should produce a JSON array"
+    );
+}
+
+#[test]
+fn test_cli_no_xor_flag() {
+    let binary_path = if std::path::Path::new("/bin/ls").exists() {
+        "/bin/ls"
+    } else if std::path::Path::new("/usr/bin/ls").exists() {
+        "/usr/bin/ls"
+    } else {
+        return;
+    };
+
+    let output = stng_cmd()
+        .arg("--no-xor")
+        .arg("--json")
+        .arg("--no-r2")
+        .arg(binary_path)
+        .output()
+        .expect("Failed to execute stng");
+
+    assert!(
+        output.status.success(),
+        "--no-xor flag should not cause a failure"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("\"XorDecode\""),
+        "--no-xor should produce no XorDecode entries"
+    );
+}
+
+#[test]
+fn test_cli_debug_flag_does_not_crash() {
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("stng_test_debug_flag.bin");
+    std::fs::write(&temp_file, b"debug test content for flag check").unwrap();
+
+    let output = stng_cmd()
+        .arg("--debug")
+        .arg("--no-r2")
+        .arg(&temp_file)
+        .output()
+        .expect("Failed to execute stng");
+
+    assert!(
+        output.status.success(),
+        "--debug flag should not cause a failure"
+    );
+
+    std::fs::remove_file(&temp_file).ok();
+}
+
+#[test]
+fn test_cli_xor_min_length_respected() {
+    let binary_path = if std::path::Path::new("/bin/ls").exists() {
+        "/bin/ls"
+    } else if std::path::Path::new("/usr/bin/ls").exists() {
+        "/usr/bin/ls"
+    } else {
+        return;
+    };
+
+    let output = stng_cmd()
+        .arg("--json")
+        .arg("--no-r2")
+        .arg("--xor-min-length")
+        .arg("200")
+        .arg(binary_path)
+        .output()
+        .expect("Failed to execute stng");
+
+    assert!(
+        output.status.success(),
+        "--xor-min-length should not cause a failure"
+    );
+}

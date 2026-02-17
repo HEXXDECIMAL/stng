@@ -412,7 +412,7 @@ pub fn is_garbage(s: &str) -> bool {
         let colon_count = trimmed.chars().filter(|&c| c == ':').count();
         let dash_count = trimmed.chars().filter(|&c| c == '-').count();
         let dot_count = trimmed.chars().filter(|&c| c == '.').count();
-        let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+        let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
 
         // Colon or dash format: 5 separators, 12 hex digits
         if (colon_count == 5 || dash_count == 5) && hex_count == 12 {
@@ -427,7 +427,7 @@ pub fn is_garbage(s: &str) -> bool {
     // Special case: IPv6 addresses (contains :: or multiple colons with hex)
     if len >= 3 && trimmed.contains(':') {
         let colon_count = trimmed.chars().filter(|&c| c == ':').count();
-        let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+        let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
         // IPv6 has at least 2 colons and mostly hex digits
         // ::1 (shortest), fe80::1, 2001:db8::1, etc.
         if colon_count >= 2 && hex_count >= 1 {
@@ -444,7 +444,7 @@ pub fn is_garbage(s: &str) -> bool {
 
     // Special case: Crypto hashes and keys (long hex strings)
     if (32..=128).contains(&len) {
-        let hex_count = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).count();
+        let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
         // If >95% hex digits, it's likely a hash/key
         if hex_count * 100 / len > 95 {
             return false;
@@ -494,7 +494,7 @@ pub fn is_garbage(s: &str) -> bool {
     {
         // Check if it looks like a command (has alphanumeric content and mostly ASCII)
         let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
-        let ascii_chars = trimmed.chars().filter(|c| c.is_ascii()).count();
+        let ascii_chars = trimmed.chars().filter(char::is_ascii).count();
         // Must have at least 3 alphanumeric AND be mostly ASCII (>80%)
         if alnum_count >= 3 && ascii_chars * 100 / trimmed.chars().count() > 80 {
             return false; // Shell commands with redirections are NOT garbage

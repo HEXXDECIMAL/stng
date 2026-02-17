@@ -43,6 +43,12 @@ pub fn extract_fuzzy_base64(strings: &[ExtractedString]) -> Vec<ExtractedString>
             continue;
         }
 
+        // Skip XorDecode strings: their base64 value is already decoded by decode_base64_strings.
+        // The XorDecode representation (showing the base64 payload) must be preserved in output.
+        if s.method == StringMethod::XorDecode {
+            continue;
+        }
+
         // Try different extraction strategies
         if let Some(decoded) = try_deobfuscate_js_base64(&s.value) {
             tracing::debug!(

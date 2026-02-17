@@ -344,6 +344,7 @@ pub fn extract_wide_strings(
 
 /// Check if a UTF-16 code unit represents a valid printable character.
 #[inline]
+#[allow(clippy::match_same_arms)] // Arms are grouped by Unicode block for readability
 fn is_valid_wide_char(code_unit: u16) -> bool {
     match code_unit {
         // ASCII printable range (space through tilde) plus tab, newline, carriage return

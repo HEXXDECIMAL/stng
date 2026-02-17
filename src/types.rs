@@ -93,7 +93,7 @@ pub struct FunctionMetadata {
 
 impl Default for ExtractedString {
     fn default() -> Self {
-        ExtractedString {
+        Self {
             value: String::new(),
             data_offset: 0,
             section: None,
@@ -186,6 +186,8 @@ pub enum StringMethod {
     Utf16LeDecode,
     /// Found via UTF-16BE whole-file decoding (BOM detected)
     Utf16BeDecode,
+    /// Found via XOR of two stack-placed non-printable immediate constants (e.g. BrickStorm/garble style)
+    XorStackPair,
 }
 
 /// Semantic kind of the extracted string.
@@ -324,50 +326,50 @@ impl StringKind {
     /// Get the severity level for this kind
     pub fn severity(&self) -> Severity {
         match self {
-            StringKind::IP
-            | StringKind::IPPort
-            | StringKind::Hostname
-            | StringKind::Url
-            | StringKind::ShellCmd
-            | StringKind::SuspiciousPath
-            | StringKind::Base64
-            | StringKind::HexEncoded
-            | StringKind::UnicodeEscaped
-            | StringKind::UrlEncoded
-            | StringKind::Base32
-            | StringKind::Base58
-            | StringKind::Base85
-            | StringKind::Overlay
-            | StringKind::OverlayWide
-            | StringKind::StackString
-            | StringKind::Entitlement
-            | StringKind::AppId
-            | StringKind::XorKey
-            | StringKind::CryptoWallet
-            | StringKind::MiningPool
-            | StringKind::Email
-            | StringKind::TorAddress
-            | StringKind::CTFFlag
-            | StringKind::SQLInjection
-            | StringKind::XSSPayload
-            | StringKind::CommandInjection
-            | StringKind::JWT
-            | StringKind::APIKey
-            | StringKind::Mutex
-            | StringKind::GUID
-            | StringKind::RansomNote
-            | StringKind::LDAPPath => Severity::High,
+            Self::IP
+            | Self::IPPort
+            | Self::Hostname
+            | Self::Url
+            | Self::ShellCmd
+            | Self::SuspiciousPath
+            | Self::Base64
+            | Self::HexEncoded
+            | Self::UnicodeEscaped
+            | Self::UrlEncoded
+            | Self::Base32
+            | Self::Base58
+            | Self::Base85
+            | Self::Overlay
+            | Self::OverlayWide
+            | Self::StackString
+            | Self::Entitlement
+            | Self::AppId
+            | Self::XorKey
+            | Self::CryptoWallet
+            | Self::MiningPool
+            | Self::Email
+            | Self::TorAddress
+            | Self::CTFFlag
+            | Self::SQLInjection
+            | Self::XSSPayload
+            | Self::CommandInjection
+            | Self::JWT
+            | Self::APIKey
+            | Self::Mutex
+            | Self::GUID
+            | Self::RansomNote
+            | Self::LDAPPath => Severity::High,
 
-            StringKind::Path
-            | StringKind::FilePath
-            | StringKind::Import
-            | StringKind::EnvVar
-            | StringKind::Registry
-            | StringKind::Error
-            | StringKind::Section
-            | StringKind::EntitlementsXml => Severity::Medium,
+            Self::Path
+            | Self::FilePath
+            | Self::Import
+            | Self::EnvVar
+            | Self::Registry
+            | Self::Error
+            | Self::Section
+            | Self::EntitlementsXml => Severity::Medium,
 
-            StringKind::FuncName | StringKind::Export => Severity::Low,
+            Self::FuncName | Self::Export => Severity::Low,
 
             _ => Severity::Info,
         }
@@ -376,59 +378,59 @@ impl StringKind {
     /// Get short display name for the kind
     pub fn short_name(&self) -> &'static str {
         match self {
-            StringKind::Const => "-",
-            StringKind::FuncName => "func",
-            StringKind::FilePath => "file",
-            StringKind::MapKey => "key",
-            StringKind::Error => "error",
-            StringKind::EnvVar => "env",
-            StringKind::Url => "url",
-            StringKind::Path => "path",
-            StringKind::Arg => "arg",
-            StringKind::Ident => "ident",
-            StringKind::Garbage => "garbage",
-            StringKind::Section => "section",
-            StringKind::Import => "import",
-            StringKind::Export => "export",
-            StringKind::IP => "ip",
-            StringKind::IPPort => "ip:port",
-            StringKind::Hostname => "host",
-            StringKind::ShellCmd => "shell",
-            StringKind::SuspiciousPath => "sus",
-            StringKind::Registry => "registry",
-            StringKind::Base64 => "base64",
-            StringKind::CodeSignatureHash => "hash",
-            StringKind::HexEncoded => "hex",
-            StringKind::UnicodeEscaped => "unicode",
-            StringKind::UrlEncoded => "urlenc",
-            StringKind::Base32 => "base32",
-            StringKind::Base58 => "base58",
-            StringKind::Base85 => "base85",
-            StringKind::Overlay => "overlay",
-            StringKind::OverlayWide => "overlay:16LE",
-            StringKind::StackString => "stack",
-            StringKind::Entitlement => "entitlement",
-            StringKind::AppId => "appid",
-            StringKind::EntitlementsXml => "entitlements",
-            StringKind::XorKey => "xor_key",
-            StringKind::CryptoWallet => "crypto",
-            StringKind::MiningPool => "miner",
-            StringKind::Email => "email",
-            StringKind::TorAddress => "tor",
-            StringKind::CTFFlag => "ctf_flag",
-            StringKind::SQLInjection => "sqli",
-            StringKind::XSSPayload => "xss",
-            StringKind::CommandInjection => "cmdi",
-            StringKind::JWT => "jwt",
-            StringKind::APIKey => "api_key",
-            StringKind::Mutex => "mutex",
-            StringKind::GUID => "guid",
-            StringKind::RansomNote => "ransom",
-            StringKind::LDAPPath => "ldap",
-            StringKind::AppleScript => "applescript",
-            StringKind::PythonCode => "python",
-            StringKind::JavaScriptCode => "javascript",
-            StringKind::PhpCode => "php",
+            Self::Const => "-",
+            Self::FuncName => "func",
+            Self::FilePath => "file",
+            Self::MapKey => "key",
+            Self::Error => "error",
+            Self::EnvVar => "env",
+            Self::Url => "url",
+            Self::Path => "path",
+            Self::Arg => "arg",
+            Self::Ident => "ident",
+            Self::Garbage => "garbage",
+            Self::Section => "section",
+            Self::Import => "import",
+            Self::Export => "export",
+            Self::IP => "ip",
+            Self::IPPort => "ip:port",
+            Self::Hostname => "host",
+            Self::ShellCmd => "shell",
+            Self::SuspiciousPath => "sus",
+            Self::Registry => "registry",
+            Self::Base64 => "base64",
+            Self::CodeSignatureHash => "hash",
+            Self::HexEncoded => "hex",
+            Self::UnicodeEscaped => "unicode",
+            Self::UrlEncoded => "urlenc",
+            Self::Base32 => "base32",
+            Self::Base58 => "base58",
+            Self::Base85 => "base85",
+            Self::Overlay => "overlay",
+            Self::OverlayWide => "overlay:16LE",
+            Self::StackString => "stack",
+            Self::Entitlement => "entitlement",
+            Self::AppId => "appid",
+            Self::EntitlementsXml => "entitlements",
+            Self::XorKey => "xor_key",
+            Self::CryptoWallet => "crypto",
+            Self::MiningPool => "miner",
+            Self::Email => "email",
+            Self::TorAddress => "tor",
+            Self::CTFFlag => "ctf_flag",
+            Self::SQLInjection => "sqli",
+            Self::XSSPayload => "xss",
+            Self::CommandInjection => "cmdi",
+            Self::JWT => "jwt",
+            Self::APIKey => "api_key",
+            Self::Mutex => "mutex",
+            Self::GUID => "guid",
+            Self::RansomNote => "ransom",
+            Self::LDAPPath => "ldap",
+            Self::AppleScript => "applescript",
+            Self::PythonCode => "python",
+            Self::JavaScriptCode => "javascript",
+            Self::PhpCode => "php",
         }
     }
 }

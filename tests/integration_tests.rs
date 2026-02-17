@@ -2446,6 +2446,59 @@ mod testdata_binary_tests {
             "Longer min_length should produce fewer strings"
         );
     }
+
+    /// End-to-end test against the BrickStorm/garble-obfuscated ELF malware sample.
+    ///
+    /// Verifies that XOR-pair extraction recovers known strings from the binary,
+    /// including environment variable lookups, the C2 hostname, and multi-chunk
+    /// merged results longer than a single 8-byte encoding chunk.
+    #[test]
+    fn test_brickstorm_xor_pair_extraction() {
+        use stng::StringMethod;
+
+        let path = Path::new("tests/testdata/brickstorm_linux_amd64");
+        if !path.exists() {
+            return;
+        }
+
+        let data = std::fs::read(path).unwrap();
+        let opts = ExtractOptions::new(4);
+
+        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
+            panic!("failed to parse brickstorm ELF");
+        };
+
+        let strings = extract_from_elf(&elf, &data, &opts);
+        let xor: Vec<_> = strings
+            .iter()
+            .filter(|s| s.method == StringMethod::XorStackPair)
+            .collect();
+
+        assert!(!xor.is_empty(), "expected XorStackPair results from BrickStorm binary");
+
+        let values: Vec<&str> = xor.iter().map(|s| s.value.as_str()).collect();
+
+        // Environment variable lookups observed in the wild.
+        for expected in &["PATH", "HOME", "TERM"] {
+            assert!(
+                values.contains(expected),
+                "expected env var {expected:?} in XOR-pair results"
+            );
+        }
+
+        // C2 hostname fragment — characteristic of this sample.
+        assert!(
+            values.iter().any(|v| v.contains("systemsvcs")),
+            "expected C2 hostname fragment containing 'systemsvcs'"
+        );
+
+        // Multi-chunk merging: at least one result longer than one 8-byte chunk.
+        let max_len = xor.iter().map(|s| s.value.len()).max().unwrap_or(0);
+        assert!(
+            max_len > 8,
+            "expected at least one merged multi-chunk result (got max len {max_len})"
+        );
+    }
 }
 
 // Tests for edge cases in common.rs

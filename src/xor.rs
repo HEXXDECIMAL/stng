@@ -5,6 +5,7 @@
 //! single-pass multi-pattern matching.
 
 use crate::go::classify_string;
+use crate::validation;
 use crate::{ExtractedString, StringKind, StringMethod};
 use aho_corasick::AhoCorasick;
 use rayon::prelude::*;
@@ -508,7 +509,16 @@ fn extract_custom_xor_strings_filtered_with_exclusions(
 
                         // Reject if has letters but poor vowel ratio (English-specific check)
                         // Only apply to ASCII text - skip for international text (Russian, Chinese, etc.)
-                        if alpha >= 3 {
+                        // Also skip for encoded formats (base64, hex, unicode escapes) which don't have
+                        // natural language vowel patterns
+                        let is_encoded_format = matches!(
+                            kind,
+                            StringKind::Base64
+                                | StringKind::UnicodeEscaped
+                                | StringKind::HexEncoded
+                                | StringKind::UrlEncoded
+                        );
+                        if !is_encoded_format && alpha >= 3 {
                             let has_non_ascii = !s.is_ascii();
                             if !has_non_ascii {
                                 // Only check vowels for ASCII/English text
@@ -1272,10 +1282,14 @@ fn extract_custom_xor_strings_pattern_based_simple(
         let mut null_positions = Vec::new();
 
         for j in 0..std::cmp::min(1024, data.len() - pos) {
-            // Check for consecutive nulls in raw data (indicates end of actual string data)
+            // Check for consecutive nulls in raw data (indicates end of actual string data),
+            // but only stop if the XOR-decoded byte is also non-printable. When the decoded
+            // byte is printable, the null is part of the encrypted payload, not zero padding.
             if pos + j + 1 < data.len() && data[pos + j] == 0 && data[pos + j + 1] == 0 {
-                // Stop decoding at first double-null to avoid garbage from zero-filled memory
-                break;
+                let decoded_byte = data[pos + j] ^ key[j % key.len()];
+                if !is_printable_byte_for_file_xor(decoded_byte) {
+                    break;
+                }
             }
 
             // Track single nulls as potential garbage boundaries
@@ -1358,7 +1372,7 @@ fn extract_custom_xor_strings_pattern_based_simple(
         };
 
         // Must have at least one letter
-        if !s.chars().any(|c| c.is_alphabetic()) {
+        if !s.chars().any(char::is_alphabetic) {
             continue;
         }
 
@@ -1428,12 +1442,42 @@ fn extract_custom_xor_strings_pattern_based_simple(
             clean_url_trailing_garbage(&trimmed_s)
         } else if matches!(kind, StringKind::SuspiciousPath) && is_locale_string(&trimmed_s) {
             clean_locale_trailing_garbage(&trimmed_s)
+        } else if matches!(kind, StringKind::SuspiciousPath) {
+            // Trim trailing backtick+letter pattern: XOR misalignment can produce e.g. `R at the end
+            let s = trimmed_s.as_str();
+            let bytes = s.as_bytes();
+            if bytes.len() >= 2 {
+                if let Some(idx) = bytes.iter().rposition(|&b| b.is_ascii_alphabetic()) {
+                    if idx > 0 && bytes[idx - 1] == b'`' {
+                        s[..idx - 1].to_string()
+                    } else {
+                        trimmed_s
+                    }
+                } else {
+                    trimmed_s
+                }
+            } else {
+                trimmed_s
+            }
         } else if matches!(kind, StringKind::ShellCmd) {
             // For shell commands and AppleScript, use the existing trimmer
             trim_trailing_garbage(&trimmed_s).to_string()
         } else {
             trimmed_s
         };
+
+        // Pre-filter garbage before overlap removal: a garbage string that wins the overlap
+        // contest would leave the byte range uncovered (the garbage gets removed in post-processing
+        // but nothing else can fill that range). Skip it here so shorter, valid strings can win.
+        //
+        // Strings with embedded control characters (except tab/newline) are garbage.
+        // Newlines are valid in multi-line XOR payloads (AppleScript, shell commands, etc.).
+        let has_embedded_control = cleaned_value
+            .bytes()
+            .any(|b| b < 0x20 && b != b'\t' && b != b'\n');
+        if has_embedded_control || validation::is_garbage(&cleaned_value) {
+            continue;
+        }
 
         results.push(ExtractedString {
             value: cleaned_value,
@@ -3596,6 +3640,29 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
         }
     }
 
+    // SECOND+: Check for encoded data formats directly
+    // Base64, hex, and url-encoded strings don't pass linguistic checks but are high-value IOCs.
+    // classify_string handles proper format validation (length, charset, structure).
+    {
+        let kind = classify_string(s);
+        if matches!(
+            kind,
+            StringKind::Base64 | StringKind::HexEncoded | StringKind::UrlEncoded
+        ) {
+            return Some(kind);
+        }
+        // XOR decoding may strip trailing '=' padding from base64 (e.g., '=' XOR 0x42 = 0x7F,
+        // which is non-printable and gets cut off by the scan). Try re-adding padding.
+        let remainder = s.len() % 4;
+        if remainder == 2 || remainder == 3 {
+            let padding = if remainder == 2 { "==" } else { "=" };
+            let padded = format!("{s}{padding}");
+            if matches!(classify_string(&padded), StringKind::Base64) {
+                return Some(StringKind::Base64);
+            }
+        }
+    }
+
     // THIRD: For strings that don't pass linguistic checks, apply strict filtering
     if !is_valid_xor_string(s) {
         return None;
@@ -3605,8 +3672,15 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
     let kind = classify_string(s);
 
     match kind {
-        StringKind::IP | StringKind::IPPort => Some(kind),
-        StringKind::Url => Some(kind),
+        StringKind::IP
+        | StringKind::IPPort
+        | StringKind::Url
+        | StringKind::SuspiciousPath
+        | StringKind::UnicodeEscaped
+        | StringKind::HexEncoded
+        | StringKind::UrlEncoded
+        | StringKind::Registry
+        | StringKind::Base64 => Some(kind),
         StringKind::ShellCmd | StringKind::AppleScript => {
             // Reject obvious garbage that starts with backtick but no valid command
             if s.starts_with('`')
@@ -3621,11 +3695,6 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
                 Some(kind)
             }
         }
-        StringKind::SuspiciousPath => Some(kind),
-        // Preserve encoding-related classifications (for potential further decoding)
-        StringKind::UnicodeEscaped => Some(kind),
-        StringKind::HexEncoded => Some(kind),
-        StringKind::UrlEncoded => Some(kind),
         StringKind::Path => {
             // STRICT PATH VALIDATION: Only accept paths matching known OS patterns
 
@@ -3733,8 +3802,6 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
 
             Some(kind)
         }
-        StringKind::Registry => Some(kind),
-        StringKind::Base64 => Some(kind),
         _ => {
             // Generic fallback for Const and other types
             // Apply additional quality checks to avoid false positives

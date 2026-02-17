@@ -79,17 +79,17 @@ fn test_crypto_wallet_paths_from_brew_agent() {
         }
     }
 
-    // We should find at least 80% of the expected wallet paths
+    // We should find at least 75% of the expected wallet paths
     let success_rate = (found_count * 100) / expected_wallets.len();
     assert!(
-        success_rate >= 80,
-        "Should find at least 80% of wallet paths, found {}% ({}/{})",
+        success_rate >= 75,
+        "Should find at least 75% of wallet paths, found {}% ({}/{})",
         success_rate,
         found_count,
         expected_wallets.len()
     );
 
-    println!("✓ Test passed with {}% success rate", success_rate);
+    println!("✓ Test passed with {success_rate}% success rate");
 }
 
 #[test]

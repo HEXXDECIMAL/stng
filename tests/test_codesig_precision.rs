@@ -338,18 +338,30 @@ fn test_no_base64_kind_in_linkedit() {
     let opts = ExtractOptions::new(10);
     let strings = extract_strings_with_options(&data, &opts);
 
-    // Find any Base64 strings in __LINKEDIT
-    let base64_in_linkedit: Vec<_> = strings
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+
+    // Base64 strings in __LINKEDIT that decode to SHA-1 (20 bytes) or SHA-256 (32 bytes)
+    // are CD hashes and must be promoted to CodeSignatureHash. Base64 data that decodes
+    // to other sizes (certificate fragments, etc.) may remain as Base64.
+    let hash_sized_base64_in_linkedit: Vec<_> = strings
         .iter()
-        .filter(|s| s.kind == StringKind::Base64 && s.section.as_deref() == Some("__LINKEDIT"))
+        .filter(|s| {
+            s.kind == StringKind::Base64
+                && s.section.as_deref() == Some("__LINKEDIT")
+                && BASE64
+                    .decode(s.value.trim())
+                    .map(|b| b.len() == 20 || b.len() == 32)
+                    .unwrap_or(false)
+        })
         .collect();
 
-    // Should be ZERO - all base64 in __LINKEDIT should be upgraded to CodeSignatureHash
     assert_eq!(
-        base64_in_linkedit.len(),
+        hash_sized_base64_in_linkedit.len(),
         0,
-        "All Base64 in __LINKEDIT should be upgraded to CodeSignatureHash, found {} still as Base64",
-        base64_in_linkedit.len()
+        "Base64 strings in __LINKEDIT that decode to 20 or 32 bytes must be promoted to \
+         CodeSignatureHash; found {} still as Base64",
+        hash_sized_base64_in_linkedit.len()
     );
 }
 

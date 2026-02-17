@@ -84,7 +84,7 @@ pub fn classify_string(s: &str) -> StringKind {
     // GUIDs: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}
     if s.starts_with('{') && s.ends_with('}') && (36..=38).contains(&len) {
         let dash_count = s.chars().filter(|&c| c == '-').count();
-        let hex_count = s.chars().filter(|c| c.is_ascii_hexdigit()).count();
+        let hex_count = s.chars().filter(char::is_ascii_hexdigit).count();
         if dash_count == 4 && (30..=32).contains(&hex_count) {
             return StringKind::GUID;
         }
@@ -100,7 +100,7 @@ pub fn classify_string(s: &str) -> StringKind {
         let at_count = s.chars().filter(|&c| c == '@').count();
         if at_count == 1 {
             // Must be mostly ASCII (>95%) - reject garbage with non-ASCII chars
-            let ascii_count = s.chars().filter(|c| c.is_ascii()).count();
+            let ascii_count = s.chars().filter(char::is_ascii).count();
             if ascii_count * 100 / len < 95 {
                 return StringKind::Const; // Skip - has too much non-ASCII
             }
@@ -128,7 +128,7 @@ pub fn classify_string(s: &str) -> StringKind {
                 }
 
                 // Local part must have at least one alphanumeric character
-                if !local.chars().any(|c| c.is_alphanumeric()) {
+                if !local.chars().any(char::is_alphanumeric) {
                     return StringKind::Const; // Skip - local part has no alphanumeric
                 }
 
@@ -306,14 +306,9 @@ pub fn classify_string(s: &str) -> StringKind {
         return StringKind::AppleScript;
     }
 
-    // Check for shell commands last (catches generic commands like 'echo', 'curl')
-    // This is intentionally after code detection to avoid false positives
-    if is_shell_command(s) {
-        return StringKind::ShellCmd;
-    }
-
-    // Command injection patterns - check AFTER code detection to avoid false positives
-    // JavaScript/PHP code might contain command strings but should be detected as code first
+    // Command injection patterns - check AFTER code detection but BEFORE generic shell commands.
+    // Injection wrappers (;, |, $(), ``) are stronger signals than generic command keywords.
+    // JavaScript/PHP code might contain command strings but should be detected as code first.
     if memchr::memchr3(b';', b'|', b'$', bytes).is_some()
         && ((s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
             || (s.contains("| ")
@@ -329,7 +324,7 @@ pub fn classify_string(s: &str) -> StringKind {
         let content_len = content.len();
 
         // Must be mostly ASCII (>90%) - reject garbage with non-ASCII chars
-        let ascii_count = content.chars().filter(|c| c.is_ascii()).count();
+        let ascii_count = content.chars().filter(char::is_ascii).count();
         if ascii_count * 100 / content_len > 90 {
             // Must contain spaces (multiword command) or known command names
             if content.contains(' ')
@@ -343,6 +338,12 @@ pub fn classify_string(s: &str) -> StringKind {
                 return StringKind::CommandInjection;
             }
         }
+    }
+
+    // Check for shell commands after injection detection (catches generic commands like 'echo', 'curl')
+    // This is intentionally after code detection to avoid false positives
+    if is_shell_command(s) {
+        return StringKind::ShellCmd;
     }
 
     // IP addresses and IP:port - only if starts with digit
@@ -768,7 +769,7 @@ fn is_shell_command(s: &str) -> bool {
                     && !content.contains(" doc ")
                 {
                     // Must be mostly ASCII (>90%) - reject garbage with non-ASCII chars
-                    let ascii_count = content.chars().filter(|c| c.is_ascii()).count();
+                    let ascii_count = content.chars().filter(char::is_ascii).count();
                     let content_len = content.chars().count();
                     if content_len > 0 && ascii_count * 100 / content_len > 90 {
                         return true;
@@ -980,12 +981,11 @@ fn is_base64(s: &str) -> bool {
     for &b in bytes {
         match b {
             // Check for invalid patterns in a single pass
-            b' ' => return false, // No spaces
             b'A'..=b'Z' => has_upper = true,
             b'a'..=b'z' => has_lower = true,
             b'0'..=b'9' => has_digit = true,
             b'+' | b'/' | b'=' => {}
-            _ => return false, // Invalid character
+            _ => return false, // Invalid character (including spaces)
         }
     }
 
@@ -1463,7 +1463,7 @@ fn is_base85(s: &str) -> bool {
     }
 
     // Reject strings that look like character sets or pure punctuation
-    let punct_count = s.chars().filter(|c| c.is_ascii_punctuation()).count();
+    let punct_count = s.chars().filter(char::is_ascii_punctuation).count();
     if punct_count * 2 > s.len() {
         return false;
     }
@@ -1548,7 +1548,7 @@ fn classify_crypto_address(s: &str) -> Option<StringKind> {
 
     // Ethereum: starts with 0x, 42 chars hex
     if s.starts_with("0x") && len == 42 {
-        let hex_count = s[2..].chars().filter(|c| c.is_ascii_hexdigit()).count();
+        let hex_count = s[2..].chars().filter(char::is_ascii_hexdigit).count();
         if hex_count == 40 {
             return Some(StringKind::CryptoWallet);
         }

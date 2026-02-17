@@ -259,7 +259,7 @@ fn enrich_macho_sections(
 
     for s in strings {
         // Check if section needs enrichment (None or empty string)
-        let needs_section = s.section.as_ref().is_none_or(|sec| sec.is_empty());
+        let needs_section = s.section.as_ref().is_none_or(std::string::String::is_empty);
         if needs_section {
             // First check actual sections
             // Try both absolute and architecture-relative comparisons
@@ -471,6 +471,7 @@ fn method_priority(m: StringMethod) -> u8 {
         // Highest priority: language-aware extraction and obfuscated decoded content
         StringMethod::Structure
         | StringMethod::StackString
+        | StringMethod::XorStackPair
         | StringMethod::InstructionPattern
         | StringMethod::Base64ObfuscatedDecode => 3,
 
@@ -1081,8 +1082,36 @@ pub fn extract_from_object(
                 None,
             ));
 
-            // Skip stack string extraction for Go binaries (they don't use stack-based obfuscation)
-            if !is_go_binary {
+            if is_go_binary {
+                // For Go binaries, run XOR-pair extraction on the .text section only.
+                // garble-obfuscated Go malware (e.g. BrickStorm) stores sensitive strings
+                // as two non-printable immediate constants on the stack and XORs them at
+                // runtime — the Go string extractor misses these entirely.
+                // We restrict to .text to avoid noise from data sections and only keep
+                // XorStackPair results (regular stack string detection is too noisy in Go).
+                let text_data = elf
+                    .section_headers
+                    .iter()
+                    .find(|sh| elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("") == ".text")
+                    .and_then(|sh| {
+                        let start = sh.sh_offset as usize;
+                        let end = start.saturating_add(sh.sh_size as usize);
+                        let text = scan_data.get(start..end)?;
+                        Some((start, text))
+                    });
+                if let Some((text_start, text)) = text_data {
+                    let mut xor_results = extract_stack_strings(text, min_length);
+                    // Adjust data_offset to file-relative position.
+                    for r in &mut xor_results {
+                        r.data_offset += text_start as u64;
+                    }
+                    strings.extend(
+                        xor_results
+                            .into_iter()
+                            .filter(|s| s.method == StringMethod::XorStackPair),
+                    );
+                }
+            } else {
                 strings.extend(extract_stack_strings(scan_data, min_length));
             }
             // Add imports/exports from dynamic symbols, upgrading existing strings
@@ -1368,7 +1397,7 @@ pub fn extract_from_object(
             // Collect architecture offsets first
             let arch_offsets: Vec<u64> = fat
                 .iter_arches()
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .map(|a| u64::from(a.offset))
                 .collect();
 
@@ -1389,10 +1418,20 @@ pub fn extract_from_object(
     for s in &mut strings {
         if let Some(ref section) = s.section {
             if section == "__LINKEDIT" {
-                // Base64 strings in __LINKEDIT are CD hashes
+                // Base64 strings in __LINKEDIT that decode to SHA-1 (20 bytes) or
+                // SHA-256 (32 bytes) are CD hashes. Other base64 content (certificate
+                // data, etc.) decodes to different sizes and must not be promoted.
                 if s.kind == StringKind::Base64 {
-                    s.kind = StringKind::CodeSignatureHash;
-                    s.method = StringMethod::CodeSignature;
+                    let decoded_len = base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        s.value.trim(),
+                    )
+                    .map(|b| b.len())
+                    .unwrap_or(0);
+                    if decoded_len == 20 || decoded_len == 32 {
+                        s.kind = StringKind::CodeSignatureHash;
+                        s.method = StringMethod::CodeSignature;
+                    }
                 }
 
                 // XML/plist strings in __LINKEDIT are part of code signature
@@ -1414,8 +1453,12 @@ pub fn extract_from_object(
                 }
 
                 // Certificate-related strings in __LINKEDIT (X.509 certificate chain)
-                // These are Distinguished Names, dates, CRL URLs, and policy text
-                if s.kind == StringKind::Const && is_certificate_string(&s.value) {
+                // These are Distinguished Names, dates, CRL URLs, and policy text.
+                // Also covers Base64-classified strings that are actually ASN.1 date
+                // fragments (e.g. "350209214036Z0b1") which are not CD hashes.
+                if (s.kind == StringKind::Const || s.kind == StringKind::Base64)
+                    && is_certificate_string(&s.value)
+                {
                     s.method = StringMethod::CodeSignature;
                 }
 
@@ -1615,6 +1658,35 @@ pub fn extract_from_elf(
         } else {
             strings.extend(rust_strings);
         }
+    }
+
+    if has_go {
+        // For Go binaries, run XOR-pair extraction on .text only.
+        // garble-obfuscated Go malware (e.g. BrickStorm) encodes strings as two
+        // non-printable immediates XOR'd at runtime; the Go extractor misses these.
+        let text_data = elf
+            .section_headers
+            .iter()
+            .find(|sh| elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("") == ".text")
+            .and_then(|sh| {
+                let start = sh.sh_offset as usize;
+                let end = start.saturating_add(sh.sh_size as usize);
+                let text = scan_data.get(start..end)?;
+                Some((start, text))
+            });
+        if let Some((text_start, text)) = text_data {
+            let mut xor_results = extract_stack_strings(text, min_length);
+            for r in &mut xor_results {
+                r.data_offset += text_start as u64;
+            }
+            strings.extend(
+                xor_results
+                    .into_iter()
+                    .filter(|s| s.method == StringMethod::XorStackPair),
+            );
+        }
+    } else {
+        strings.extend(extract_stack_strings(scan_data, min_length));
     }
 
     // Add imports/exports

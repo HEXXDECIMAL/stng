@@ -295,6 +295,7 @@ fn method_priority(m: StringMethod) -> u8 {
         // Highest priority: language-aware extraction and decoded content
         StringMethod::Structure
         | StringMethod::StackString
+        | StringMethod::XorStackPair
         | StringMethod::InstructionPattern
         | StringMethod::Base64ObfuscatedDecode => 3,
 
@@ -667,8 +668,7 @@ fn main() -> Result<()> {
                             let type_str = match (si.is_executable, si.is_writable) {
                                 (true, true) => "TEXT+DATA",
                                 (true, false) => "TEXT",
-                                (false, true) => "DATA",
-                                (false, false) => "DATA",
+                                (false, _) => "DATA",
                             };
                             let size_str = if si.size < 1024 {
                                 format!("{}b", si.size)
@@ -689,8 +689,7 @@ fn main() -> Result<()> {
                             let type_str = match (si.is_executable, si.is_writable) {
                                 (true, true) => "TEXT+DATA",
                                 (true, false) => "TEXT",
-                                (false, true) => "DATA",
-                                (false, false) => "DATA",
+                                (false, _) => "DATA",
                             };
                             let size_str = if si.size < 1024 {
                                 format!("{}b", si.size)
@@ -711,8 +710,7 @@ fn main() -> Result<()> {
                             let type_str = match (si.is_executable, si.is_writable) {
                                 (true, true) => "TEXT+DATA",
                                 (true, false) => "TEXT",
-                                (false, true) => "DATA",
-                                (false, false) => "DATA",
+                                (false, _) => "DATA",
                             };
                             let size_str = if si.size < 1024 {
                                 format!("{}b", si.size)
@@ -760,7 +758,7 @@ fn main() -> Result<()> {
                 }
 
                 // Record offset for this section (first string's offset)
-                let section_key = section.map(|s| s.to_string());
+                let section_key = section.map(std::string::ToString::to_string);
                 section_offsets
                     .entry(section_key.clone())
                     .or_insert(s.data_offset);

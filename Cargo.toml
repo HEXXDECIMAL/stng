@@ -111,5 +111,8 @@ exit = "warn"
 missing_errors_doc = "allow"  # Too noisy for internal APIs
 missing_panics_doc = "allow"  # Too noisy for internal APIs
 
-# Style - be pragmatic, not pedantic
-# Don't enable pedantic/nursery wholesale - too much noise for little value
+# Style - pragmatic picks from pedantic, not the whole group
+use_self = "warn"                        # use Self in impl blocks instead of repeating the type name
+redundant_closure_for_method_calls = "warn"  # |x| x.foo() → Type::foo
+manual_let_else = "warn"                 # match/if-let that returns/continues/breaks → let-else
+match_same_arms = "warn"                 # merge identical match arms

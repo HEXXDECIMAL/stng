@@ -30,10 +30,15 @@ fn test_long_valid_base64_detection() {
     let opts = ExtractOptions::new(4);
     let strings = extract_strings_with_options(&data, &opts);
 
-    // Should detect as base64
+    // Should detect as base64 or decode it
     let base64_strings: Vec<_> = strings
         .iter()
-        .filter(|s| s.kind == StringKind::Base64 && s.value.len() > 50)
+        .filter(|s| {
+            (s.kind == StringKind::Base64
+                || s.method == StringMethod::Base64Decode
+                || s.method == StringMethod::Base64ObfuscatedDecode)
+                && s.value.len() > 50
+        })
         .collect();
 
     assert!(
@@ -209,10 +214,15 @@ fn test_base64_with_standard_padding() {
     let opts = ExtractOptions::new(4);
     let strings = extract_strings_with_options(&data, &opts);
 
-    // Should detect as base64
+    // Should detect as base64 or decode it
     let base64_strings: Vec<_> = strings
         .iter()
-        .filter(|s| s.kind == StringKind::Base64 && s.value.len() > 30)
+        .filter(|s| {
+            (s.kind == StringKind::Base64
+                || s.method == StringMethod::Base64Decode
+                || s.method == StringMethod::Base64ObfuscatedDecode)
+                && s.value.len() > 30
+        })
         .collect();
 
     assert!(
@@ -230,14 +240,17 @@ fn test_multiple_base64_in_data() {
     let opts = ExtractOptions::new(4);
     let strings = extract_strings_with_options(&data, &opts);
 
-    // Should detect at least one base64 string
-    let base64_strings: Vec<_> = strings
-        .iter()
-        .filter(|s| s.kind == StringKind::Base64 && s.value.len() > 30)
-        .collect();
+    // Should find at least one string containing base64 content (encoded or decoded)
+    let has_base64_content = strings.iter().any(|s| {
+        s.kind == StringKind::Base64
+            || s.method == StringMethod::Base64Decode
+            || s.method == StringMethod::Base64ObfuscatedDecode
+            || s.value.contains("SGVsbG8")
+            || s.value.contains("QW5v")
+    });
 
     assert!(
-        !base64_strings.is_empty(),
+        has_base64_content,
         "Should detect base64 strings from multiple candidates"
     );
 }
@@ -289,9 +302,12 @@ fn test_jwt_token_base64() {
     let opts = ExtractOptions::new(4);
     let strings = extract_strings_with_options(&data, &opts);
 
-    // Should find the JWT components
+    // Should find the JWT components (either encoded or decoded)
     let has_jwt_parts = strings.iter().any(|s| {
-        s.value.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") || s.kind == StringKind::Base64
+        s.value.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+            || s.kind == StringKind::Base64
+            || s.method == StringMethod::Base64Decode
+            || s.method == StringMethod::Base64ObfuscatedDecode
     });
 
     assert!(

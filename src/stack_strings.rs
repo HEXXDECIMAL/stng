@@ -9,7 +9,7 @@
 //! strings that are built out-of-order or with overlaps.
 
 use crate::types::{ExtractedString, StringFragment, StringKind, StringMethod};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Extract strings constructed on the stack.
 pub fn extract_stack_strings(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
@@ -22,11 +22,16 @@ struct StackStringExtractor<'a> {
     min_length: usize,
     // Register state: (Value, Instruction Offset, Flavor)
     regs: [Option<(String, u64, String)>; 16],
+    // Raw (non-printable) immediate bytes held in registers, kept for XOR pairing.
+    raw_regs: [Option<Vec<u8>>; 16],
     // Captured stack writes: grouped by (Base Reg, Index Reg, Scale) -> Vec<StackWrite>
     // We simplify: group by "Base Register" and assume standard stack frames.
     // If base is RIP (0x05 in ModRM), we track it separately?
     // For now, simple Base Reg grouping.
     writes: HashMap<u8, Vec<StackWrite>>,
+    // Non-printable raw blobs written to the stack, grouped by base register.
+    // Pairs of same-length blobs are XOR'd at finalization to recover obfuscated strings.
+    raw_blobs: HashMap<u8, Vec<RawBlob>>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,13 +42,23 @@ struct StackWrite {
     flavor: String, // "movabs", "mov_byte", etc.
 }
 
+/// A raw (non-printable) immediate blob written to the stack, kept as XOR candidate.
+#[derive(Debug, Clone)]
+struct RawBlob {
+    bytes: Vec<u8>,
+    disp: i64,      // Displacement from base register (stack slot position)
+    instr_off: u64,
+}
+
 impl<'a> StackStringExtractor<'a> {
     fn new(data: &'a [u8], min_length: usize) -> Self {
         Self {
             data,
             min_length,
             regs: Default::default(),
+            raw_regs: Default::default(),
             writes: HashMap::new(),
+            raw_blobs: HashMap::new(),
         }
     }
 
@@ -57,11 +72,6 @@ impl<'a> StackStringExtractor<'a> {
 
         let mut i = 0;
         while i < self.data.len() {
-            // Safety check
-            if i + 15 > self.data.len() {
-                break;
-            }
-
             // Decode instruction at i
             // We only care about:
             // 1. mov reg, imm (B8..BF, C7)
@@ -115,8 +125,11 @@ impl<'a> StackStringExtractor<'a> {
                                 "mov_r32".into()
                             },
                         ));
+                        self.raw_regs[reg as usize] = None;
                     } else {
                         self.regs[reg as usize] = None;
+                        // Keep the raw bytes for XOR-pair detection at finalization.
+                        self.raw_regs[reg as usize] = Some(imm_data.to_vec());
                     }
                     len = (opcode_start - i) + 1 + imm_len;
                     handled = true;
@@ -156,6 +169,14 @@ impl<'a> StackStringExtractor<'a> {
                                         s,
                                         i as u64,
                                         "mov_mem_imm32".into(),
+                                    );
+                                } else {
+                                    // Non-printable: keep as XOR-pair candidate.
+                                    self.add_raw_blob(
+                                        base_reg,
+                                        disp,
+                                        imm_data.to_vec(),
+                                        i as u64,
                                     );
                                 }
                             }
@@ -213,7 +234,7 @@ impl<'a> StackStringExtractor<'a> {
                         if mod_bits != 3 {
                             // Store to memory
                             if let Some(base_reg) = base {
-                                // Check if we have a string in src_reg
+                                // Check if we have a printable string in src_reg.
                                 if let Some((s, _orig_off, flavor)) = &self.regs[src_reg as usize] {
                                     self.add_write(
                                         base_reg,
@@ -222,6 +243,10 @@ impl<'a> StackStringExtractor<'a> {
                                         i as u64,
                                         flavor.clone(),
                                     );
+                                }
+                                // Also propagate non-printable raw bytes for XOR-pair detection.
+                                if let Some(raw) = self.raw_regs[src_reg as usize].clone() {
+                                    self.add_raw_blob(base_reg, disp, raw, i as u64);
                                 }
                             }
                         }
@@ -358,8 +383,18 @@ impl<'a> StackStringExtractor<'a> {
         });
     }
 
+    fn add_raw_blob(&mut self, base: u8, disp: i64, bytes: Vec<u8>, instr_off: u64) {
+        self.raw_blobs
+            .entry(base)
+            .or_default()
+            .push(RawBlob { bytes, disp, instr_off });
+    }
+
     fn clear_regs(&mut self) {
         for r in self.regs.iter_mut() {
+            *r = None;
+        }
+        for r in self.raw_regs.iter_mut() {
             *r = None;
         }
     }
@@ -489,6 +524,9 @@ impl<'a> StackStringExtractor<'a> {
         // where fragments end up in the results list but should be combined.
         results = self.merge_adjacent_fragments(results);
 
+        // Append any strings recovered by XOR-pairing of non-printable stack blobs.
+        results.extend(self.finalize_xor_pairs());
+
         // Final sanity check: filter out very short merged strings
         results.retain(|s| s.value.len() >= self.min_length);
         results
@@ -592,6 +630,144 @@ impl<'a> StackStringExtractor<'a> {
             },
             ..Default::default()
         }
+    }
+
+    /// XOR all pairs of same-length non-printable blobs within each base-register group.
+    ///
+    /// This recovers strings obfuscated with the BrickStorm / garble pattern:
+    /// two raw immediate constants are placed on the stack and XOR'd byte-by-byte
+    /// in a counted loop before being passed to `runtime.slicebytetostring`.
+    /// Neither half is printable on its own; XOR of the pair yields the plaintext.
+    /// Detect XOR-encoded strings from pairs of non-printable stack blobs.
+    ///
+    /// BrickStorm and garble-obfuscated binaries encode strings as two parallel
+    /// sequences of immediates ("ciphertext" and "key") written to different areas
+    /// of the same stack frame.  Each ciphertext[i] XOR key[i] yields one chunk
+    /// of the plaintext; consecutive chunks reconstruct the full string.
+    ///
+    /// Algorithm:
+    /// 1. Try every unique pair of same-size blobs; record any that XOR to printable
+    ///    bytes, along with each blob's stack displacement.
+    /// 2. Group pairs by `key_offset = |disp_a − disp_b|`.  Within a group, pairs
+    ///    whose lower displacement advances by exactly `chunk_size` per step form a
+    ///    consecutive sequence that decodes one multi-chunk string.
+    /// 3. Merge each sequence and emit the concatenated result.
+    fn finalize_xor_pairs(&mut self) -> Vec<ExtractedString> {
+        let raw_blobs = std::mem::take(&mut self.raw_blobs);
+        let mut results = Vec::new();
+
+        for (_base, blobs) in raw_blobs {
+            if blobs.len() < 2 {
+                continue;
+            }
+
+            // Group blob indices by their byte length so we only pair same-size blobs.
+            let mut by_len: HashMap<usize, Vec<usize>> = HashMap::new();
+            for (idx, blob) in blobs.iter().enumerate() {
+                by_len.entry(blob.bytes.len()).or_default().push(idx);
+            }
+
+            for (chunk_size, indices) in by_len {
+                if indices.len() < 2 {
+                    continue;
+                }
+
+                // Phase 1 – enumerate all valid XOR pairs, keyed by canonical
+                // (disp_lo, disp_hi) so we don't add the same pair twice.
+                struct Pair {
+                    decoded: String,
+                    disp_lo: i64,
+                    disp_hi: i64,
+                    instr_off: u64,
+                }
+                let mut pair_seen: HashSet<(i64, i64)> = HashSet::new();
+                let mut pairs: Vec<Pair> = Vec::new();
+
+                for i in 0..indices.len() {
+                    for j in (i + 1)..indices.len() {
+                        let a = &blobs[indices[i]];
+                        let b = &blobs[indices[j]];
+                        let xored: Vec<u8> = a
+                            .bytes
+                            .iter()
+                            .zip(b.bytes.iter())
+                            .map(|(x, y)| x ^ y)
+                            .collect();
+                        // Accept any pair that XOR-decodes to at least one printable byte;
+                        // the full-sequence length gate comes in phase 2.
+                        if let Some(decoded) = check_printable(&xored, 1) {
+                            let disp_lo = a.disp.min(b.disp);
+                            let disp_hi = a.disp.max(b.disp);
+                            if pair_seen.insert((disp_lo, disp_hi)) {
+                                pairs.push(Pair {
+                                    decoded,
+                                    disp_lo,
+                                    disp_hi,
+                                    instr_off: a.instr_off.min(b.instr_off),
+                                });
+                            }
+                        }
+                    }
+                }
+
+                if pairs.is_empty() {
+                    continue;
+                }
+
+                // Phase 2 – sort by (key_offset, disp_lo) then greedily merge
+                // consecutive pairs that share the same key_offset and whose
+                // lower displacement advances by exactly chunk_size per step.
+                let chunk_stride = chunk_size as i64;
+                pairs.sort_unstable_by(|a, b| {
+                    let ka = a.disp_hi - a.disp_lo;
+                    let kb = b.disp_hi - b.disp_lo;
+                    ka.cmp(&kb).then(a.disp_lo.cmp(&b.disp_lo))
+                });
+
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut i = 0;
+                while i < pairs.len() {
+                    let key_offset = pairs[i].disp_hi - pairs[i].disp_lo;
+                    let mut value = pairs[i].decoded.clone();
+                    let mut min_off = pairs[i].instr_off;
+                    let mut j = i + 1;
+                    while j < pairs.len() {
+                        let p = &pairs[j];
+                        if p.disp_hi - p.disp_lo != key_offset {
+                            break;
+                        }
+                        if p.disp_lo != pairs[j - 1].disp_lo + chunk_stride {
+                            break;
+                        }
+                        value.push_str(&p.decoded);
+                        min_off = min_off.min(p.instr_off);
+                        j += 1;
+                    }
+
+                    // Trim any null padding from the last chunk then apply min_length.
+                    let trimmed = value.trim_end_matches('\0');
+                    if trimmed.len() >= self.min_length && seen.insert(trimmed.to_string()) {
+                        results.push(ExtractedString {
+                            value: trimmed.to_string(),
+                            data_offset: min_off,
+                            section: None,
+                            method: StringMethod::XorStackPair,
+                            kind: StringKind::StackString,
+                            library: None,
+                            fragments: None,
+                            section_size: None,
+                            section_executable: None,
+                            section_writable: None,
+                            architecture: None,
+                            function_meta: None,
+                        });
+                    }
+                    i = j;
+                }
+            }
+        }
+
+        results
     }
 
     /// Extract strings built using loop-based patterns.

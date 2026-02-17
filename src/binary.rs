@@ -143,7 +143,6 @@ pub fn is_go_binary(data: &[u8]) -> bool {
     use goblin::Object;
     match Object::parse(data) {
         Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) => macho_has_go_sections(&macho),
-        Ok(Object::Mach(goblin::mach::Mach::Fat(_))) => false,
         Ok(Object::Elf(elf)) => elf.section_headers.iter().any(|sh| {
             let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
             name == ".gopclntab" || name == ".go.buildinfo"

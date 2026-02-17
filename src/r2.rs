@@ -450,9 +450,7 @@ fn analyze_candidates_by_patterns(
 
     // Get all function names (run aaa first to ensure analysis is done)
     let functions_cmd = "aaa; afl";
-    let functions = if let Some(f) = run_tool_command(tool, path, functions_cmd) {
-        f
-    } else {
+    let Some(functions) = run_tool_command(tool, path, functions_cmd) else {
         tracing::debug!("analyze_candidates_by_patterns: failed to get function list");
         return vec![];
     };
@@ -510,9 +508,7 @@ fn analyze_candidates_by_patterns(
         func_addrs.len()
     );
 
-    let all_output = if let Some(o) = run_tool_command(tool, path, &compound_cmd) {
-        o
-    } else {
+    let Some(all_output) = run_tool_command(tool, path, &compound_cmd) else {
         tracing::debug!(
             "analyze_candidates_by_patterns: failed to run compound disassembly command"
         );
@@ -687,9 +683,8 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
 
         let vaddr = candidate.data_offset;
         let xrefs_cmd = format!("axt 0x{vaddr:x}");
-        let xrefs = match run_tool_command(tool, path, &xrefs_cmd) {
-            Some(x) => x,
-            None => continue,
+        let Some(xrefs) = run_tool_command(tool, path, &xrefs_cmd) else {
+            continue;
         };
         let xref_lines: Vec<String> = xrefs
             .lines()
@@ -744,9 +739,8 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
 
             // Disassemble the function
             let pdf_cmd = format!("pdf @ {func_name}");
-            let disasm = match run_tool_command(tool, path, &pdf_cmd) {
-                Some(d) => d,
-                None => continue,
+            let Some(disasm) = run_tool_command(tool, path, &pdf_cmd) else {
+                continue;
             };
 
             // Check if function contains XOR instructions
@@ -809,9 +803,8 @@ pub fn verify_xor_keys(path: &str, candidates: &[ExtractedString]) -> Vec<XorKey
                     // Disassemble the function
                     // NOTE: 'aaa' analysis already ran on line 447, so just get disassembly
                     let pdf_cmd = format!("pdf @ {func_name}");
-                    let disasm = match run_tool_command(tool, path, &pdf_cmd) {
-                        Some(d) => d,
-                        None => continue,
+                    let Some(disasm) = run_tool_command(tool, path, &pdf_cmd) else {
+                        continue;
                     };
 
                     // Look for XOR loop pattern:
@@ -1004,9 +997,8 @@ mod tests {
 ///
 /// For large files (>10MB), skips R2 analysis (very slow) and only scans binary directly.
 pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
-    let tool = match get_tool() {
-        Some(t) => t,
-        None => return Vec::new(),
+    let Some(tool) = get_tool() else {
+        return Vec::new();
     };
 
     // Check file size - skip R2 analysis for large files (aaa is very slow)
@@ -1022,9 +1014,8 @@ pub fn extract_connect_addrs(path: &str, data: &[u8]) -> Vec<ExtractedString> {
 
     // Analyze binary and disassemble entire .text section
     let cmd = "aaa; e scr.color=0; s entry0; pdf";
-    let output = match run_tool_command(tool, path, cmd) {
-        Some(o) => o,
-        None => return Vec::new(),
+    let Some(output) = run_tool_command(tool, path, cmd) else {
+        return Vec::new();
     };
 
     let mut results = Vec::new();

@@ -140,9 +140,8 @@ impl R2Cache {
 
     fn is_cache_valid(&self, file_path: &str, hash: &str) -> bool {
         let meta_path = self.cache_dir.join(hash).join("meta.json");
-        let meta_content = match fs::read_to_string(meta_path) {
-            Ok(c) => c,
-            Err(_) => return false,
+        let Ok(meta_content) = fs::read_to_string(meta_path) else {
+            return false;
         };
 
         let meta: CacheMeta = match serde_json::from_str(&meta_content) {

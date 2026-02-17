@@ -450,13 +450,12 @@ fn is_likely_url_encoded(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
                 percent_count += 1;
                 i += 3;
                 continue;
             }
-        }
         i += 1;
     }
 
