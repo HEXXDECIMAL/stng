@@ -39,8 +39,10 @@ fn get_pattern_regexes() -> &'static PatternRegexes {
             .expect("static regex pattern is valid"),
         path: Regex::new(r"/[a-zA-Z0-9_./\-]+").expect("static regex pattern is valid"),
         env_var: Regex::new(r"[A-Z][A-Z0-9_]{3,}").expect("static regex pattern is valid"),
-        snake_case: Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+").expect("static regex pattern is valid"),
-        domain: Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+").expect("static regex pattern is valid"),
+        snake_case: Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
+            .expect("static regex pattern is valid"),
+        domain: Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+")
+            .expect("static regex pattern is valid"),
     })
 }
 

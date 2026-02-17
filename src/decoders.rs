@@ -113,11 +113,8 @@ fn decode_base64_string(s: &ExtractedString) -> Option<ExtractedString> {
     }
 
     // Try standard base64 decoding
-    let decoded = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        s.value.trim(),
-    )
-    .ok()?;
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s.value.trim()).ok()?;
 
     // Check size limit
     if decoded.len() > MAX_DECODED_SIZE {
@@ -157,11 +154,11 @@ fn decode_base64_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+        section_size: None,
+        section_executable: None,
+        section_writable: None,
+        architecture: None,
+        function_meta: None,
     })
 }
 
@@ -181,7 +178,10 @@ pub fn decode_hex_strings(strings: &[ExtractedString]) -> Vec<ExtractedString> {
         .filter_map(|s| {
             let result = decode_hex_string(s);
             if result.is_some() {
-                tracing::debug!("Successfully decoded hex string of length {}", s.value.len());
+                tracing::debug!(
+                    "Successfully decoded hex string of length {}",
+                    s.value.len()
+                );
             } else {
                 tracing::debug!("Failed to decode hex string of length {}", s.value.len());
             }
@@ -236,11 +236,11 @@ fn decode_hex_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+        section_size: None,
+        section_executable: None,
+        section_writable: None,
+        architecture: None,
+        function_meta: None,
     })
 }
 
@@ -286,11 +286,11 @@ fn decode_url_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+        section_size: None,
+        section_executable: None,
+        section_writable: None,
+        architecture: None,
+        function_meta: None,
     })
 }
 
@@ -335,11 +335,11 @@ fn decode_unicode_escape_string(s: &ExtractedString) -> Option<ExtractedString> 
         kind,
         library: None,
         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+        section_size: None,
+        section_executable: None,
+        section_writable: None,
+        architecture: None,
+        function_meta: None,
     })
 }
 
@@ -402,7 +402,10 @@ fn decode_unicode_escapes(s: &str) -> Option<String> {
 }
 
 /// Parse a hex escape sequence of the specified length.
-fn parse_hex_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, len: usize) -> Option<char> {
+fn parse_hex_escape(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    len: usize,
+) -> Option<char> {
     let hex_str: String = chars.take(len).collect();
     if hex_str.len() != len {
         return None;
@@ -527,11 +530,11 @@ fn decode_base32_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+        section_size: None,
+        section_executable: None,
+        section_writable: None,
+        architecture: None,
+        function_meta: None,
     })
 }
 
@@ -593,11 +596,11 @@ fn decode_base85_string(s: &ExtractedString) -> Option<ExtractedString> {
         kind,
         library: None,
         fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+        section_size: None,
+        section_executable: None,
+        section_writable: None,
+        architecture: None,
+        function_meta: None,
     })
 }
 
@@ -631,13 +634,14 @@ fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
                 }
                 result.extend_from_slice(&[0u8; 4]);
             }
-            '!' ..= 'u' => {
+            '!'..='u' => {
                 group.push((ch as u8) - b'!');
                 if group.len() == 5 {
                     // Decode 5 base85 digits to 4 bytes
                     let mut value: u32 = 0;
                     for &digit in &group {
-                        value = value.checked_mul(85)
+                        value = value
+                            .checked_mul(85)
                             .and_then(|v| v.checked_add(u32::from(digit)))?;
                     }
                     result.extend_from_slice(&value.to_be_bytes());
@@ -661,7 +665,8 @@ fn decode_ascii85(s: &str) -> Option<Vec<u8>> {
 
         let mut value: u32 = 0;
         for &digit in &group {
-            value = value.checked_mul(85)
+            value = value
+                .checked_mul(85)
                 .and_then(|v| v.checked_add(u32::from(digit)))?;
         }
 
@@ -771,7 +776,10 @@ fn is_likely_base85(s: &str) -> bool {
         if matches!(b, b'!'..=b'u' | b'z') {
             valid_count += 1;
             // Look for special chars that are unlikely in normal text
-            if matches!(b, b'!' | b'"' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',') {
+            if matches!(
+                b,
+                b'!' | b'"' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b','
+            ) {
                 has_special_chars = true;
             }
         }
@@ -823,11 +831,11 @@ mod tests {
             kind: StringKind::Base64,
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let result = decode_base64_string(&input).unwrap();
@@ -845,11 +853,11 @@ mod tests {
             kind: StringKind::HexEncoded,
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let result = decode_hex_string(&input).unwrap();
@@ -867,11 +875,11 @@ mod tests {
             kind: StringKind::UrlEncoded,
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let result = decode_url_string(&input).unwrap();
@@ -889,11 +897,11 @@ mod tests {
             kind: StringKind::UnicodeEscaped,
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let result = decode_unicode_escape_string(&input).unwrap();
@@ -925,11 +933,11 @@ mod tests {
             kind: StringKind::Base32,
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -947,11 +955,11 @@ mod tests {
             kind: StringKind::Base32,
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -970,11 +978,11 @@ mod tests {
             kind: StringKind::Base32,
             library: None,
             fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
         };
 
         let result = decode_base32_string(&input).unwrap();

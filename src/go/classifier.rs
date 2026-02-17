@@ -117,7 +117,13 @@ pub fn classify_string(s: &str) -> StringKind {
                 let domain = parts[1];
 
                 // Local part must exist, not be empty, and start with alphanumeric
-                if local.is_empty() || !local.chars().next().expect("checked above").is_alphanumeric() {
+                if local.is_empty()
+                    || !local
+                        .chars()
+                        .next()
+                        .expect("checked above")
+                        .is_alphanumeric()
+                {
                     return StringKind::Const; // Skip - starts with @ or non-alphanumeric
                 }
 
@@ -1557,7 +1563,8 @@ fn classify_crypto_address(s: &str) -> Option<StringKind> {
     }
 
     // Litecoin: starts with L or M, 26-35 chars, Base58
-    if (s.starts_with('L') || s.starts_with('M')) && (26..=35).contains(&len)
+    if (s.starts_with('L') || s.starts_with('M'))
+        && (26..=35).contains(&len)
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l')
     {
@@ -1565,7 +1572,8 @@ fn classify_crypto_address(s: &str) -> Option<StringKind> {
     }
 
     // Dogecoin: starts with D, 34 chars, Base58
-    if s.starts_with('D') && len == 34
+    if s.starts_with('D')
+        && len == 34
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() && c != '0' && c != 'O' && c != 'I' && c != 'l')
     {

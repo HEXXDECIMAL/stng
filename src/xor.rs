@@ -628,7 +628,11 @@ fn extract_custom_xor_strings_file_level_cycling(
             // (these just produce the key)
             if start < data.len() {
                 let mut null_count = 0;
-                for &byte in data.iter().take(data.len().min(start + key.len())).skip(start) {
+                for &byte in data
+                    .iter()
+                    .take(data.len().min(start + key.len()))
+                    .skip(start)
+                {
                     if byte == 0x00 {
                         null_count += 1;
                     }
@@ -2916,9 +2920,7 @@ fn is_meaningful_string(s: &str) -> bool {
     }
 
     // Medium signal: 1 common word + reasonable quality
-    if word_matches >= 1
-        && alpha >= 5
-    {
+    if word_matches >= 1 && alpha >= 5 {
         // For non-ASCII text, skip vowel check (vowel is 0 for Russian/Chinese/etc.)
         if has_non_ascii {
             return true;
@@ -3634,7 +3636,10 @@ fn classify_xor_string(s: &str) -> Option<StringKind> {
             let is_windows_path = s.len() > 3
                 && s.chars().nth(1) == Some(':')
                 && s.chars().nth(2) == Some('\\')
-                && s.chars().next().expect("s is not empty").is_ascii_alphabetic();
+                && s.chars()
+                    .next()
+                    .expect("s is not empty")
+                    .is_ascii_alphabetic();
 
             // Check for relative paths with proper structure
             let is_relative_path = (s.starts_with("./") || s.starts_with("../"))
