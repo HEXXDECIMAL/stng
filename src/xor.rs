@@ -1265,8 +1265,10 @@ fn extract_custom_xor_strings_pattern_based_simple(
 
     let mut results = Vec::new();
 
-    // Scan every position (like decode.py)
-    for pos in 0..data.len().saturating_sub(min_length) {
+    // Scan every position (like decode.py).
+    // Use data.len() rather than data.len()-min_length: the inner length check filters
+    // short results, and data.len()-min_length is off-by-one when data is exactly min_length.
+    for pos in 0..data.len() {
         // Skip excluded ranges
         if excluded_ranges
             .iter()
@@ -1320,20 +1322,35 @@ fn extract_custom_xor_strings_pattern_based_simple(
                 if after_null.len() >= 2 {
                     let s_after = String::from_utf8_lossy(after_null);
 
-                    // Count consonants in first 4 chars (or all if less than 4)
+                    // Count the longest run of *consecutive* ASCII consonants
+                    // in the first 4 chars. A vowel in the middle resets the
+                    // count, so "nder" (n-d-e-r) only scores 2 (n,d before the
+                    // 'e'), whereas "zXkm" scores 4. This avoids trimming valid
+                    // English suffixes like "-nder" in "Finder" while still
+                    // cutting genuine garbage consonant clusters.
                     let check_len = after_null.len().min(4);
-                    let consonant_run = s_after
+                    let max_consecutive = s_after
                         .chars()
                         .take(check_len)
-                        .filter(|c| {
-                            c.is_ascii_alphabetic()
-                                && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
+                        .fold((0u32, 0u32), |(max, cur), c| {
+                            if c.is_ascii_alphabetic() {
+                                let is_vowel = matches!(
+                                    c.to_ascii_lowercase(),
+                                    'a' | 'e' | 'i' | 'o' | 'u'
+                                );
+                                if is_vowel {
+                                    (max, 0)
+                                } else {
+                                    let next = cur + 1;
+                                    (max.max(next), next)
+                                }
+                            } else {
+                                (max, 0)
+                            }
                         })
-                        .count();
+                        .0;
 
-                    // If we have 3+ consonants in the checked chars, it's likely garbage
-                    // Trim at this null position
-                    if consonant_run >= 3 {
+                    if max_consecutive >= 3 {
                         trim_at = Some(null_pos);
                         break; // Trim at first garbage boundary
                     }
@@ -1371,8 +1388,9 @@ fn extract_custom_xor_strings_pattern_based_simple(
             }
         };
 
-        // Must have at least one letter
-        if !s.chars().any(char::is_alphabetic) {
+        // Must have at least one letter, unless it's a known shell redirect/operator
+        let is_shell_op = s.contains("2>&") || s.contains("2>/") || s.contains("1>&");
+        if !is_shell_op && !s.chars().any(char::is_alphabetic) {
             continue;
         }
 
@@ -1414,7 +1432,8 @@ fn extract_custom_xor_strings_pattern_based_simple(
 
         // Reject if has letters but poor vowel ratio (linguistic check)
         // Only apply to ASCII/English text - skip for international text (Russian, Chinese, etc.)
-        if alpha >= 3 {
+        // Also skip for locale codes (e.g., zh_CN, fr_FR) which lack vowels by definition.
+        if alpha >= 3 && !is_locale_string(&trimmed_s) {
             let has_non_ascii = !trimmed_s.is_ascii();
             if !has_non_ascii {
                 // Only check vowels for ASCII/English text
@@ -1465,6 +1484,12 @@ fn extract_custom_xor_strings_pattern_based_simple(
         } else {
             trimmed_s
         };
+
+        // Category-specific cleaning (URL trailing garbage, shell cmd trimming, etc.) can
+        // shorten the string below min_length. Re-check after cleaning.
+        if cleaned_value.len() < min_length {
+            continue;
+        }
 
         // Pre-filter garbage before overlap removal: a garbage string that wins the overlap
         // contest would leave the byte range uncovered (the garbage gets removed in post-processing
@@ -2654,7 +2679,8 @@ fn is_valid_xor_string(s: &str) -> bool {
     let has_unicode_escapes = s.contains("\\x") || s.contains("\\u");
 
     // Check for shell heredoc patterns
-    let has_heredoc = s.contains("<<") && (s.contains("EOF") || s.contains("END"));
+    let has_heredoc =
+        s.contains("<<") && (s.contains("EOF") || s.contains("EOD") || s.contains("END"));
 
     // Count truly bad punctuation (control chars and unusual symbols)
     // Allow newlines in heredocs
@@ -3406,8 +3432,8 @@ const SHELL_COMMANDS: &[&str] = &[
     "/bin/sh",
     "/bin/bash",
     "2>&1",
-    "<<EOD",
-    "<<EOF",
+    "<<eod",
+    "<<eof",
     ">/dev/null",
 ];
 
