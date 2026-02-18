@@ -6,7 +6,7 @@
 //! the full `extract_strings` pipeline.
 
 use std::path::Path;
-use stng::{extract_from_elf, extract_strings, goblin, ExtractOptions, StringKind, StringMethod};
+use stng::{extract_strings, extract_strings_with_options, goblin, ExtractOptions, StringKind, StringMethod};
 
 fn macho_binary_path() -> Option<&'static str> {
     // Prefer /bin/ls which on macOS is always Mach-O
@@ -150,11 +150,11 @@ fn test_elf_extraction_completes_without_panic() {
         return;
     }
     let data = std::fs::read(path).expect("Failed to read hello_linux_amd64");
-    let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
+    let Ok(goblin::Object::Elf(_)) = goblin::Object::parse(&data) else {
         return;
     };
 
-    let strings = extract_from_elf(&elf, &data, &ExtractOptions::new(4));
+    let strings = extract_strings_with_options(&data, &ExtractOptions::new(4));
     assert!(
         !strings.is_empty(),
         "ELF extraction should produce strings even when there are no dynamic imports"
@@ -172,11 +172,11 @@ fn test_elf_import_export_strings_have_nonempty_values_when_present() {
         return;
     }
     let data = std::fs::read(path).expect("Failed to read hello_linux_amd64");
-    let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
+    let Ok(goblin::Object::Elf(_)) = goblin::Object::parse(&data) else {
         return;
     };
 
-    let strings = extract_from_elf(&elf, &data, &ExtractOptions::new(4));
+    let strings = extract_strings_with_options(&data, &ExtractOptions::new(4));
     for s in strings
         .iter()
         .filter(|s| s.kind == StringKind::Import || s.kind == StringKind::Export)

@@ -488,7 +488,7 @@ fn main() -> Result<()> {
     if !cli.no_xor
         && !cli.debug
         && io::stderr().is_terminal()
-        && data.len() <= stng::xor::MAX_XOR_SCAN_SIZE
+        && data.len() <= stng::MAX_XOR_SCAN_SIZE
     {
         eprintln!("Scanning file for encoded material...");
     }

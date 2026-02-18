@@ -49,27 +49,32 @@ mod stack_strings;
 
 // Language-specific extractors
 mod go;
-pub mod instr;
+pub(crate) mod instr;
 pub mod r2;
 mod rust;
-pub mod xor;
+pub(crate) mod xor;
 
 // Decoders for encoded strings
-pub mod decoders;
+pub(crate) mod decoders;
 mod fuzzy_base64;
 
-// Re-export public API
+// Public API
 pub use binary::{is_go_binary, is_rust_binary};
 pub use detect::{detect_language, is_text_file};
-pub use entitlements::extract_macho_entitlements_xml;
-pub use go::{classify_string, GoStringExtractor};
-pub use overlay::{detect_elf_overlay, extract_overlay_strings};
-pub use rust::RustStringExtractor;
-pub use stack_strings::extract_stack_strings;
+pub use go::classify_string;
+pub use overlay::detect_elf_overlay;
 pub use types::{
     BinaryInfo, ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod,
     StringStruct,
 };
+
+pub use xor::MAX_XOR_SCAN_SIZE;
+
+// Internal — not part of the stable public API
+pub(crate) use go::GoStringExtractor;
+pub use overlay::extract_overlay_strings;
+pub(crate) use rust::RustStringExtractor;
+pub(crate) use stack_strings::extract_stack_strings;
 pub use validation::is_garbage;
 
 // Re-export goblin so library clients can parse binaries themselves
@@ -88,20 +93,138 @@ use binary::{
     collect_macho_segments, collect_pe_section_info, macho_has_go_sections,
 };
 use binary_net::scan_binary_ips;
-use entitlements::extract_macho_entitlements;
 use imports::{extract_elf_imports, extract_macho_imports};
 use raw::{extract_raw_strings, extract_wide_strings};
+
+/// Returns `true` if a string should be kept when garbage filtering is enabled.
+/// Encoded strings and special kinds are always kept regardless of content.
+fn passes_garbage_filter(s: &ExtractedString) -> bool {
+    matches!(
+        s.kind,
+        StringKind::EntitlementsXml
+            | StringKind::Section
+            | StringKind::Base64
+            | StringKind::Base32
+            | StringKind::Base85
+            | StringKind::HexEncoded
+            | StringKind::UrlEncoded
+            | StringKind::UnicodeEscaped
+    ) || !validation::is_garbage(&s.value)
+}
+
+/// Merge a set of imports into the strings list.
+/// Updates kind/library for strings already present, then appends new ones.
+fn merge_imports(strings: &mut Vec<ExtractedString>, imports: Vec<ExtractedString>) {
+    {
+        let import_map: HashMap<&str, (StringKind, Option<&str>)> = imports
+            .iter()
+            .map(|s| (s.value.as_str(), (s.kind, s.library.as_deref())))
+            .collect();
+        for s in strings.iter_mut() {
+            if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
+                s.kind = kind;
+                s.library = lib.map(ToString::to_string);
+            }
+        }
+    }
+    let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+    let new_imports: Vec<_> = imports
+        .into_iter()
+        .filter(|s| !seen.contains(s.value.as_str()))
+        .collect();
+    strings.extend(new_imports);
+}
+
+/// Apply Mach-O entitlements: remove overlapping strings, then append entitlement XML.
+fn apply_entitlements(
+    strings: &mut Vec<ExtractedString>,
+    macho: &MachO<'_>,
+    data: &[u8],
+    min_length: usize,
+) {
+    let entitlements = entitlements::extract_macho_entitlements(macho, data, min_length);
+    for ent in &entitlements {
+        if ent.kind == StringKind::EntitlementsXml {
+            let ent_start = ent.data_offset;
+            let ent_end = ent_start + ent.value.len() as u64;
+            strings.retain(|s| {
+                s.data_offset + s.value.len() as u64 <= ent_start || s.data_offset >= ent_end
+            });
+        }
+    }
+    strings.extend(entitlements);
+}
+
+/// Run XOR scanning and extend `strings` with any decoded results.
+fn apply_xor_scan(
+    strings: &mut Vec<ExtractedString>,
+    data: &[u8],
+    opts: &ExtractOptions,
+    is_pe: bool,
+) {
+    if data.is_empty() {
+        return;
+    }
+    let r2_boundaries = if opts.use_r2 {
+        opts.path.as_deref().and_then(r2::extract_string_boundaries)
+    } else {
+        None
+    };
+
+    if let Some(ref key) = opts.xor_key {
+        tracing::debug!("Custom XOR: using {} byte key", key.len());
+        let key_str = String::from_utf8_lossy(key);
+        if let Some(ks) = strings.iter_mut().find(|s| s.value == key_str.as_ref()) {
+            ks.kind = StringKind::XorKey;
+        }
+        strings.extend(xor::extract_custom_xor_strings_with_hints(
+            data,
+            key,
+            opts.xor_min_length,
+            r2_boundaries.as_deref(),
+            opts.filter_garbage,
+        ));
+    } else if opts.xor_scan {
+        let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
+            xor::auto_detect_xor_key(data, strings, opts.xor_min_length)
+        } else {
+            None
+        };
+        if let Some((key, key_str, _)) = auto_key {
+            tracing::info!("Auto-detected XOR key: '{}'", key_str);
+            if let Some(ks) = strings.iter_mut().find(|s| s.value == key_str) {
+                ks.kind = StringKind::XorKey;
+            }
+            strings.extend(xor::extract_custom_xor_strings_with_hints(
+                data,
+                &key,
+                opts.xor_min_length,
+                r2_boundaries.as_deref(),
+                opts.filter_garbage,
+            ));
+        } else {
+            strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
+            if opts.xor_scan_multi {
+                if let Some(ref path) = opts.path {
+                    let xor_keys = r2::verify_xor_keys(path, strings);
+                    tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
+                    if !xor_keys.is_empty() {
+                        let decoded =
+                            xor::extract_multikey_xor_strings(data, &xor_keys, opts.xor_min_length);
+                        tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
+                        strings.extend(decoded);
+                    }
+                } else {
+                    tracing::debug!("Multi-byte XOR: path not provided, skipping");
+                }
+            }
+        }
+    }
+}
 
 /// Check if a string looks like a bundle ID (reverse domain notation).
 /// Examples: com.apple.ls, org.example.app, net.something.tool
 fn is_bundle_id(s: &str) -> bool {
-    // Must contain at least 2 dots (e.g., com.apple.ls)
-    let dot_count = s.chars().filter(|&c| c == '.').count();
-    if dot_count < 2 {
-        return false;
-    }
-
-    // Must start with known TLD
     if !s.starts_with("com.")
         && !s.starts_with("org.")
         && !s.starts_with("net.")
@@ -111,26 +234,17 @@ fn is_bundle_id(s: &str) -> bool {
     {
         return false;
     }
-
-    // All parts should be alphanumeric + hyphen/underscore
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() < 3 {
-        return false;
-    }
-
-    for part in parts {
+    let mut count = 0;
+    for part in s.split('.') {
         if part.is_empty() {
             return false;
         }
-        if !part
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        {
+        if !part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
             return false;
         }
+        count += 1;
     }
-
-    true
+    count >= 3
 }
 
 /// Check if a string looks like it's part of an X.509 certificate.
@@ -340,7 +454,7 @@ fn enrich_pe_sections(strings: &mut [ExtractedString], pe: &goblin::pe::PE<'_>) 
         }
     }
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExtractOptions {
     /// Minimum string length to extract
     pub min_length: usize,
@@ -362,6 +476,12 @@ pub struct ExtractOptions {
     pub xor_scan_multi: bool,
     /// Use r2 result caching (default: true). Disable with --no-cache flag.
     pub use_cache: bool,
+}
+
+impl Default for ExtractOptions {
+    fn default() -> Self {
+        Self::new(4)
+    }
 }
 
 impl ExtractOptions {
@@ -694,123 +814,9 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
         }
 
         // XOR string detection
-        if !data.is_empty() {
-            // Get radare2 string boundaries for XOR hints (if r2 is enabled)
-            let r2_boundaries = if opts.use_r2 {
-                if let Some(path) = &opts.path {
-                    r2::extract_string_boundaries(path)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // Custom XOR key takes precedence over auto-detection
-            if let Some(ref key) = opts.xor_key {
-                tracing::debug!("Custom XOR: using {} byte key", key.len());
-
-                // Check if the XOR key exists in the already-extracted strings
-                let key_str = String::from_utf8_lossy(key).to_string();
-                let key_found = strings.iter_mut().find(|s| s.value == key_str);
-                if let Some(key_string) = key_found {
-                    // Mark the key as XorKey type
-                    key_string.kind = StringKind::XorKey;
-                }
-
-                if opts.filter_garbage {
-                    strings.extend(xor::extract_custom_xor_strings_with_hints(
-                        data,
-                        key,
-                        opts.xor_min_length,
-                        r2_boundaries.as_deref(),
-                        true,
-                    ));
-                } else {
-                    strings.extend(xor::extract_custom_xor_strings_with_hints(
-                        data,
-                        key,
-                        opts.xor_min_length,
-                        r2_boundaries.as_deref(),
-                        false,
-                    ));
-                }
-            } else if opts.xor_scan {
-                // Try auto-detecting XOR key from extracted strings (small files only)
-                let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
-                    xor::auto_detect_xor_key(data, &strings, opts.xor_min_length)
-                } else {
-                    None
-                };
-
-                if let Some((key, key_str, _key_offset)) = auto_key {
-                    // Auto-detected key - use it
-                    tracing::info!("Using auto-detected XOR key: '{}'", key_str);
-
-                    // Mark the XOR key string as XorKey type (it already exists from raw scan)
-                    if let Some(key_string) = strings.iter_mut().find(|s| s.value == key_str) {
-                        key_string.kind = StringKind::XorKey;
-                    }
-
-                    if opts.filter_garbage {
-                        strings.extend(xor::extract_custom_xor_strings_with_hints(
-                            data,
-                            &key,
-                            opts.xor_min_length,
-                            r2_boundaries.as_deref(),
-                            true,
-                        ));
-                    } else {
-                        strings.extend(xor::extract_custom_xor_strings_with_hints(
-                            data,
-                            &key,
-                            opts.xor_min_length,
-                            r2_boundaries.as_deref(),
-                            false,
-                        ));
-                    }
-                } else {
-                    // Fallback to single-byte XOR scan
-                    strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
-
-                    // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
-                    if opts.xor_scan_multi {
-                        if let Some(ref path) = opts.path {
-                            tracing::debug!(
-                                "Multi-byte XOR: analyzing {} candidate strings",
-                                strings.len()
-                            );
-                            // Use already extracted strings as XOR key candidates
-                            let xor_keys = r2::verify_xor_keys(path, &strings);
-                            tracing::debug!(
-                                "Multi-byte XOR: found {} potential keys",
-                                xor_keys.len()
-                            );
-                            if xor_keys.is_empty() {
-                                tracing::debug!("Multi-byte XOR: no high-confidence keys found");
-                            } else {
-                                let decoded = xor::extract_multikey_xor_strings(
-                                    data,
-                                    &xor_keys,
-                                    opts.xor_min_length,
-                                );
-                                tracing::debug!(
-                                    "Multi-byte XOR: decoded {} strings",
-                                    decoded.len()
-                                );
-                                strings.extend(decoded);
-                            }
-                        } else {
-                            tracing::debug!("Multi-byte XOR: path not provided, skipping");
-                        }
-                    }
-                }
-            }
-        }
+        apply_xor_scan(&mut strings, data, opts, is_pe);
 
         // Decode encoded strings (base64, hex, URL-encoding, unicode escapes)
-        // This happens BEFORE garbage filtering so we can decode potentially-garbage-looking encodings
-        tracing::debug!("Running decoders on {} strings", strings.len());
         let mut decoded = Vec::new();
         decoded.extend(decoders::decode_base64_strings(&strings));
         decoded.extend(fuzzy_base64::extract_fuzzy_base64(&strings));
@@ -819,27 +825,10 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
         decoded.extend(decoders::decode_hex_strings(&strings));
         decoded.extend(decoders::decode_url_strings(&strings));
         decoded.extend(decoders::decode_unicode_escape_strings(&strings));
-
-        tracing::debug!("Decoded {} additional strings", decoded.len());
-
-        // Add decoded strings to the main list
         strings.extend(decoded);
 
-        // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
-        // Note: Encoded strings (Base64, HexEncoded, etc.) are kept even if they look like garbage,
-        // because the decoded version might be valuable
         if opts.filter_garbage {
-            strings.retain(|s| {
-                s.kind == StringKind::EntitlementsXml
-                    || s.kind == StringKind::Section
-                    || s.kind == StringKind::Base64
-                    || s.kind == StringKind::Base32
-                    || s.kind == StringKind::Base85
-                    || s.kind == StringKind::HexEncoded
-                    || s.kind == StringKind::UrlEncoded
-                    || s.kind == StringKind::UnicodeEscaped
-                    || !validation::is_garbage(&s.value)
-            });
+            strings.retain(passes_garbage_filter);
         }
 
         deduplicate_by_offset(strings)
@@ -852,7 +841,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 /// (Mach-O, ELF, PE) and detected language (Go, Rust, unknown). Runs XOR scanning,
 /// stack string extraction, import enrichment, and section enrichment after the
 /// primary extraction pass.
-pub fn extract_from_object(
+fn extract_from_object(
     object: &Object<'_>,
     data: &[u8],
     opts: &ExtractOptions,
@@ -897,44 +886,8 @@ pub fn extract_from_object(
             if !is_go_binary {
                 strings.extend(extract_stack_strings(data, min_length));
             }
-            // Add imports/exports, upgrading existing strings
-            let imports = extract_macho_imports(macho, min_length);
-            let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
-                .iter()
-                .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
-                .collect();
-            for s in &mut strings {
-                if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-                    s.kind = *kind;
-                    s.library = lib.map(std::string::ToString::to_string);
-                }
-            }
-            let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-            let new_imports: Vec<_> = imports
-                .into_iter()
-                .filter(|s| !seen.contains(s.value.as_str()))
-                .collect();
-            strings.extend(new_imports);
-
-            // Extract entitlements as raw XML for inline display
-            let entitlements = extract_macho_entitlements(macho, data, min_length);
-
-            // Remove strings that overlap with entitlement XML ranges
-            for ent in &entitlements {
-                if ent.kind == StringKind::EntitlementsXml {
-                    let ent_start = ent.data_offset;
-                    let ent_end = ent_start + ent.value.len() as u64;
-                    strings.retain(|s| {
-                        // Keep strings that don't overlap with the entitlement range
-                        let s_start = s.data_offset;
-                        let s_end = s_start + s.value.len() as u64;
-                        // No overlap if string ends before entitlement starts or starts after entitlement ends
-                        s_end <= ent_start || s_start >= ent_end
-                    });
-                }
-            }
-
-            strings.extend(entitlements);
+            merge_imports(&mut strings, extract_macho_imports(macho, min_length));
+            apply_entitlements(&mut strings, macho, data, min_length);
         }
         Object::Mach(goblin::mach::Mach::Fat(fat)) => {
             // Fat binary - check for Go/Rust first
@@ -979,49 +932,9 @@ pub fn extract_from_object(
             if !is_go_binary {
                 strings.extend(extract_stack_strings(data, min_length));
             }
-            // Add imports/exports from first architecture, upgrading existing strings
             if let Some(ref macho) = first_macho {
-                let imports = extract_macho_imports(macho, min_length);
-                // Build a map of import values to their library info
-                let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> =
-                    imports
-                        .iter()
-                        .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
-                        .collect();
-                // Update existing strings that are actually imports
-                for s in &mut strings {
-                    if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-                        s.kind = *kind;
-                        s.library = lib.map(std::string::ToString::to_string);
-                    }
-                }
-                // Add new imports that weren't found before
-                let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-                let new_imports: Vec<_> = imports
-                    .into_iter()
-                    .filter(|s| !seen.contains(s.value.as_str()))
-                    .collect();
-                strings.extend(new_imports);
-
-                // Extract entitlements as raw XML for inline display
-                let entitlements = extract_macho_entitlements(macho, data, min_length);
-
-                // Remove strings that overlap with entitlement XML ranges
-                for ent in &entitlements {
-                    if ent.kind == StringKind::EntitlementsXml {
-                        let ent_start = ent.data_offset;
-                        let ent_end = ent_start + ent.value.len() as u64;
-                        strings.retain(|s| {
-                            // Keep strings that don't overlap with the entitlement range
-                            let s_start = s.data_offset;
-                            let s_end = s_start + s.value.len() as u64;
-                            // No overlap if string ends before entitlement starts or starts after entitlement ends
-                            s_end <= ent_start || s_start >= ent_end
-                        });
-                    }
-                }
-
-                strings.extend(entitlements);
+                merge_imports(&mut strings, extract_macho_imports(macho, min_length));
+                apply_entitlements(&mut strings, macho, data, min_length);
             }
         }
         Object::Elf(elf) => {
@@ -1129,24 +1042,7 @@ pub fn extract_from_object(
             } else {
                 strings.extend(extract_stack_strings(scan_data, min_length));
             }
-            // Add imports/exports from dynamic symbols, upgrading existing strings
-            let imports = extract_elf_imports(elf, min_length);
-            let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
-                .iter()
-                .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
-                .collect();
-            for s in &mut strings {
-                if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-                    s.kind = *kind;
-                    s.library = lib.map(ToString::to_string);
-                }
-            }
-            let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-            let new_imports: Vec<_> = imports
-                .into_iter()
-                .filter(|s| !seen.contains(s.value.as_str()))
-                .collect();
-            strings.extend(new_imports);
+            merge_imports(&mut strings, extract_elf_imports(elf, min_length));
 
             // Filter out any strings that fall within the overlay region
             // (they'll be re-extracted with proper section="overlay" marking)
@@ -1244,117 +1140,9 @@ pub fn extract_from_object(
     }
 
     // XOR string detection - skip for Go binaries (they don't use XOR obfuscation)
-    if !data.is_empty() && !is_go_binary {
-        // Get radare2 string boundaries for XOR hints (if r2 is enabled)
-        let r2_boundaries = if opts.use_r2 {
-            if let Some(path) = &opts.path {
-                r2::extract_string_boundaries(path)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Custom XOR key takes precedence over auto-detection
-        if let Some(ref key) = opts.xor_key {
-            tracing::info!("Custom XOR: using {} byte key", key.len());
-
-            // Check if the XOR key exists in the already-extracted strings
-            let key_str = String::from_utf8_lossy(key).to_string();
-            let key_found = strings.iter_mut().find(|s| s.value == key_str);
-            if let Some(key_string) = key_found {
-                // Mark the key as XorKey type
-                key_string.kind = StringKind::XorKey;
-            }
-
-            if opts.filter_garbage {
-                strings.extend(xor::extract_custom_xor_strings_with_hints(
-                    data,
-                    key,
-                    opts.xor_min_length,
-                    r2_boundaries.as_deref(),
-                    true,
-                ));
-            } else {
-                strings.extend(xor::extract_custom_xor_strings_with_hints(
-                    data,
-                    key,
-                    opts.xor_min_length,
-                    r2_boundaries.as_deref(),
-                    false,
-                ));
-            }
-        } else if opts.xor_scan {
-            // Try auto-detecting XOR key from extracted strings (small files only)
-            let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
-                xor::auto_detect_xor_key(data, &strings, opts.xor_min_length)
-            } else {
-                None
-            };
-
-            if let Some((key, key_str, _key_offset)) = auto_key {
-                // Auto-detected key - use it
-                tracing::info!("Using auto-detected XOR key: '{}'", key_str);
-
-                // Mark the XOR key string as XorKey type (it already exists from raw scan)
-                if let Some(key_string) = strings.iter_mut().find(|s| s.value == key_str) {
-                    key_string.kind = StringKind::XorKey;
-                }
-
-                if opts.filter_garbage {
-                    strings.extend(xor::extract_custom_xor_strings_with_hints(
-                        data,
-                        &key,
-                        opts.xor_min_length,
-                        r2_boundaries.as_deref(),
-                        true,
-                    ));
-                } else {
-                    strings.extend(xor::extract_custom_xor_strings_with_hints(
-                        data,
-                        &key,
-                        opts.xor_min_length,
-                        r2_boundaries.as_deref(),
-                        false,
-                    ));
-                }
-            } else {
-                // Fallback to single-byte XOR scan
-                let is_pe = matches!(object, Object::PE(_));
-                strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
-
-                // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
-                if opts.xor_scan_multi {
-                    if let Some(ref path) = opts.path {
-                        tracing::debug!(
-                            "Multi-byte XOR: path={}, analyzing {} candidate strings",
-                            path,
-                            strings.len()
-                        );
-                        let xor_keys = r2::verify_xor_keys(path, &strings);
-                        tracing::debug!("Multi-byte XOR: found {} potential keys", xor_keys.len());
-                        if xor_keys.is_empty() {
-                            tracing::debug!("Multi-byte XOR: no high-confidence keys found");
-                        } else {
-                            tracing::debug!(
-                                "Multi-byte XOR: attempting decryption with {} keys",
-                                xor_keys.len()
-                            );
-                            let decoded = xor::extract_multikey_xor_strings(
-                                data,
-                                &xor_keys,
-                                opts.xor_min_length,
-                            );
-                            tracing::debug!("Multi-byte XOR: decoded {} strings", decoded.len());
-                            strings.extend(decoded);
-                        }
-                    } else {
-                        tracing::debug!("Multi-byte XOR: path not provided, skipping");
-                    }
-                }
-            }
-        }
+    if !is_go_binary {
+        let is_pe = matches!(object, Object::PE(_));
+        apply_xor_scan(&mut strings, data, opts, is_pe);
     }
 
     // Extract IP addresses from connect() syscalls using radare2 (if enabled)
@@ -1363,40 +1151,9 @@ pub fn extract_from_object(
         if let Some(ref path) = opts.path {
             let connect_addrs = r2::extract_connect_addrs(path, data);
             if !connect_addrs.is_empty() {
-                tracing::debug!(
-                    "Found {} IP addresses from connect() calls",
-                    connect_addrs.len()
-                );
+                tracing::debug!("Found {} IP addresses from connect() calls", connect_addrs.len());
                 strings.extend(connect_addrs);
             }
-        }
-    }
-
-    // XOR string detection with auto-discovery
-    // Try to auto-detect XOR key from extracted strings if XOR scanning is enabled
-    if !data.is_empty() && opts.xor_scan {
-        // Auto-detect XOR key from high-quality candidates in extracted strings
-        if let Some((key, key_str, _key_offset)) =
-            xor::auto_detect_xor_key(data, &strings, opts.xor_min_length)
-        {
-            tracing::info!(
-                "Auto-detected XOR key: '{}' (from extracted strings)",
-                key_str
-            );
-
-            // Mark the key string as XorKey type if it exists in extracted strings
-            if let Some(key_string) = strings.iter_mut().find(|s| s.value == key_str) {
-                key_string.kind = StringKind::XorKey;
-            }
-
-            // Extract XOR strings with the detected key
-            strings.extend(xor::extract_custom_xor_strings_with_hints(
-                data,
-                &key,
-                opts.xor_min_length,
-                None,
-                opts.filter_garbage,
-            ));
         }
     }
 
@@ -1498,338 +1255,11 @@ pub fn extract_from_object(
     // Add decoded strings to the main list
     strings.extend(decoded);
 
-    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
     if opts.filter_garbage {
-        strings.retain(|s| {
-            s.kind == StringKind::EntitlementsXml
-                || s.kind == StringKind::Section
-                || s.kind == StringKind::Base64
-                || s.kind == StringKind::Base32
-                || s.kind == StringKind::Base85
-                || s.kind == StringKind::HexEncoded
-                || s.kind == StringKind::UrlEncoded
-                || s.kind == StringKind::UnicodeEscaped
-                || !validation::is_garbage(&s.value)
-        });
+        strings.retain(passes_garbage_filter);
     }
 
     deduplicate_by_offset(strings)
-}
-
-/// Extract strings from a pre-parsed Mach-O binary.
-///
-/// This allows library clients who have already parsed the binary to avoid re-parsing.
-pub fn extract_from_macho(
-    macho: &MachO<'_>,
-    data: &[u8],
-    opts: &ExtractOptions,
-) -> Vec<ExtractedString> {
-    let min_length = opts.min_length;
-    let mut strings = Vec::new();
-    let segments = collect_macho_segments(macho);
-    let section_info = collect_macho_section_info(macho);
-
-    if macho_has_go_sections(macho) {
-        let extractor = GoStringExtractor::new(min_length);
-        strings.extend(extractor.extract_macho(macho, data));
-    } else if binary::macho_is_rust(macho) {
-        let extractor = RustStringExtractor::new(min_length);
-        strings.extend(extractor.extract_macho(macho, data));
-    } else {
-        // Unknown Mach-O - use r2 if available
-        if let Some(r2_strings) = get_r2_strings(opts) {
-            strings.extend(r2_strings);
-        }
-        // Also do raw scan to catch anything r2 missed
-        let extractor = RustStringExtractor::new(min_length);
-        let rust_strings = extractor.extract_macho(macho, data);
-        if rust_strings.is_empty() {
-            strings.extend(extract_raw_strings(
-                data,
-                min_length,
-                None,
-                &segments,
-                &section_info,
-            ));
-        } else {
-            strings.extend(rust_strings);
-        }
-    }
-
-    // Add imports/exports
-    let imports = extract_macho_imports(macho, min_length);
-    let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
-        .iter()
-        .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
-        .collect();
-    for s in &mut strings {
-        if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-            s.kind = *kind;
-            s.library = lib.map(std::string::ToString::to_string);
-        }
-    }
-    let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-    let new_imports: Vec<_> = imports
-        .into_iter()
-        .filter(|s| !seen.contains(s.value.as_str()))
-        .collect();
-    strings.extend(new_imports);
-
-    // Extract entitlements as raw XML for inline display
-    let entitlements = extract_macho_entitlements(macho, data, min_length);
-
-    // Remove strings that overlap with entitlement XML ranges
-    for ent in &entitlements {
-        if ent.kind == StringKind::EntitlementsXml {
-            let ent_start = ent.data_offset;
-            let ent_end = ent_start + ent.value.len() as u64;
-            strings.retain(|s| {
-                // Keep strings that don't overlap with the entitlement range
-                let s_start = s.data_offset;
-                let s_end = s_start + s.value.len() as u64;
-                // No overlap if string ends before entitlement starts or starts after entitlement ends
-                s_end <= ent_start || s_start >= ent_end
-            });
-        }
-    }
-
-    strings.extend(entitlements);
-
-    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
-    if opts.filter_garbage {
-        strings.retain(|s| {
-            s.kind == StringKind::EntitlementsXml
-                || s.kind == StringKind::Section
-                || s.kind == StringKind::Base64
-                || s.kind == StringKind::Base32
-                || s.kind == StringKind::Base85
-                || s.kind == StringKind::HexEncoded
-                || s.kind == StringKind::UrlEncoded
-                || s.kind == StringKind::UnicodeEscaped
-                || !validation::is_garbage(&s.value)
-        });
-    }
-
-    strings
-}
-
-/// Extract strings from a pre-parsed ELF binary.
-///
-/// This allows library clients who have already parsed the binary to avoid re-parsing.
-/// Note: unlike [`extract_from_object`], this does not run XOR scanning, stack string
-/// extraction, or section enrichment. For full extraction use [`extract_from_object`].
-pub fn extract_from_elf(
-    elf: &goblin::elf::Elf<'_>,
-    data: &[u8],
-    opts: &ExtractOptions,
-) -> Vec<ExtractedString> {
-    let min_length = opts.min_length;
-    let mut strings = Vec::new();
-    let segments = collect_elf_segments(elf);
-    let section_info = collect_elf_section_info(elf);
-
-    // Detect overlay first to avoid scanning it during normal extraction
-    let overlay_info = detect_elf_overlay(data);
-    let scan_data = if let Some(ref overlay) = overlay_info {
-        // Only scan up to overlay start (safe cast: min with data.len())
-        let end = usize::try_from(overlay.start_offset)
-            .unwrap_or(data.len())
-            .min(data.len());
-        &data[..end]
-    } else {
-        data
-    };
-
-    // Check for Go sections
-    let has_go = elf.section_headers.iter().any(|sh| {
-        let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
-        name == ".gopclntab" || name == ".go.buildinfo"
-    });
-
-    // Check for Rust
-    let has_rust = elf.section_headers.iter().any(|sh| {
-        let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
-        name.contains("rust") || name == ".rustc"
-    });
-
-    if has_go {
-        let extractor = GoStringExtractor::new(min_length);
-        strings.extend(extractor.extract_elf(elf, scan_data));
-    } else if has_rust {
-        let extractor = RustStringExtractor::new(min_length);
-        strings.extend(extractor.extract_elf(elf, scan_data));
-    } else {
-        // Unknown ELF - use r2 if available + raw scan
-        if let Some(r2_strings) = get_r2_strings(opts) {
-            strings.extend(r2_strings);
-        }
-        let extractor = RustStringExtractor::new(min_length);
-        let rust_strings = extractor.extract_elf(elf, scan_data);
-        if rust_strings.is_empty() {
-            strings.extend(extract_raw_strings(
-                scan_data,
-                min_length,
-                None,
-                &segments,
-                &section_info,
-            ));
-        } else {
-            strings.extend(rust_strings);
-        }
-    }
-
-    if has_go {
-        // For Go binaries, run XOR-pair extraction on .text only.
-        // garble-obfuscated Go malware (e.g. BrickStorm) encodes strings as two
-        // non-printable immediates XOR'd at runtime; the Go extractor misses these.
-        let text_data = elf
-            .section_headers
-            .iter()
-            .find(|sh| elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("") == ".text")
-            .and_then(|sh| {
-                let start = sh.sh_offset as usize;
-                let end = start.saturating_add(sh.sh_size as usize);
-                let text = scan_data.get(start..end)?;
-                Some((start, text))
-            });
-        if let Some((text_start, text)) = text_data {
-            let mut xor_results = extract_stack_strings(text, min_length);
-            for r in &mut xor_results {
-                r.data_offset += text_start as u64;
-            }
-            strings.extend(
-                xor_results
-                    .into_iter()
-                    .filter(|s| s.method == StringMethod::XorStackPair),
-            );
-        }
-    } else {
-        strings.extend(extract_stack_strings(scan_data, min_length));
-    }
-
-    // Add imports/exports
-    let imports = extract_elf_imports(elf, min_length);
-    let import_map: std::collections::HashMap<&str, (&StringKind, Option<&str>)> = imports
-        .iter()
-        .map(|s| (s.value.as_str(), (&s.kind, s.library.as_deref())))
-        .collect();
-    for s in &mut strings {
-        if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-            s.kind = *kind;
-            s.library = lib.map(std::string::ToString::to_string);
-        }
-    }
-    let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-    let new_imports: Vec<_> = imports
-        .into_iter()
-        .filter(|s| !seen.contains(s.value.as_str()))
-        .collect();
-    strings.extend(new_imports);
-
-    // Filter out any strings that fall within the overlay region
-    // (they'll be re-extracted with proper section="overlay" marking)
-    if let Some(ref overlay) = overlay_info {
-        strings.retain(|s| s.data_offset < overlay.start_offset);
-    }
-
-    // Extract overlay/appended data (common malware technique)
-    strings.extend(extract_overlay_strings(data, min_length));
-
-    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
-    if opts.filter_garbage {
-        strings.retain(|s| {
-            s.kind == StringKind::EntitlementsXml
-                || s.kind == StringKind::Section
-                || s.kind == StringKind::Base64
-                || s.kind == StringKind::Base32
-                || s.kind == StringKind::Base85
-                || s.kind == StringKind::HexEncoded
-                || s.kind == StringKind::UrlEncoded
-                || s.kind == StringKind::UnicodeEscaped
-                || !validation::is_garbage(&s.value)
-        });
-    }
-
-    strings
-}
-
-/// Extract strings from a pre-parsed PE binary.
-///
-/// This allows library clients who have already parsed the binary to avoid re-parsing.
-pub fn extract_from_pe(
-    pe: &goblin::pe::PE<'_>,
-    data: &[u8],
-    opts: &ExtractOptions,
-) -> Vec<ExtractedString> {
-    let min_length = opts.min_length;
-    let mut strings = Vec::new();
-
-    // Collect PE section names and metadata
-    let segments: Vec<String> = pe
-        .sections
-        .iter()
-        .map(|sec| {
-            String::from_utf8_lossy(&sec.name)
-                .trim_end_matches('\0')
-                .to_string()
-        })
-        .collect();
-    let section_info = collect_pe_section_info(pe);
-
-    // Check for Go — require exact section name match to avoid false positives
-    // (.rdata is present in virtually every PE; ".go" would match ".cargo", etc.)
-    let has_go = pe.sections.iter().any(|sec| {
-        let name = String::from_utf8_lossy(&sec.name);
-        let name = name.trim_end_matches('\0');
-        name == ".gopclntab" || name == ".go.buildinfo"
-    });
-
-    if has_go {
-        let extractor = GoStringExtractor::new(min_length);
-        strings.extend(extractor.extract_pe(pe, data));
-    }
-
-    // Use r2 if available
-    if let Some(r2_strings) = get_r2_strings(opts) {
-        strings.extend(r2_strings);
-    }
-
-    // Extract UTF-16LE wide strings (common in Windows binaries)
-    strings.extend(extract_wide_strings(
-        data,
-        min_length,
-        None,
-        &segments,
-        &section_info,
-    ));
-
-    // Also do raw scan for PE (always, since structure extraction may miss many strings)
-    if !data.is_empty() {
-        strings.extend(extract_raw_strings(
-            data,
-            min_length,
-            None,
-            &segments,
-            &section_info,
-        ));
-    }
-
-    // Apply garbage filter if enabled (but never filter entitlements XML, section names, or encoded strings)
-    if opts.filter_garbage {
-        strings.retain(|s| {
-            s.kind == StringKind::EntitlementsXml
-                || s.kind == StringKind::Section
-                || s.kind == StringKind::Base64
-                || s.kind == StringKind::Base32
-                || s.kind == StringKind::Base85
-                || s.kind == StringKind::HexEncoded
-                || s.kind == StringKind::UrlEncoded
-                || s.kind == StringKind::UnicodeEscaped
-                || !validation::is_garbage(&s.value)
-        });
-    }
-
-    strings
 }
 
 /// Helper to get r2 strings from options (pre-extracted or by running r2)

@@ -629,7 +629,8 @@ fn test_c2_url_extraction_from_brew_agent() {
     let min_length = 10;
 
     // Extract strings using custom XOR key
-    let results = stng::xor::extract_custom_xor_strings(&data, &key, min_length);
+    let opts = ExtractOptions::new(min_length).with_xor_key(key.clone());
+    let results = stng::extract_strings_with_options(&data, &opts);
 
     // Look for the C2 URL
     let c2_url = results

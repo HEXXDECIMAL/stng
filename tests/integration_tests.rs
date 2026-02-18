@@ -664,9 +664,8 @@ mod rust_binary_tests {
         }
 
         let data = std::fs::read(self_path).unwrap();
-        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = stng::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_strings_with_options(&data, &opts);
         assert!(!strings.is_empty());
     }
 
@@ -1215,14 +1214,10 @@ mod cross_compiled_tests {
             return;
         };
 
-        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = stng::extract_from_object(&object, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         assert!(!strings.is_empty());
-        // Should have the same results as extract_strings_with_options
-        let direct = extract_strings_with_options(&data, &opts);
-        assert_eq!(strings.len(), direct.len());
     }
 
     #[test]
@@ -1231,9 +1226,8 @@ mod cross_compiled_tests {
             return;
         };
 
-        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = stng::extract_from_object(&object, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         assert!(!strings.is_empty());
     }
@@ -1246,16 +1240,14 @@ mod api_tests {
     #[test]
     fn test_extract_from_object_api() {
         let data = std::fs::read("/bin/ls").unwrap();
-        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = stng::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_strings_with_options(&data, &opts);
         assert!(!strings.is_empty());
     }
 
     #[test]
     fn test_extract_from_object_with_preextracted_r2() {
         let data = std::fs::read("/bin/ls").unwrap();
-        let object = stng::goblin::Object::parse(&data).unwrap();
 
         // Create fake pre-extracted r2 strings
         let fake_r2 = vec![ExtractedString {
@@ -1270,7 +1262,7 @@ mod api_tests {
         }];
 
         let opts = ExtractOptions::new(4).with_r2_strings(fake_r2);
-        let strings = stng::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_strings_with_options(&data, &opts);
 
         // Should include our fake r2 string
         assert!(strings.iter().any(|s| s.value == "fake_r2_string"));
@@ -1317,9 +1309,8 @@ mod api_tests {
         }
 
         let data = std::fs::read(path).unwrap();
-        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = stng::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_strings_with_options(&data, &opts);
 
         assert!(!strings.is_empty());
     }
@@ -1335,9 +1326,8 @@ mod api_tests {
         }
 
         let data = std::fs::read(path).unwrap();
-        let object = stng::goblin::Object::parse(&data).unwrap();
         let opts = ExtractOptions::new(4);
-        let strings = stng::extract_from_object(&object, &data, &opts);
+        let strings = stng::extract_strings_with_options(&data, &opts);
 
         assert!(!strings.is_empty());
     }
@@ -1992,12 +1982,9 @@ mod shell_detection_tests {
     }
 }
 
-// Tests for extract_from_* functions and overlay detection
+// Tests for extraction and overlay detection
 mod extract_from_tests {
-    use stng::{
-        detect_elf_overlay, extract_from_elf, extract_from_macho, extract_from_pe,
-        extract_overlay_strings, goblin, ExtractOptions,
-    };
+    use stng::{detect_elf_overlay, extract_overlay_strings, extract_strings_with_options, ExtractOptions};
 
     fn minimal_elf_with_strings(strings: &[&str]) -> Vec<u8> {
         let mut data = vec![0u8; 1024];
@@ -2084,12 +2071,7 @@ mod extract_from_tests {
         let data = minimal_elf_with_strings(&["hello_from_elf", "test_string_elf"]);
         let opts = ExtractOptions::new(4);
 
-        // Parse the ELF first
-        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
-            panic!("Failed to parse test ELF");
-        };
-
-        let strings = extract_from_elf(&elf, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         // Should find some strings (at minimum from raw scan)
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
@@ -2107,14 +2089,7 @@ mod extract_from_tests {
         let data = minimal_macho_with_strings(&["hello_from_macho", "test_string_macho"]);
         let opts = ExtractOptions::new(4);
 
-        // Parse the Mach-O first
-        let Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(macho))) =
-            goblin::Object::parse(&data)
-        else {
-            panic!("Failed to parse test Mach-O");
-        };
-
-        let strings = extract_from_macho(&macho, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
         assert!(
@@ -2139,12 +2114,7 @@ mod extract_from_tests {
 
         let opts = ExtractOptions::new(4);
 
-        // Parse the PE first
-        let Ok(goblin::Object::PE(pe)) = goblin::Object::parse(&data) else {
-            panic!("Failed to parse test PE");
-        };
-
-        let strings = extract_from_pe(&pe, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
         assert!(
@@ -2308,12 +2278,7 @@ mod extract_from_tests {
         let mut opts = ExtractOptions::new(4);
         opts.filter_garbage = true;
 
-        // Parse the ELF first
-        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
-            panic!("Failed to parse test ELF");
-        };
-
-        let strings = extract_from_elf(&elf, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         // Garbage filter should remove noise
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
@@ -2326,14 +2291,7 @@ mod extract_from_tests {
         let mut opts = ExtractOptions::new(4);
         opts.filter_garbage = true;
 
-        // Parse the Mach-O first
-        let Ok(goblin::Object::Mach(goblin::mach::Mach::Binary(macho))) =
-            goblin::Object::parse(&data)
-        else {
-            panic!("Failed to parse test Mach-O");
-        };
-
-        let strings = extract_from_macho(&macho, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         let values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
         assert!(!values.contains(&"@@##$$"), "Garbage should be filtered");
@@ -2350,12 +2308,7 @@ mod extract_from_tests {
         let mut opts = ExtractOptions::new(4);
         opts.filter_garbage = true;
 
-        // Parse the PE first
-        let Ok(goblin::Object::PE(pe)) = goblin::Object::parse(&data) else {
-            panic!("Failed to parse test PE");
-        };
-
-        let strings = extract_from_pe(&pe, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         // Just exercise the code path
         let _ = strings;
@@ -2365,7 +2318,7 @@ mod extract_from_tests {
 // Tests for real binaries in testdata
 mod testdata_binary_tests {
     use std::path::Path;
-    use stng::{extract_from_elf, extract_from_pe, goblin, ExtractOptions, StringKind};
+    use stng::{extract_strings_with_options, ExtractOptions, StringKind};
 
     #[test]
     fn test_linux_elf_imports() {
@@ -2377,12 +2330,7 @@ mod testdata_binary_tests {
         let data = std::fs::read(path).unwrap();
         let opts = ExtractOptions::new(4);
 
-        // Parse the ELF first
-        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
-            return;
-        };
-
-        let strings = extract_from_elf(&elf, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         // Should have some imports
         let _imports: Vec<_> = strings
@@ -2404,12 +2352,7 @@ mod testdata_binary_tests {
         let data = std::fs::read(path).unwrap();
         let opts = ExtractOptions::new(4);
 
-        // Parse the PE first
-        let Ok(goblin::Object::PE(pe)) = goblin::Object::parse(&data) else {
-            return;
-        };
-
-        let strings = extract_from_pe(&pe, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
 
         assert!(!strings.is_empty(), "Should extract strings from PE");
 
@@ -2430,16 +2373,11 @@ mod testdata_binary_tests {
 
         let data = std::fs::read(path).unwrap();
 
-        // Parse the ELF first
-        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
-            return;
-        };
-
         let opts_short = ExtractOptions::new(4);
         let opts_long = ExtractOptions::new(20);
 
-        let strings_short = extract_from_elf(&elf, &data, &opts_short);
-        let strings_long = extract_from_elf(&elf, &data, &opts_long);
+        let strings_short = extract_strings_with_options(&data, &opts_short);
+        let strings_long = extract_strings_with_options(&data, &opts_long);
 
         assert!(
             strings_long.len() <= strings_short.len(),
@@ -2464,11 +2402,7 @@ mod testdata_binary_tests {
         let data = std::fs::read(path).unwrap();
         let opts = ExtractOptions::new(4);
 
-        let Ok(goblin::Object::Elf(elf)) = goblin::Object::parse(&data) else {
-            panic!("failed to parse brickstorm ELF");
-        };
-
-        let strings = extract_from_elf(&elf, &data, &opts);
+        let strings = extract_strings_with_options(&data, &opts);
         let xor: Vec<_> = strings
             .iter()
             .filter(|s| s.method == StringMethod::XorStackPair)
@@ -3270,13 +3204,18 @@ mod xor_detection_tests {
         let key: u8 = 0x42;
         let data = make_xor_test_data(plaintext, key, 50);
 
-        let results = stng::xor::extract_xor_strings(&data, 10, false);
+        let opts = ExtractOptions::new(10).with_xor(Some(10));
+        let results = extract_strings_with_options(&data, &opts);
 
         // Mozilla pattern should be found and context extracted
+        let xor_results: Vec<_> = results
+            .iter()
+            .filter(|s| s.method == StringMethod::XorDecode)
+            .collect();
         assert!(
-            results.iter().any(|s| s.value.contains("Mozilla")),
+            xor_results.iter().any(|s| s.value.contains("Mozilla")),
             "Should detect XOR-encoded Mozilla pattern. Found: {:?}",
-            results.iter().map(|s| &s.value).collect::<Vec<_>>()
+            xor_results.iter().map(|s| &s.value).collect::<Vec<_>>()
         );
     }
 

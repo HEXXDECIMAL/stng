@@ -4,7 +4,7 @@
 
 use crate::extraction::{extract_from_structures, find_string_structures};
 use crate::instr::{extract_inline_strings_amd64, extract_inline_strings_arm64};
-use crate::types::{BinaryInfo, ExtractedString, StringKind, StringMethod, StringStruct};
+use crate::types::{BinaryInfo, ExtractedString, StringStruct};
 use goblin::elf::Elf;
 use goblin::mach::cputype::{CPU_TYPE_ARM64, CPU_TYPE_X86_64};
 use goblin::mach::MachO;
@@ -322,53 +322,4 @@ impl GoStringExtractor {
         None
     }
 
-    /// Extract strings from Go's gopclntab (Go program counter line table).
-    ///
-    /// This section contains:
-    /// - Function names
-    /// - Source file paths
-    /// - Type names
-    ///
-    /// Strings are packed together with null terminators.
-    pub fn extract_gopclntab(&self, data: &[u8], min_length: usize) -> Vec<ExtractedString> {
-        let mut strings = Vec::new();
-        let mut current = String::new();
-        let mut offset = 0;
-
-        for &byte in data {
-            if byte == 0 {
-                if !current.is_empty() && current.len() >= min_length {
-                    strings.push(ExtractedString {
-                        value: current.clone(),
-                        data_offset: (offset - current.len()) as u64,
-                        section: Some("__gopclntab".to_string()),
-                        method: StringMethod::Structure,
-                        kind: super::classifier::classify_gopclntab_string(&current),
-                        ..Default::default()
-                    });
-                }
-                current.clear();
-            } else if byte.is_ascii_graphic() || byte.is_ascii_whitespace() {
-                current.push(byte as char);
-            } else {
-                current.clear();
-            }
-            offset += 1;
-        }
-
-        // Check final string if no trailing null
-        if !current.is_empty() && current.len() >= min_length {
-            let len = current.len();
-            strings.push(ExtractedString {
-                value: current,
-                data_offset: (offset - len) as u64,
-                section: Some("__gopclntab".to_string()),
-                method: StringMethod::Structure,
-                kind: StringKind::FuncName,
-                ..Default::default()
-            });
-        }
-
-        strings
-    }
 }

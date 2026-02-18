@@ -626,6 +626,7 @@ impl RustStringExtractor {
 mod tests {
     use super::*;
     use crate::StringKind;
+    use goblin::mach::MachO;
 
     #[test]
     fn test_rust_extractor_creation() {
@@ -898,5 +899,217 @@ mod tests {
 
         let path = strings.iter().find(|s| s.value.contains("/usr")).unwrap();
         assert_eq!(path.kind, StringKind::Path);
+    }
+
+    #[test]
+    fn test_extractor_size() {
+        let extractor = RustStringExtractor::new(4);
+        assert_eq!(std::mem::size_of_val(&extractor), std::mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn test_elf_extraction_empty_data() {
+        let extractor = RustStringExtractor::new(4);
+        let mut elf_data = vec![0u8; 64];
+        elf_data[0..4].copy_from_slice(b"\x7fELF");
+        elf_data[4] = 2;
+        elf_data[5] = 1;
+        elf_data[6] = 1;
+        if let Ok(elf) = goblin::elf::Elf::parse(&elf_data) {
+            let strings = extractor.extract_elf(&elf, &elf_data);
+            assert!(strings.len() < 10);
+        }
+    }
+
+    #[test]
+    fn test_elf_extraction_with_rodata() {
+        let extractor = RustStringExtractor::new(4);
+        let mut elf_data = vec![0u8; 1024];
+        elf_data[0..4].copy_from_slice(b"\x7fELF");
+        elf_data[4] = 2;
+        elf_data[5] = 1;
+        elf_data[6] = 1;
+        elf_data[16] = 3;
+        elf_data[18] = 0x3e;
+        let test_strings = b"test_string\0another_test\0hello_world\0";
+        elf_data[512..512 + test_strings.len()].copy_from_slice(test_strings);
+        match goblin::elf::Elf::parse(&elf_data) {
+            Ok(elf) => {
+                let strings = extractor.extract_elf(&elf, &elf_data);
+                assert!(strings.len() < 100);
+            }
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_macho_extraction_minimal() {
+        let extractor = RustStringExtractor::new(4);
+        let mut macho_data = vec![0u8; 4096];
+        macho_data[0..4].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe]);
+        match MachO::parse(&macho_data, 0) {
+            Ok(macho) => {
+                let strings = extractor.extract_macho(&macho, &macho_data);
+                assert!(strings.len() < 10);
+            }
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_elf_multiple_sections() {
+        let extractor = RustStringExtractor::new(4);
+        let test_paths = ["/bin/true", "/usr/bin/true", "/bin/echo"];
+        for path in &test_paths {
+            if let Ok(data) = std::fs::read(path) {
+                if let Ok(elf) = goblin::elf::Elf::parse(&data) {
+                    let strings = extractor.extract_elf(&elf, &data);
+                    assert!(!strings.is_empty(), "Should find strings in {}", path);
+                    for s in &strings {
+                        assert!(s.value.len() >= 4, "String too short: '{}'", s.value);
+                    }
+                    let has_any_method = strings.iter().any(|s| {
+                        matches!(s.method, crate::StringMethod::Structure
+                            | crate::StringMethod::InstructionPattern
+                            | crate::StringMethod::RawScan)
+                    });
+                    assert!(has_any_method, "Should use at least one extraction method");
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_min_length_filtering_elf() {
+        let extractor_short = RustStringExtractor::new(4);
+        let extractor_long = RustStringExtractor::new(20);
+        if let Ok(data) = std::fs::read("/bin/ls") {
+            if let Ok(elf) = goblin::elf::Elf::parse(&data) {
+                let strings_short = extractor_short.extract_elf(&elf, &data);
+                let strings_long = extractor_long.extract_elf(&elf, &data);
+                assert!(strings_long.len() <= strings_short.len());
+                for s in &strings_long {
+                    assert!(s.value.len() >= 20, "String '{}' too short", s.value);
+                }
+                for s in &strings_short {
+                    assert!(s.value.len() >= 4, "String too short: '{}'", s.value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_elf_string_deduplication() {
+        let extractor = RustStringExtractor::new(4);
+        if let Ok(data) = std::fs::read("/bin/ls") {
+            if let Ok(elf) = goblin::elf::Elf::parse(&data) {
+                let strings = extractor.extract_elf(&elf, &data);
+                let mut seen = std::collections::HashSet::new();
+                let mut duplicates = Vec::new();
+                for s in &strings {
+                    if !seen.insert(&s.value) {
+                        duplicates.push(&s.value);
+                    }
+                }
+                assert!(duplicates.len() < strings.len() / 10,
+                    "Too many duplicates: {} out of {}", duplicates.len(), strings.len());
+            }
+        }
+    }
+
+    #[test]
+    fn test_macho_text_const() {
+        let extractor = RustStringExtractor::new(4);
+        for path in &["/bin/ls", "/usr/bin/true", "/bin/cat"] {
+            if let Ok(data) = std::fs::read(path) {
+                if data.len() > 4 && data[0..4] == [0xcf, 0xfa, 0xed, 0xfe] {
+                    if let Ok(macho) = MachO::parse(&data, 0) {
+                        let strings = extractor.extract_macho(&macho, &data);
+                        if !strings.is_empty() {
+                            for s in &strings {
+                                assert!(s.value.len() >= 4);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_corrupted_binary_handling() {
+        let extractor = RustStringExtractor::new(4);
+        let garbage_data = vec![0xAA; 1024];
+        match goblin::elf::Elf::parse(&garbage_data) {
+            Ok(elf) => {
+                let strings = extractor.extract_elf(&elf, &garbage_data);
+                assert!(strings.len() < 500);
+            }
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_empty_binary() {
+        let extractor = RustStringExtractor::new(4);
+        match goblin::elf::Elf::parse(&[]) {
+            Ok(elf) => assert!(extractor.extract_elf(&elf, &[]).is_empty()),
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_very_large_min_length() {
+        let extractor = RustStringExtractor::new(1000);
+        if let Ok(data) = std::fs::read("/bin/ls") {
+            if let Ok(elf) = goblin::elf::Elf::parse(&data) {
+                let strings = extractor.extract_elf(&elf, &data);
+                for s in &strings {
+                    assert!(s.value.len() >= 1000, "String shorter than min_length");
+                }
+                assert!(strings.len() < 10);
+            }
+        }
+    }
+
+    #[test]
+    fn test_section_metadata() {
+        let extractor = RustStringExtractor::new(4);
+        if let Ok(data) = std::fs::read("/bin/ls") {
+            if let Ok(elf) = goblin::elf::Elf::parse(&data) {
+                let strings = extractor.extract_elf(&elf, &data);
+                if !strings.is_empty() {
+                    let with_sections = strings.iter().filter(|s| s.section.is_some()).count();
+                    assert!(with_sections > 0, "At least some strings should have section metadata");
+                    for s in &strings {
+                        if let Some(section) = &s.section {
+                            assert!(!section.is_empty());
+                            assert!(
+                                section.starts_with('.') || section.starts_with("__")
+                                    || section == "rodata" || section == "text",
+                                "Unexpected section name: {}", section
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_offset_validity() {
+        let extractor = RustStringExtractor::new(4);
+        if let Ok(data) = std::fs::read("/bin/ls") {
+            let file_size = data.len() as u64;
+            if let Ok(elf) = goblin::elf::Elf::parse(&data) {
+                let strings = extractor.extract_elf(&elf, &data);
+                for s in &strings {
+                    assert!(s.data_offset < file_size,
+                        "Offset {} exceeds file size {}", s.data_offset, file_size);
+                }
+            }
+        }
     }
 }

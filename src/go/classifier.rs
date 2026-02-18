@@ -4,49 +4,6 @@
 
 use crate::types::StringKind;
 
-pub(super) fn classify_gopclntab_string(s: &str) -> StringKind {
-    // Source file paths end with file extensions
-    if s.ends_with(".go") || s.ends_with(".s") || s.ends_with(".c") || s.ends_with(".h") {
-        return StringKind::FilePath;
-    }
-
-    // Go symbols: package/path.Function or package/path.(*Type).Method
-    // They contain dots AND (slashes OR parentheses for method receivers)
-    if s.contains('.') && !s.contains(' ') {
-        // Has method receiver like (*Type) or type assertion
-        if s.contains("(*") || s.contains(".(") {
-            return StringKind::FuncName;
-        }
-        // Package path with function: contains / and ends with .Something
-        if s.contains('/') {
-            // Check if last component after final / contains a dot (package.Func)
-            if let Some(last_part) = s.rsplit('/').next() {
-                if last_part.contains('.') {
-                    return StringKind::FuncName;
-                }
-            }
-        }
-        // Simple package.Function format (no slashes)
-        if !s.contains('/')
-            && s.chars()
-                .all(|c| c.is_alphanumeric() || c == '.' || c == '_')
-        {
-            return StringKind::FuncName;
-        }
-    }
-
-    // Type equality functions: type:.eq.xxx
-    if s.starts_with("type:") {
-        return StringKind::FuncName;
-    }
-
-    // Bare identifiers (no dots, no slashes)
-    if !s.contains('.') && !s.contains('/') {
-        return StringKind::Ident;
-    }
-
-    StringKind::Ident
-}
 
 /// Classify a general string by its content.
 /// Note: Section names are detected via goblin, not pattern matching here.

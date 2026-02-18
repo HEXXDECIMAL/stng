@@ -3,45 +3,6 @@
 use crate::types::{ExtractedString, StringKind, StringMethod};
 use goblin::mach::MachO;
 
-pub fn extract_macho_entitlements_xml(data: &[u8]) -> Option<String> {
-    use goblin::mach::load_command::CommandVariant;
-    use goblin::Object;
-
-    let Ok(Object::Mach(goblin::mach::Mach::Binary(macho))) = Object::parse(data) else {
-        return None;
-    };
-
-    // Find LC_CODE_SIGNATURE load command
-    for cmd in &macho.load_commands {
-        if let CommandVariant::CodeSignature(ref cs) = cmd.command {
-            let offset = cs.dataoff as usize;
-            let size = cs.datasize as usize;
-
-            if offset + size > data.len() {
-                continue;
-            }
-
-            let cs_data = &data[offset..offset + size];
-
-            // Look for XML plist (starts with <?xml)
-            if let Some(xml_start) = cs_data.windows(5).position(|w| w == b"<?xml") {
-                let xml_data = &cs_data[xml_start..];
-
-                // Find end of plist
-                if let Some(plist_end) = xml_data.windows(8).position(|w| w == b"</plist>") {
-                    let xml_content = &xml_data[..plist_end + 8]; // include </plist>
-
-                    if let Ok(xml_str) = String::from_utf8(xml_content.to_vec()) {
-                        return Some(xml_str);
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
 /// Extract entitlements from Mach-O code signature as raw XML.
 ///
 /// Returns the full XML plist as a single string for inline display.

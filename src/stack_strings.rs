@@ -936,3 +936,273 @@ fn check_printable(bytes: &[u8], min_length: usize) -> Option<String> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::StringMethod;
+
+    fn c7_rsp(disp: u8, imm: u32) -> Vec<u8> {
+        let [b0, b1, b2, b3] = imm.to_le_bytes();
+        vec![0xC7, 0x44, 0x24, disp, b0, b1, b2, b3]
+    }
+
+    fn movabs_rax(imm: u64) -> Vec<u8> {
+        let mut v = vec![0x48, 0xB8];
+        v.extend_from_slice(&imm.to_le_bytes());
+        v
+    }
+
+    fn mov_rsp_rax(disp: u8) -> Vec<u8> {
+        vec![0x48, 0x89, 0x44, 0x24, disp]
+    }
+
+    fn xor_pairs(code: &[u8], min_len: usize) -> Vec<String> {
+        extract_stack_strings(code, min_len)
+            .into_iter()
+            .filter(|s| s.method == StringMethod::XorStackPair)
+            .map(|s| s.value)
+            .collect()
+    }
+
+    #[test]
+    fn test_c7_xor_pair_path() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xe0ce_fe50));
+        code.extend(c7_rsp(0x14, 0xa89a_bf00));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"PATH".to_string()), "expected PATH in {decoded:?}");
+    }
+
+    #[test]
+    fn test_c7_xor_pair_term() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xd0bb_9388));
+        code.extend(c7_rsp(0x14, 0x9de9_d6dc));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"TERM".to_string()), "expected TERM in {decoded:?}");
+    }
+
+    #[test]
+    fn test_c7_xor_pair_home() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xdb70_ed3a));
+        code.extend(c7_rsp(0x14, 0x9e3d_a272));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"HOME".to_string()), "expected HOME in {decoded:?}");
+    }
+
+    #[test]
+    fn test_two_functions_each_with_xor_pair() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xe0ce_fe50));
+        code.extend(c7_rsp(0x14, 0xa89a_bf00));
+        code.push(0xC3);
+        code.extend(c7_rsp(0x10, 0xd0bb_9388));
+        code.extend(c7_rsp(0x14, 0x9de9_d6dc));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"PATH".to_string()), "missing PATH in {decoded:?}");
+        assert!(decoded.contains(&"TERM".to_string()), "missing TERM in {decoded:?}");
+    }
+
+    #[test]
+    fn test_movabs_xor_pair_8bytes() {
+        let blob1: u64 = u64::from_le_bytes([0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8]);
+        let blob2: u64 = u64::from_le_bytes([0xBC, 0x91, 0x93, 0x88, 0x9E, 0x94, 0x8D, 0xD5]);
+        let mut code = Vec::new();
+        code.extend(movabs_rax(blob1));
+        code.extend(mov_rsp_rax(0x10));
+        code.extend(movabs_rax(blob2));
+        code.extend(mov_rsp_rax(0x18));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"Content-".to_string()), "expected 'Content-' in {decoded:?}");
+    }
+
+    #[test]
+    fn test_single_blob_no_output() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xe0ce_fe50));
+        code.push(0xC3);
+        assert!(xor_pairs(&code, 4).is_empty(), "single blob should produce no output");
+    }
+
+    #[test]
+    fn test_xor_result_nonprintable_no_output() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0x0101_0101));
+        code.extend(c7_rsp(0x14, 0x0202_0202));
+        code.push(0xC3);
+        assert!(xor_pairs(&code, 4).is_empty(), "non-printable XOR result should produce no output");
+    }
+
+    #[test]
+    fn test_printable_blob_not_xor_candidate() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0x4443_4241)); // "ABCD" — printable
+        code.extend(c7_rsp(0x14, 0xe0ce_fe50)); // non-printable
+        code.push(0xC3);
+        assert!(xor_pairs(&code, 4).is_empty(), "printable blob should not be XOR candidate");
+    }
+
+    #[test]
+    fn test_xor_result_below_min_length_filtered() {
+        let b1 = u32::from_le_bytes([0xAA, 0xBB, 0x00, 0x00]);
+        let b2 = u32::from_le_bytes([0xEB, 0xDB, 0x00, 0x00]);
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, b1));
+        code.extend(c7_rsp(0x14, b2));
+        code.push(0xC3);
+        assert!(xor_pairs(&code, 4).is_empty(), "short XOR result should be filtered");
+    }
+
+    #[test]
+    fn test_regular_stack_strings_still_detected() {
+        let shell_val: u64 = 0x0000_004c_4c45_4853;
+        let mut code = Vec::new();
+        code.extend(movabs_rax(shell_val));
+        code.extend(mov_rsp_rax(0x10));
+        code.extend(c7_rsp(0x18, 0xe0ce_fe50));
+        code.extend(c7_rsp(0x1c, 0xa89a_bf00));
+        code.push(0xC3);
+        let all = extract_stack_strings(&code, 4);
+        assert!(all.iter().any(|s| s.value.contains("SHELL")), "regular 'SHELL' missing");
+        assert!(all.iter().any(|s| s.value == "PATH" && s.method == StringMethod::XorStackPair),
+            "XOR-pair 'PATH' missing");
+    }
+
+    #[test]
+    fn test_blobs_across_call_not_paired() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xe0ce_fe50));
+        code.push(0xE8);
+        code.extend([0x00u8, 0x00, 0x00, 0x00]);
+        code.extend(c7_rsp(0x10, 0xa89a_bf00));
+        code.push(0xC3);
+        assert!(xor_pairs(&code, 4).is_empty(), "cross-scope blobs should not pair");
+    }
+
+    #[test]
+    fn test_three_blobs_only_valid_pair_emitted() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xe0ce_fe50));
+        code.extend(c7_rsp(0x14, 0xa89a_bf00));
+        code.extend(c7_rsp(0x18, 0x0101_0101));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert_eq!(decoded, vec!["PATH"], "expected exactly [PATH], got {decoded:?}");
+    }
+
+    #[test]
+    fn test_duplicate_xor_results_deduplicated() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xe0ce_fe50));
+        code.extend(c7_rsp(0x14, 0xa89a_bf00));
+        code.extend(c7_rsp(0x18, 0xe0ce_fe50));
+        code.extend(c7_rsp(0x1c, 0xa89a_bf00));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert_eq!(decoded.iter().filter(|s| *s == "PATH").count(), 1,
+            "expected exactly one 'PATH', got {decoded:?}");
+    }
+
+    #[test]
+    fn test_self_xor_all_zeros_filtered() {
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0x10, 0xe0ce_fe50));
+        code.extend(c7_rsp(0x14, 0xe0ce_fe50));
+        code.push(0xC3);
+        assert!(xor_pairs(&code, 4).is_empty(), "self-XOR should produce nothing");
+    }
+
+    #[test]
+    fn test_three_chunk_merge_c7() {
+        let ct0: u32 = 0xFFFF_FFFF;
+        let ct1: u32 = 0xFEFE_FEFE;
+        let ct2: u32 = 0xFDFD_FDFD;
+        let k0: u32 = u32::from_le_bytes([0xBE, 0xBD, 0xBC, 0xBB]);
+        let k1: u32 = u32::from_le_bytes([0xBB, 0xB8, 0xB9, 0xB6]);
+        let k2: u32 = u32::from_le_bytes([0xB4, 0xB7, 0xB6, 0xB1]);
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0, ct0));
+        code.extend(c7_rsp(4, ct1));
+        code.extend(c7_rsp(8, ct2));
+        code.extend(c7_rsp(64, k0));
+        code.extend(c7_rsp(68, k1));
+        code.extend(c7_rsp(72, k2));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"ABCDEFGHIJKL".to_string()), "expected merged string: {decoded:?}");
+        assert!(!decoded.contains(&"ABCD".to_string()), "'ABCD' should be merged: {decoded:?}");
+    }
+
+    #[test]
+    fn test_three_chunk_merge_movabs() {
+        let ct0 = u64::from_le_bytes([0xFF; 8]);
+        let ct1 = u64::from_le_bytes([0xFE; 8]);
+        let ct2 = u64::from_le_bytes([0xFD; 8]);
+        let k0 = u64::from_le_bytes([0xBE, 0xBD, 0xBC, 0xBB, 0xBA, 0xB9, 0xB8, 0xB7]);
+        let k1 = u64::from_le_bytes([0xB7, 0xB4, 0xB5, 0xB2, 0xB3, 0xB0, 0xB1, 0xAE]);
+        let k2 = u64::from_le_bytes([0xAC, 0xAF, 0xAE, 0xA9, 0xA8, 0xAB, 0xAA, 0xA5]);
+        let mut code = Vec::new();
+        code.extend(movabs_rax(ct0)); code.extend(mov_rsp_rax(0));
+        code.extend(movabs_rax(ct1)); code.extend(mov_rsp_rax(8));
+        code.extend(movabs_rax(ct2)); code.extend(mov_rsp_rax(16));
+        code.extend(movabs_rax(k0));  code.extend(mov_rsp_rax(48));
+        code.extend(movabs_rax(k1));  code.extend(mov_rsp_rax(56));
+        code.extend(movabs_rax(k2));  code.extend(mov_rsp_rax(64));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"ABCDEFGHIJKLMNOPQRSTUVWX".to_string()),
+            "expected 24-char merged string: {decoded:?}");
+    }
+
+    #[test]
+    fn test_react2shell_stack_strings() {
+        use std::path::PathBuf;
+        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        d.push("testdata/malware/react2shell");
+        let data = match std::fs::read(&d) {
+            Ok(d) => d,
+            Err(_) => return, // skip if binary not present
+        };
+        let strings = extract_stack_strings(&data, 4);
+        let interesting: Vec<String> = strings
+            .iter()
+            .map(|s| s.value.clone())
+            .filter(|s| s.contains("/proc/"))
+            .collect();
+        assert!(interesting.contains(&"/proc/version".to_string()),
+            "Should contain '/proc/version', found: {interesting:?}");
+        assert!(!interesting.contains(&"/proc/veversion".to_string()),
+            "Should NOT contain mangled '/proc/veversion'");
+        assert!(interesting.contains(&"/proc/self/setgroups".to_string()),
+            "Should contain '/proc/self/setgroups', found: {interesting:?}");
+        assert!(interesting.contains(&"/proc/self/gid_map".to_string()),
+            "Should contain '/proc/self/gid_map'");
+        assert!(interesting.contains(&"/proc/self/uid_map".to_string()),
+            "Should contain '/proc/self/uid_map'");
+    }
+
+    #[test]
+    fn test_multi_chunk_merge() {
+        let ct0: u32 = 0xFFFF_FFFF;
+        let ct1: u32 = 0xFEFE_FEFE;
+        let k0: u32 = u32::from_le_bytes([0xBE, 0xBD, 0xBC, 0xBB]);
+        let k1: u32 = u32::from_le_bytes([0xBB, 0xB8, 0xB9, 0xB6]);
+        let mut code = Vec::new();
+        code.extend(c7_rsp(0, ct0));
+        code.extend(c7_rsp(4, ct1));
+        code.extend(c7_rsp(32, k0));
+        code.extend(c7_rsp(36, k1));
+        code.push(0xC3);
+        let decoded = xor_pairs(&code, 4);
+        assert!(decoded.contains(&"ABCDEFGH".to_string()), "expected merged 'ABCDEFGH': {decoded:?}");
+        assert!(!decoded.contains(&"ABCD".to_string()), "'ABCD' should be merged: {decoded:?}");
+        assert!(!decoded.contains(&"EFGH".to_string()), "'EFGH' should be merged: {decoded:?}");
+    }
+}

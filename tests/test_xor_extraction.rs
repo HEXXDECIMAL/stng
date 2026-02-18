@@ -409,14 +409,12 @@ fn test_c2_url_extraction_from_fixture() {
 }
 #[test]
 fn test_direct_c2_extraction() {
-    use stng::xor;
-
     let data =
         std::fs::read("tests/fixtures/brew_agent_xor_region.bin").expect("Failed to read fixture");
     let key = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
 
-    // Call the extraction function directly
-    let results = xor::extract_custom_xor_strings(&data, key, 10);
+    let opts = ExtractOptions::new(10).with_xor_key(key.to_vec());
+    let results = stng::extract_strings_with_options(&data, &opts);
 
     println!("\nDirect extraction found {} strings", results.len());
 

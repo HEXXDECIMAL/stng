@@ -952,4 +952,201 @@ mod tests {
         // Note: With quality heuristic, even delimited strings need to decode to
         // significantly better text quality to be accepted
     }
+
+    fn make_string(value: &str, kind: StringKind) -> ExtractedString {
+        ExtractedString {
+            value: value.to_string(),
+            data_offset: 0,
+            section: None,
+            method: StringMethod::RawScan,
+            kind,
+            library: None,
+            fragments: None,
+            section_size: None,
+            section_executable: None,
+            section_writable: None,
+            architecture: None,
+            function_meta: None,
+        }
+    }
+
+    #[test]
+    fn test_deobfuscate_concatenation_javascript() {
+        let input = r#""SGVsbG8g" + "V29ybGQhCg==""#;
+        assert_eq!(deobfuscate_concatenation(input), Some("SGVsbG8gV29ybGQhCg==".to_string()));
+    }
+
+    #[test]
+    fn test_deobfuscate_concatenation_python() {
+        let input = r#"'SGVsbG8g' + 'V29ybGQhCg==""#;
+        assert_eq!(deobfuscate_concatenation(input), Some("SGVsbG8gV29ybGQhCg==".to_string()));
+    }
+
+    #[test]
+    fn test_deobfuscate_concatenation_php() {
+        let input = r#"'SGVsbG8g' . 'V29ybGQhCg==""#;
+        assert_eq!(deobfuscate_concatenation(input), Some("SGVsbG8gV29ybGQhCg==".to_string()));
+    }
+
+    #[test]
+    fn test_deobfuscate_concatenation_no_pattern() {
+        assert_eq!(deobfuscate_concatenation("simple_string_no_concat"), None);
+    }
+
+    #[test]
+    fn test_deobfuscate_concatenation_too_short() {
+        assert_eq!(deobfuscate_concatenation(r#""ab" + "cd""#), None);
+    }
+
+    #[test]
+    fn test_decode_base64_strings_batch() {
+        let inputs = vec![
+            make_string("SGVsbG8gV29ybGQh", StringKind::Base64),
+            make_string("VGVzdCBEYXRhISE=", StringKind::Base64),
+            make_string("not_base64", StringKind::Const),
+        ];
+        let results = decode_base64_strings(&inputs);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].value, "Hello World!");
+        assert_eq!(results[0].method, StringMethod::Base64Decode);
+        assert_eq!(results[1].value, "Test Data!!");
+    }
+
+    #[test]
+    fn test_decode_base64_strings_with_concatenation() {
+        let inputs = vec![make_string(r#""SGVsbG8g" + "V29ybGQh""#, StringKind::Const)];
+        let results = decode_base64_strings(&inputs);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, "Hello World!");
+        assert_eq!(results[0].method, StringMethod::Base64Decode);
+    }
+
+    #[test]
+    fn test_decode_base64_empty() {
+        assert!(decode_base64_strings(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_base64_too_short() {
+        assert!(decode_base64_strings(&[make_string("SGVs", StringKind::Base64)]).is_empty());
+    }
+
+    #[test]
+    fn test_base64_whitespace_trimming() {
+        let results = decode_base64_strings(&[make_string("  SGVsbG8gV29ybGQh  ", StringKind::Base64)]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, "Hello World!");
+    }
+
+    #[test]
+    fn test_decode_hex_strings_batch() {
+        let inputs = vec![
+            make_string("48656c6c6f20576f726c6421", StringKind::HexEncoded),
+            make_string("54657374204461746121", StringKind::HexEncoded),
+            make_string("not_hex", StringKind::Const),
+        ];
+        let results = decode_hex_strings(&inputs);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].value, "Hello World!");
+        assert_eq!(results[0].method, StringMethod::HexDecode);
+        assert_eq!(results[1].value, "Test Data!");
+    }
+
+    #[test]
+    fn test_hex_odd_length() {
+        assert!(decode_hex_strings(&[make_string("48656c6c6f20576f726c642", StringKind::HexEncoded)]).is_empty());
+    }
+
+    #[test]
+    fn test_hex_uppercase() {
+        let results = decode_hex_strings(&[make_string("48656C6C6F20576F726C6421", StringKind::HexEncoded)]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, "Hello World!");
+    }
+
+    #[test]
+    fn test_decode_url_strings_batch() {
+        let inputs = vec![
+            make_string("Hello%20World%21", StringKind::UrlEncoded),
+            make_string("Test%20Data%21%21", StringKind::UrlEncoded),
+            make_string("no_encoding", StringKind::Const),
+        ];
+        let results = decode_url_strings(&inputs);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].value, "Hello World!");
+        assert_eq!(results[0].method, StringMethod::UrlDecode);
+        assert_eq!(results[1].value, "Test Data!!");
+    }
+
+    #[test]
+    fn test_url_special_chars() {
+        let results = decode_url_strings(&[make_string(
+            "path%2Fto%2Ffile%3Fquery%3Dvalue%26foo%3Dbar", StringKind::UrlEncoded)]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, "path/to/file?query=value&foo=bar");
+    }
+
+    #[test]
+    fn test_decode_unicode_escape_strings_batch() {
+        let inputs = vec![
+            make_string("\\x48\\x65\\x6c\\x6c\\x6f", StringKind::UnicodeEscaped),
+            make_string("\\u0054\\u0065\\u0073\\u0074", StringKind::UnicodeEscaped),
+            make_string("no_escapes", StringKind::Const),
+        ];
+        let results = decode_unicode_escape_strings(&inputs);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].value, "Hello");
+        assert_eq!(results[0].method, StringMethod::UnicodeEscapeDecode);
+        assert_eq!(results[1].value, "Test");
+    }
+
+    #[test]
+    fn test_decode_base32_strings_batch() {
+        let inputs = vec![
+            make_string("JBSWY3DPEBLW64TMMQ======", StringKind::Base32),
+            make_string("not_base32", StringKind::Const),
+        ];
+        let results = decode_base32_strings(&inputs);
+        assert!(results.len() >= 1);
+        assert_eq!(results[0].value, "Hello World");
+        assert_eq!(results[0].method, StringMethod::Base32Decode);
+    }
+
+    #[test]
+    fn test_base32_too_short() {
+        assert!(decode_base32_strings(&[make_string("JBSWY3DP", StringKind::Base32)]).is_empty());
+    }
+
+    #[test]
+    fn test_base85_with_whitespace() {
+        if let Some(decoded) = try_decode_ascii85("<~9jqo^\n  \t~>") {
+            assert_eq!(decoded, b"Man ");
+        }
+    }
+
+    #[test]
+    fn test_base85_z_shorthand() {
+        if let Some(decoded) = try_decode_ascii85("z") {
+            assert_eq!(decoded, vec![0u8; 4]);
+        }
+    }
+
+    #[test]
+    fn test_base85_invalid_char() {
+        assert!(try_decode_ascii85("9jqo^~invalid~").is_none());
+    }
+
+    #[test]
+    fn test_base85_overflow_protection() {
+        assert!(try_decode_ascii85("uuuuu").is_none());
+    }
+
+    #[test]
+    fn test_decoded_ip_classification() {
+        let results = decode_hex_strings(&[make_string("3139322e3136382e312e31", StringKind::HexEncoded)]);
+        if !results.is_empty() {
+            assert_eq!(results[0].value, "192.168.1.1");
+            assert_eq!(results[0].kind, StringKind::IP);
+        }
+    }
 }

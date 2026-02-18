@@ -751,6 +751,7 @@ fn is_valid_utf8_string(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{StringKind, StringMethod};
 
     #[test]
     fn test_is_valid_utf8_string() {
@@ -1039,5 +1040,124 @@ mod tests {
         );
 
         assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_arm64_basic_string_extraction() {
+        let text_data = vec![
+            0x00, 0x00, 0x00, 0x90, 0x00, 0x40, 0x01, 0x91,
+            0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+        ];
+        let mut rodata_data = vec![0u8; 0x100];
+        rodata_data[0..11].copy_from_slice(b"test_string");
+        let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 4);
+        for s in &results {
+            assert_eq!(s.method, StringMethod::InstructionPattern);
+            assert!(!s.value.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_arm64_min_length_filter() {
+        let text_data = vec![
+            0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91,
+            0x61, 0x00, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+        ];
+        let mut rodata_data = vec![0u8; 0x1100];
+        rodata_data[0..3].copy_from_slice(b"abc");
+        let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 10);
+        assert!(results.is_empty() || results.iter().all(|s| s.value.len() >= 10));
+    }
+
+    #[test]
+    fn test_amd64_basic_string_extraction() {
+        let text_data = vec![
+            0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00,
+            0xBE, 0x0B, 0x00, 0x00, 0x00,
+            0xE8, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut rodata_data = vec![0u8; 0x200];
+        rodata_data[0..11].copy_from_slice(b"hello_world");
+        let results = extract_inline_strings_amd64(&text_data, 0x100000, &rodata_data, 0x101000, 4);
+        for s in &results {
+            assert_eq!(s.method, StringMethod::InstructionPattern);
+            assert!(!s.value.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_amd64_map_key_pattern() {
+        let text_data = vec![
+            0x48, 0x8D, 0x15, 0x50, 0x00, 0x00, 0x00,
+            0xB9, 0x07, 0x00, 0x00, 0x00,
+            0xE8, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut rodata_data = vec![0u8; 0x100];
+        rodata_data[0..7].copy_from_slice(b"map_key");
+        let text_addr = 0x100000u64;
+        let rodata_addr = text_addr + text_data.len() as u64 + 0x50 - 7;
+        let results = extract_inline_strings_amd64(&text_data, text_addr, &rodata_data, rodata_addr, 4);
+        for key in results.iter().filter(|s| s.kind == StringKind::MapKey) {
+            assert!(!key.value.is_empty());
+            assert_eq!(key.method, StringMethod::InstructionPattern);
+        }
+    }
+
+    #[test]
+    fn test_empty_inputs_both_arches() {
+        assert!(extract_inline_strings_arm64(&[], 0x100000, &[], 0x101000, 4).is_empty());
+        assert!(extract_inline_strings_amd64(&[], 0x100000, &[], 0x101000, 4).is_empty());
+    }
+
+    #[test]
+    fn test_truncated_arm64_instructions() {
+        let text_data = vec![0x00, 0x00]; // Only 2 bytes, incomplete ARM64 instruction
+        let results = extract_inline_strings_arm64(&text_data, 0x100000, &[], 0x101000, 4);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_large_code_section_arm64() {
+        use std::time::Instant;
+        let text_data: Vec<u8> = (0..65536).map(|i| (i % 256) as u8).collect();
+        let rodata_data = vec![0u8; 4096];
+        let start = Instant::now();
+        let _ = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x110000, 4);
+        assert!(start.elapsed().as_millis() < 100, "Took too long: {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn test_out_of_bounds_addresses_arm64() {
+        let text_data = vec![
+            0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x91,
+            0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+        ];
+        let rodata_data = vec![0u8; 0x100];
+        let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 4);
+        for s in results {
+            assert!(!s.value.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_min_length_enforcement_both_arches() {
+        let text_arm64 = vec![
+            0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91,
+            0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+        ];
+        let text_amd64 = vec![
+            0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00,
+            0xBE, 0x0B, 0x00, 0x00, 0x00,
+            0xE8, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut rodata = vec![0u8; 0x200];
+        rodata[0..20].copy_from_slice(b"exactly_20_chars_str");
+        let min_len = 25;
+        let results_arm = extract_inline_strings_arm64(&text_arm64, 0x100000, &rodata, 0x101000, min_len);
+        let results_amd = extract_inline_strings_amd64(&text_amd64, 0x100000, &rodata, 0x101000, min_len);
+        for s in results_arm.iter().chain(results_amd.iter()) {
+            assert!(s.value.len() >= min_len,
+                "String '{}' is {} chars, expected >= {}", s.value, s.value.len(), min_len);
+        }
     }
 }

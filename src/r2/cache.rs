@@ -1,7 +1,7 @@
 //! Caching for radare2/rizin command outputs to avoid expensive re-analysis.
 //!
 //! Cache structure:
-//! ```
+//! ```text
 //! ~/.cache/stng/r2/<sha256>/
 //!   isj.json           # symbols
 //!   izzj.json          # strings
