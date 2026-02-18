@@ -8,11 +8,9 @@ use aho_corasick::AhoCorasick;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::sync::OnceLock;
-use super::{
-    MAX_AUTO_DETECT_SIZE, MAX_XOR_SCAN_SIZE, SKIP_XOR_KEYS,
-    calculate_entropy, is_good_xor_key_candidate, score_xor_key_candidate,
-    extract_custom_xor_strings,
-};
+use super::{MAX_AUTO_DETECT_SIZE, MAX_XOR_SCAN_SIZE, SKIP_XOR_KEYS};
+use super::key::{calculate_entropy, is_good_xor_key_candidate, score_xor_key_candidate};
+use super::scan::extract_custom_xor_strings;
 
 pub(crate) fn trim_consonant_clusters(s: &str) -> String {
     if s.len() < 8 {
@@ -455,9 +453,9 @@ pub(crate) fn extract_xor_strings(
     }
 
     let (ac, pattern_info) = if scan_wide {
-        &*super::AUTOMATON_WITH_WIDE
+        &*super::scan::AUTOMATON_WITH_WIDE
     } else {
-        &*super::AUTOMATON_ASCII
+        &*super::scan::AUTOMATON_ASCII
     };
     let mut results = Vec::new();
     let mut seen: HashSet<(u64, String)> = HashSet::new();

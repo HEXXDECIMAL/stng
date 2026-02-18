@@ -44,6 +44,15 @@ pub fn is_garbage(s: &str) -> bool {
         }
     }
 
+    // If classify_string recognizes this as a meaningful type, it is not garbage.
+    // This covers emails, URLs, IPs, crypto wallets, JWTs, API keys, shell commands,
+    // SQL injection, registry paths, and all other classified string kinds.
+    // Restricted to ASCII strings: non-ASCII content requires full heuristic analysis
+    // because the classifier doesn't account for non-ASCII garbage from misaligned reads.
+    if trimmed.is_ascii() && crate::go::classify_string(trimmed) != crate::types::StringKind::Const {
+        return false;
+    }
+
     // Special case: Cryptocurrency addresses (ransomware/miner IOCs)
     if (26..=108).contains(&len) {
         // Bitcoin (legacy): starts with 1 or 3, 26-35 chars, base58
