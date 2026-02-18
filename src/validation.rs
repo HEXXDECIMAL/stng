@@ -997,54 +997,10 @@ pub fn is_garbage(s: &str) -> bool {
     false
 }
 
-/// Check if a byte sequence looks like valid UTF-8 with reasonable content.
-#[allow(dead_code)]
-pub fn is_valid_string(bytes: &[u8], min_length: usize) -> bool {
-    if bytes.len() < min_length {
-        return false;
-    }
-
-    std::str::from_utf8(bytes).is_ok_and(|s| {
-        // Check printability - support Unicode characters (not just ASCII)
-        let char_count = s.chars().count();
-        let printable = s
-            .chars()
-            .filter(|c| {
-                // Accept ASCII graphic/whitespace OR any non-ASCII Unicode alphabetic/numeric
-                c.is_ascii_graphic()
-                    || c.is_ascii_whitespace()
-                    || (!c.is_ascii() && (c.is_alphabetic() || c.is_numeric()))
-            })
-            .count();
-        // At least 50% of characters should be printable
-        printable * 2 >= char_count
-    })
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_valid_string_basic() {
-        assert!(is_valid_string(b"Hello World", 4));
-    }
-
-    #[test]
-    fn test_is_valid_string_too_short() {
-        assert!(!is_valid_string(b"Hi", 4));
-    }
-
-    #[test]
-    fn test_is_valid_string_non_printable() {
-        assert!(!is_valid_string(b"\x01\x02\x03\x04", 4));
-    }
-
-    #[test]
-    fn test_is_valid_string_mixed() {
-        // More than 50% printable should pass
-        assert!(is_valid_string(b"abcd\x01", 4));
-    }
 
     #[test]
     fn test_is_garbage_valid_strings() {

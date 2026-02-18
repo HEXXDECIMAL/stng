@@ -43,7 +43,7 @@ fn test_elf_extraction_empty() {
 /// Test ELF extraction with .rodata section
 #[test]
 fn test_elf_extraction_with_rodata() {
-    use goblin::elf::{section_header, Elf};
+    use goblin::elf::Elf;
 
     let extractor = RustStringExtractor::new(4);
 

@@ -421,11 +421,7 @@ impl<'a> StackStringExtractor<'a> {
                 kind: StringKind::StackString,
                 library: None,
                 fragments: Some(Vec::new()),
-                section_size: None,
-                section_executable: None,
-                section_writable: None,
-                architecture: None,
-                function_meta: None,
+                ..Default::default()
             };
 
             // We need to initialize 'current' with the first write
@@ -507,11 +503,7 @@ impl<'a> StackStringExtractor<'a> {
                             length: w.string.len(),
                             flavor: Some(w.flavor),
                         }]),
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     };
                     current_end_disp = w.disp + w.string.len() as i64;
                 }
@@ -589,13 +581,7 @@ impl<'a> StackStringExtractor<'a> {
                 section: None,
                 method: StringMethod::StackString,
                 kind: StringKind::StackString,
-                library: None,
-                fragments: None,
-                section_size: None,
-                section_executable: None,
-                section_writable: None,
-                architecture: None,
-                function_meta: None,
+                ..Default::default()
             };
         }
 
@@ -753,13 +739,7 @@ impl<'a> StackStringExtractor<'a> {
                             section: None,
                             method: StringMethod::XorStackPair,
                             kind: StringKind::StackString,
-                            library: None,
-                            fragments: None,
-                            section_size: None,
-                            section_executable: None,
-                            section_writable: None,
-                            architecture: None,
-                            function_meta: None,
+                            ..Default::default()
                         });
                     }
                     i = j;

@@ -5,7 +5,6 @@ use goblin::mach::MachO;
 /// Section metadata including name, size, and type.
 #[derive(Debug, Clone)]
 pub struct SectionInfo {
-    #[allow(dead_code)]
     pub name: String,
     pub size: u64,
     pub is_executable: bool,

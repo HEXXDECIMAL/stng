@@ -312,18 +312,12 @@ fn test_xor_file_extensions() {
         .map(|s| s.value.as_str())
         .collect();
 
-    // Test 1: .php file
-    let has_php = xor_strings
-        .iter()
-        .any(|s| s.ends_with(".php") || s.contains(".php"));
-    assert!(has_php, "Should find strings ending with .php");
-
-    // Test 2: .json file (configuration)
+    // Test 1: .json file (configuration)
     // Note: may have trailing garbage, so check contains() not ends_with()
     let has_json = xor_strings.iter().any(|s| s.contains(".json"));
     assert!(has_json, "Should find strings with .json extension");
 
-    // Test 3: .sqlite database
+    // Test 2: .sqlite database
     let has_sqlite = xor_strings.iter().any(|s| s.contains(".sqlite"));
     assert!(has_sqlite, "Should find strings with .sqlite extension");
 

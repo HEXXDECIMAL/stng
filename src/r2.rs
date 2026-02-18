@@ -180,14 +180,8 @@ pub fn extract_strings(
                         data_offset: s.paddr,
                         section: Some(s.section),
                         method: StringMethod::R2String,
-                        library: None,
-                        fragments: None,
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
                         kind,
+                        ..Default::default()
                     });
                 } else if s.string.contains("fYzt") {
                     tracing::debug!("r2::extract_strings: XOR KEY FILTERED: len={} < min_length={}, or already seen",

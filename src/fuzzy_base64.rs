@@ -374,13 +374,7 @@ fn create_decoded_string(
         section: original.section.clone(),
         method: StringMethod::Base64ObfuscatedDecode,
         kind,
-        library: None,
-        fragments: None,
-        section_size: None,
-        section_executable: None,
-        section_writable: None,
-        architecture: None,
-        function_meta: None,
+        ..Default::default()
     }
 }
 

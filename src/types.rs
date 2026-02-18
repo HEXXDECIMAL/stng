@@ -483,6 +483,22 @@ pub struct OverlayInfo {
 }
 
 #[cfg(test)]
+impl BinaryInfo {
+    pub fn new_64bit_le() -> Self {
+        Self { is_64bit: true, is_little_endian: true, ptr_size: 8 }
+    }
+    pub fn new_32bit_le() -> Self {
+        Self { is_64bit: false, is_little_endian: true, ptr_size: 4 }
+    }
+    pub fn new_64bit_be() -> Self {
+        Self { is_64bit: true, is_little_endian: false, ptr_size: 8 }
+    }
+    pub fn new_32bit_be() -> Self {
+        Self { is_64bit: false, is_little_endian: false, ptr_size: 4 }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -579,12 +595,7 @@ mod tests {
             method: StringMethod::Structure,
             kind: StringKind::Const,
             library: Some("lib".to_string()),
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let cloned = s.clone();

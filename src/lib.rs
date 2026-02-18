@@ -80,7 +80,7 @@ use goblin::mach::cputype::{
     CPU_TYPE_X86_64,
 };
 use goblin::Object;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // Import internal modules for use in this file
 use binary::{
@@ -340,8 +340,6 @@ fn enrich_pe_sections(strings: &mut [ExtractedString], pe: &goblin::pe::PE<'_>) 
         }
     }
 }
-// use stack_strings::extract_stack_strings; // Already exported
-
 #[derive(Debug, Clone, Default)]
 pub struct ExtractOptions {
     /// Minimum string length to extract
@@ -361,7 +359,7 @@ pub struct ExtractOptions {
     /// Minimum length for XOR-decoded strings (default: 10).
     pub xor_min_length: usize,
     /// Enable advanced multi-byte XOR scanning with radare2/rizin (slow). Default: false.
-    pub xorscan: bool,
+    pub xor_scan_multi: bool,
     /// Use r2 result caching (default: true). Disable with --no-cache flag.
     pub use_cache: bool,
 }
@@ -377,11 +375,13 @@ impl ExtractOptions {
             xor_scan: false,
             xor_key: None,
             xor_min_length: xor::DEFAULT_XOR_MIN_LENGTH,
-            xorscan: false,
-            use_cache: true, // Caching enabled by default
+            xor_scan_multi: false,
+            use_cache: true,
         }
     }
 
+    /// Set the binary path and enable radare2-assisted extraction.
+    #[must_use]
     pub fn with_r2(mut self, path: &str) -> Self {
         self.use_r2 = true;
         self.path = Some(path.to_string());
@@ -390,6 +390,7 @@ impl ExtractOptions {
 
     /// Provide pre-extracted r2 strings instead of running r2 internally.
     /// This allows library clients to run r2 themselves and pass the results.
+    #[must_use]
     pub fn with_r2_strings(mut self, strings: Vec<ExtractedString>) -> Self {
         self.r2_strings = Some(strings);
         self
@@ -397,6 +398,7 @@ impl ExtractOptions {
 
     /// Enable garbage filtering to remove noise strings.
     /// Default is false for library use to give clients full control.
+    #[must_use]
     pub fn with_garbage_filter(mut self, enable: bool) -> Self {
         self.filter_garbage = enable;
         self
@@ -405,6 +407,7 @@ impl ExtractOptions {
     /// Enable XOR string detection with optional custom minimum length.
     /// This scans for strings obfuscated with single-byte XOR keys (0x01-0xFF).
     /// Default minimum length is 10 characters.
+    #[must_use]
     pub fn with_xor(mut self, min_length: Option<usize>) -> Self {
         self.xor_scan = true;
         if let Some(len) = min_length {
@@ -416,6 +419,7 @@ impl ExtractOptions {
     /// Specify a custom XOR key for decoding.
     /// The key can be single-byte or multi-byte and will be applied to all byte streams.
     /// This overrides automatic XOR detection when set.
+    #[must_use]
     pub fn with_xor_key(mut self, key: Vec<u8>) -> Self {
         self.xor_key = Some(key);
         self
@@ -424,13 +428,15 @@ impl ExtractOptions {
     /// Enable advanced multi-byte XOR scanning with radare2/rizin.
     /// This is slower but can detect complex multi-byte XOR obfuscation.
     /// Requires radare2 or rizin to be installed.
+    #[must_use]
     pub fn with_xorscan(mut self, enable: bool) -> Self {
-        self.xorscan = enable;
+        self.xor_scan_multi = enable;
         self
     }
 
     /// Control r2/rizin result caching.
     /// Default is true. Disable with --no-cache flag.
+    #[must_use]
     pub fn with_cache(mut self, use_cache: bool) -> Self {
         self.use_cache = use_cache;
         self
@@ -579,13 +585,12 @@ fn extract_from_utf16_file(
     let decoded_bytes = decoded.as_bytes();
 
     // Extract strings from the decoded UTF-8 content
-    let empty_section_info = std::collections::HashMap::new();
     let mut raw_strings = extract_raw_strings(
         decoded_bytes,
         opts.min_length,
         None,
         &[],
-        &empty_section_info,
+        &HashMap::new(),
     );
 
     // Apply decoders (base64, hex, URL-encoding, etc.) to the extracted strings
@@ -668,25 +673,23 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
 
         // Extract wide strings for PE-like files (common in Windows binaries)
         if is_pe && !data.is_empty() {
-            let empty_section_info = std::collections::HashMap::new();
             strings.extend(extract_wide_strings(
                 data,
                 opts.min_length,
                 None,
                 &[],
-                &empty_section_info,
+                &HashMap::new(),
             ));
         }
 
         // Raw scan for all unknown formats
         if !data.is_empty() {
-            let empty_section_info = std::collections::HashMap::new();
             strings.extend(extract_raw_strings(
                 data,
                 opts.min_length,
                 None,
                 &[],
-                &empty_section_info,
+                &HashMap::new(),
             ));
         }
 
@@ -771,7 +774,7 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
                     strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
 
                     // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
-                    if opts.xorscan {
+                    if opts.xor_scan_multi {
                         if let Some(ref path) = opts.path {
                             tracing::debug!(
                                 "Multi-byte XOR: analyzing {} candidate strings",
@@ -1225,13 +1228,12 @@ pub fn extract_from_object(
                 strings.extend(r2_strings);
             }
             if strings.is_empty() && !data.is_empty() {
-                let empty_section_info = std::collections::HashMap::new();
                 strings.extend(extract_raw_strings(
                     data,
                     min_length,
                     None,
                     &[],
-                    &empty_section_info,
+                    &HashMap::new(),
                 ));
             }
             // Extract binary network data (IPs and ports in network byte order)
@@ -1323,7 +1325,7 @@ pub fn extract_from_object(
                 strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
 
                 // Multi-byte XOR detection using radare2-detected keys (only if --xorscan)
-                if opts.xorscan {
+                if opts.xor_scan_multi {
                     if let Some(ref path) = opts.path {
                         tracing::debug!(
                             "Multi-byte XOR: path={}, analyzing {} candidate strings",
@@ -1616,7 +1618,6 @@ pub fn extract_from_macho(
 /// This allows library clients who have already parsed the binary to avoid re-parsing.
 /// Note: unlike [`extract_from_object`], this does not run XOR scanning, stack string
 /// extraction, or section enrichment. For full extraction use [`extract_from_object`].
-#[allow(dead_code)]
 pub fn extract_from_elf(
     elf: &goblin::elf::Elf<'_>,
     data: &[u8],

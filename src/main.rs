@@ -381,13 +381,7 @@ fn main() -> Result<()> {
                     section: None,
                     method: stng::StringMethod::RawScan,
                     kind: stng::classify_string(trimmed),
-                    library: None,
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                    ..Default::default()
                 });
             }
             // Advance byte offset: line length + newline character
@@ -419,12 +413,7 @@ fn main() -> Result<()> {
                                         method: stng::StringMethod::Base64Decode,
                                         kind: stng::classify_string(trimmed),
                                         library: Some(format!("b64:{}", b64_str)),
-                                        fragments: None,
-                                        section_size: None,
-                                        section_executable: None,
-                                        section_writable: None,
-                                        architecture: None,
-                                        function_meta: None,
+                                        ..Default::default()
                                     });
                                 }
                             }

@@ -248,16 +248,10 @@ where
                 Some(ExtractedString {
                     value: trimmed.to_string(),
                     data_offset: s.ptr,
-                    section: section_name.map(std::string::ToString::to_string),
+                    section: section_name.map(str::to_string),
                     method: StringMethod::Structure,
                     kind: classify_fn(trimmed),
-                    library: None,
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                    ..Default::default()
                 })
             } else {
                 None

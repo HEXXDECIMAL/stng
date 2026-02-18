@@ -192,13 +192,7 @@ fn extract_arm64_string_pattern(
                     section: Some("__rodata".to_string()),
                     method: StringMethod::InstructionPattern,
                     kind: final_kind,
-                    library: None,
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                    ..Default::default()
                 });
             }
         }
@@ -537,13 +531,7 @@ fn extract_amd64_first_arg_string(
                         section: Some(".rodata".to_string()),
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
-                        library: None,
-                        fragments: None,
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -637,13 +625,7 @@ fn extract_amd64_key_string(
                         section: Some(".rodata".to_string()),
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
-                        library: None,
-                        fragments: None,
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -736,13 +718,7 @@ fn extract_amd64_value_string(
                         section: Some(".rodata".to_string()),
                         method: StringMethod::InstructionPattern,
                         kind: final_kind,
-                        library: None,
-                        fragments: None,
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     });
                 }
             }

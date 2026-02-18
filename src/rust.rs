@@ -182,13 +182,7 @@ impl RustStringExtractor {
                         section: s.section,
                         method: StringMethod::Heuristic,
                         kind: s.kind,
-                        library: None,
-                        fragments: None,
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -388,7 +382,6 @@ impl RustStringExtractor {
     }
 
     /// Extract raw strings as fallback.
-    #[allow(dead_code)]
     fn extract_raw_strings(
         &self,
         data: &[u8],
@@ -412,13 +405,7 @@ impl RustStringExtractor {
                                 section: section_name.clone(),
                                 method: StringMethod::RawScan,
                                 kind: classify_string(trimmed),
-                                library: None,
-                                fragments: None,
-                                section_size: None,
-                                section_executable: None,
-                                section_writable: None,
-                                architecture: None,
-                                function_meta: None,
+                                ..Default::default()
                             });
                         }
                     }
@@ -630,13 +617,7 @@ impl RustStringExtractor {
             section: section_name.clone(),
             method: StringMethod::Heuristic,
             kind: classify_string(trimmed),
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         });
     }
 }

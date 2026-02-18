@@ -90,13 +90,7 @@ pub fn decode_base64_strings(strings: &[ExtractedString]) -> Vec<ExtractedString
                     section: s.section.clone(),
                     method: s.method,
                     kind: s.kind,
-                    library: None,
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                    ..Default::default()
                 };
 
                 if let Some(decoded) = decode_base64_string(&temp) {
@@ -155,13 +149,7 @@ fn decode_base64_string(s: &ExtractedString) -> Option<ExtractedString> {
         section: s.section.clone(),
         method: StringMethod::Base64Decode,
         kind,
-        library: None,
-        fragments: None,
-        section_size: None,
-        section_executable: None,
-        section_writable: None,
-        architecture: None,
-        function_meta: None,
+        ..Default::default()
     })
 }
 
@@ -237,13 +225,7 @@ fn decode_hex_string(s: &ExtractedString) -> Option<ExtractedString> {
         section: s.section.clone(),
         method: StringMethod::HexDecode,
         kind,
-        library: None,
-        fragments: None,
-        section_size: None,
-        section_executable: None,
-        section_writable: None,
-        architecture: None,
-        function_meta: None,
+        ..Default::default()
     })
 }
 
@@ -287,13 +269,7 @@ fn decode_url_string(s: &ExtractedString) -> Option<ExtractedString> {
         section: s.section.clone(),
         method: StringMethod::UrlDecode,
         kind,
-        library: None,
-        fragments: None,
-        section_size: None,
-        section_executable: None,
-        section_writable: None,
-        architecture: None,
-        function_meta: None,
+        ..Default::default()
     })
 }
 
@@ -336,13 +312,7 @@ fn decode_unicode_escape_string(s: &ExtractedString) -> Option<ExtractedString> 
         section: s.section.clone(),
         method: StringMethod::UnicodeEscapeDecode,
         kind,
-        library: None,
-        fragments: None,
-        section_size: None,
-        section_executable: None,
-        section_writable: None,
-        architecture: None,
-        function_meta: None,
+        ..Default::default()
     })
 }
 
@@ -530,13 +500,7 @@ fn decode_base32_string(s: &ExtractedString) -> Option<ExtractedString> {
         section: s.section.clone(),
         method: StringMethod::Base32Decode,
         kind,
-        library: None,
-        fragments: None,
-        section_size: None,
-        section_executable: None,
-        section_writable: None,
-        architecture: None,
-        function_meta: None,
+        ..Default::default()
     })
 }
 
@@ -596,13 +560,7 @@ fn decode_base85_string(s: &ExtractedString) -> Option<ExtractedString> {
         section: s.section.clone(),
         method: StringMethod::Base85Decode,
         kind,
-        library: None,
-        fragments: None,
-        section_size: None,
-        section_executable: None,
-        section_writable: None,
-        architecture: None,
-        function_meta: None,
+        ..Default::default()
     })
 }
 
@@ -831,13 +789,7 @@ mod tests {
             section: None,
             method: StringMethod::RawScan,
             kind: StringKind::Base64,
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let result = decode_base64_string(&input).unwrap();
@@ -853,13 +805,7 @@ mod tests {
             section: None,
             method: StringMethod::RawScan,
             kind: StringKind::HexEncoded,
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let result = decode_hex_string(&input).unwrap();
@@ -875,13 +821,7 @@ mod tests {
             section: None,
             method: StringMethod::RawScan,
             kind: StringKind::UrlEncoded,
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let result = decode_url_string(&input).unwrap();
@@ -897,13 +837,7 @@ mod tests {
             section: None,
             method: StringMethod::RawScan,
             kind: StringKind::UnicodeEscaped,
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let result = decode_unicode_escape_string(&input).unwrap();
@@ -933,13 +867,7 @@ mod tests {
             section: None,
             method: StringMethod::RawScan,
             kind: StringKind::Base32,
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -955,13 +883,7 @@ mod tests {
             section: None,
             method: StringMethod::RawScan,
             kind: StringKind::Base32,
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let result = decode_base32_string(&input).unwrap();
@@ -978,13 +900,7 @@ mod tests {
             section: None,
             method: StringMethod::RawScan,
             kind: StringKind::Base32,
-            library: None,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         };
 
         let result = decode_base32_string(&input).unwrap();

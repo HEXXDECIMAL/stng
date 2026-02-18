@@ -215,12 +215,7 @@ fn scan_sockaddr_in(data: &[u8], min_length: usize) -> Vec<ExtractedString> {
             method: StringMethod::RawScan,
             kind: StringKind::IPPort,
             library: Some("sockaddr_in".to_string()),
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         });
     }
 

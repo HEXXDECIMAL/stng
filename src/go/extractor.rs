@@ -330,7 +330,6 @@ impl GoStringExtractor {
     /// - Type names
     ///
     /// Strings are packed together with null terminators.
-    #[allow(dead_code)]
     pub fn extract_gopclntab(&self, data: &[u8], min_length: usize) -> Vec<ExtractedString> {
         let mut strings = Vec::new();
         let mut current = String::new();
@@ -345,13 +344,7 @@ impl GoStringExtractor {
                         section: Some("__gopclntab".to_string()),
                         method: StringMethod::Structure,
                         kind: super::classifier::classify_gopclntab_string(&current),
-                        library: None,
-                        fragments: None,
-                        section_size: None,
-                        section_executable: None,
-                        section_writable: None,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     });
                 }
                 current.clear();
@@ -372,13 +365,7 @@ impl GoStringExtractor {
                 section: Some("__gopclntab".to_string()),
                 method: StringMethod::Structure,
                 kind: StringKind::FuncName,
-                library: None,
-                fragments: None,
-                section_size: None,
-                section_executable: None,
-                section_writable: None,
-                architecture: None,
-                function_meta: None,
+                ..Default::default()
             });
         }
 

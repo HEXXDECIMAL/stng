@@ -25,12 +25,7 @@ pub fn extract_macho_imports(macho: &MachO<'_>, min_length: usize) -> Vec<Extrac
                     method: StringMethod::Structure,
                     kind: StringKind::Import,
                     library: Some(lib.to_string()),
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                    ..Default::default()
                 });
             }
         }
@@ -49,13 +44,7 @@ pub fn extract_macho_imports(macho: &MachO<'_>, min_length: usize) -> Vec<Extrac
                     section,
                     method: StringMethod::Structure,
                     kind: StringKind::Export,
-                    library: None,
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
+                    ..Default::default()
                 });
             }
         }
@@ -120,12 +109,7 @@ pub fn extract_elf_imports(elf: &goblin::elf::Elf<'_>, min_length: usize) -> Vec
             method: StringMethod::Structure,
             kind,
             library,
-            fragments: None,
-            section_size: None,
-            section_executable: None,
-            section_writable: None,
-            architecture: None,
-            function_meta: None,
+            ..Default::default()
         });
     }
 

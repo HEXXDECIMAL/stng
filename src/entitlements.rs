@@ -81,13 +81,7 @@ pub fn extract_macho_entitlements(
                             section: Some("__LINKEDIT".to_string()),
                             method: StringMethod::CodeSignature,
                             kind: StringKind::EntitlementsXml,
-                            library: None,
-                            fragments: None,
-                            section_size: None,
-                            section_executable: None,
-                            section_writable: None,
-                            architecture: None,
-                            function_meta: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -98,73 +92,3 @@ pub fn extract_macho_entitlements(
     entitlements
 }
 
-/// Simple XML parser to extract entitlement key strings from plist.
-///
-/// Extracts text between <key> and </key> tags.
-#[allow(dead_code)]
-fn parse_entitlement_keys(xml: &[u8], base_offset: u64, min_length: usize) -> Vec<ExtractedString> {
-    let mut keys = Vec::new();
-    let xml_str = String::from_utf8_lossy(xml);
-
-    // Simple regex-free parser: find <key>...</key> patterns
-    let mut offset = 0;
-    while let Some(key_start) = xml_str[offset..].find("<key>") {
-        let key_content_start = offset + key_start + 5; // after "<key>"
-        if let Some(key_end_pos) = xml_str[key_content_start..].find("</key>") {
-            let key_value = &xml_str[key_content_start..key_content_start + key_end_pos];
-
-            if key_value.len() >= min_length {
-                keys.push(ExtractedString {
-                    value: key_value.to_string(),
-                    data_offset: base_offset + key_content_start as u64,
-                    section: Some("__LINKEDIT".to_string()),
-                    method: StringMethod::CodeSignature,
-                    kind: StringKind::Entitlement,
-                    library: None,
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
-                });
-            }
-
-            offset = key_content_start + key_end_pos + 6; // after "</key>"
-        } else {
-            break;
-        }
-    }
-
-    // Also extract <string>...</string> values (app IDs, paths, etc.)
-    let mut offset = 0;
-    while let Some(str_start) = xml_str[offset..].find("<string>") {
-        let str_content_start = offset + str_start + 8; // after "<string>"
-        if let Some(str_end_pos) = xml_str[str_content_start..].find("</string>") {
-            let str_value = &xml_str[str_content_start..str_content_start + str_end_pos];
-
-            if str_value.len() >= min_length {
-                keys.push(ExtractedString {
-                    value: str_value.to_string(),
-                    data_offset: base_offset + str_content_start as u64,
-                    section: Some("__LINKEDIT".to_string()),
-                    method: StringMethod::CodeSignature,
-                    kind: StringKind::AppId,
-                    library: None,
-                    fragments: None,
-                    section_size: None,
-                    section_executable: None,
-                    section_writable: None,
-                    architecture: None,
-                    function_meta: None,
-                });
-            }
-
-            offset = str_content_start + str_end_pos + 9; // after "</string>"
-        } else {
-            break;
-        }
-    }
-
-    keys
-}

@@ -16,7 +16,7 @@ pub fn extract_raw_strings(
     // Build a set of known segment/section names for quick lookup
     let segment_names_set: HashSet<&str> = segment_names
         .iter()
-        .map(std::string::String::as_str)
+        .map(String::as_str)
         .collect();
 
     let mut strings = Vec::new();
@@ -88,8 +88,7 @@ pub fn extract_raw_strings(
                     section_size: sec_size,
                     section_executable: sec_exec,
                     section_writable: sec_write,
-                    architecture: None,
-                    function_meta: None,
+                    ..Default::default()
                 });
             }
         }
@@ -170,8 +169,7 @@ pub fn extract_printable_runs(
                             section_size: sec_size,
                             section_executable: sec_exec,
                             section_writable: sec_write,
-                            architecture: None,
-                            function_meta: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -220,8 +218,7 @@ pub fn extract_printable_runs(
                         section_size: sec_size,
                         section_executable: sec_exec,
                         section_writable: sec_write,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -243,7 +240,7 @@ pub fn extract_wide_strings(
 ) -> Vec<ExtractedString> {
     let segment_names_set: HashSet<&str> = segment_names
         .iter()
-        .map(std::string::String::as_str)
+        .map(String::as_str)
         .collect();
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -324,8 +321,7 @@ pub fn extract_wide_strings(
                         section_size: sec_size,
                         section_executable: sec_exec,
                         section_writable: sec_write,
-                        architecture: None,
-                        function_meta: None,
+                        ..Default::default()
                     });
                 }
             }
