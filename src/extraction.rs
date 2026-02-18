@@ -111,23 +111,7 @@ fn find_string_structures_generic(
 
     for i in (0..=section_data.len() - struct_size).step_by(info.ptr_size) {
         // Loop ensures we have struct_size bytes available at position i
-        let (ptr, len) = if info.is_64bit && info.is_little_endian {
-            let Some(ptr) = section_data
-                .get(i..i + 8)
-                .and_then(|s| s.try_into().ok())
-                .map(u64::from_le_bytes)
-            else {
-                continue;
-            };
-            let Some(len) = section_data
-                .get(i + 8..i + 16)
-                .and_then(|s| s.try_into().ok())
-                .map(u64::from_le_bytes)
-            else {
-                continue;
-            };
-            (ptr, len)
-        } else if info.is_64bit {
+        let (ptr, len) = if info.is_64bit {
             let Some(ptr) = section_data
                 .get(i..i + 8)
                 .and_then(|s| s.try_into().ok())

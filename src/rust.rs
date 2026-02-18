@@ -463,19 +463,32 @@ impl RustStringExtractor {
             }
         }
 
-        // Collect segments for parallel processing
-        let segments: Vec<&str> = text
+        // Collect segments with their byte offsets within `data`.
+        // Each char in `text` maps 1:1 to one byte in `data`, so pointer
+        // arithmetic gives exact byte offsets for free.
+        let text_start = text.as_ptr() as usize;
+        let segments: Vec<(&str, u64)> = text
             .split(['\0', '\x01'])
             .filter(|s| s.len() >= self.min_length)
+            .map(|s| {
+                let offset = (s.as_ptr() as usize - text_start) as u64;
+                (s, offset)
+            })
             .collect();
 
         // Process segments in parallel
         let all_strings: Vec<Vec<ExtractedString>> = segments
             .par_iter()
-            .map(|segment| {
+            .map(|(segment, segment_base)| {
                 let mut strings = Vec::new();
                 let mut seen = HashSet::new();
-                self.extract_patterns_from_segment(segment, &section_name, &mut strings, &mut seen);
+                self.extract_patterns_from_segment(
+                    segment,
+                    *segment_base,
+                    &section_name,
+                    &mut strings,
+                    &mut seen,
+                );
                 strings
             })
             .collect();
@@ -490,9 +503,13 @@ impl RustStringExtractor {
     }
 
     /// Extract recognizable patterns from a text segment.
+    ///
+    /// `segment_base` is the byte offset of this segment's start within the original data slice,
+    /// used to compute accurate `data_offset` values for each extracted string.
     fn extract_patterns_from_segment(
         &self,
         segment: &str,
+        segment_base: u64,
         section_name: &Option<String>,
         strings: &mut Vec<ExtractedString>,
         seen: &mut HashSet<String>,
@@ -502,14 +519,16 @@ impl RustStringExtractor {
         // Pattern 1: URLs (highest priority, clear boundaries)
         for cap in regexes.url.find_iter(segment) {
             let url = cap.as_str().trim_end_matches(['.', ',', ';']);
-            self.add_if_valid(url, section_name, strings, seen);
+            let offset = segment_base + cap.start() as u64;
+            self.add_if_valid(url, offset, section_name, strings, seen);
         }
 
         // Pattern 2: Unix file paths
         for cap in regexes.path.find_iter(segment) {
             let path = cap.as_str();
             if path.contains('/') && path.len() >= self.min_length {
-                self.add_if_valid(path, section_name, strings, seen);
+                let offset = segment_base + cap.start() as u64;
+                self.add_if_valid(path, offset, section_name, strings, seen);
             }
         }
 
@@ -517,7 +536,8 @@ impl RustStringExtractor {
         for cap in regexes.env_var.find_iter(segment) {
             let env_var = cap.as_str();
             if env_var.contains('_') && env_var.len() >= self.min_length {
-                self.add_if_valid(env_var, section_name, strings, seen);
+                let offset = segment_base + cap.start() as u64;
+                self.add_if_valid(env_var, offset, section_name, strings, seen);
             }
         }
 
@@ -525,7 +545,8 @@ impl RustStringExtractor {
         for cap in regexes.snake_case.find_iter(segment) {
             let ident = cap.as_str();
             if ident.len() >= self.min_length {
-                self.add_if_valid(ident, section_name, strings, seen);
+                let offset = segment_base + cap.start() as u64;
+                self.add_if_valid(ident, offset, section_name, strings, seen);
             }
         }
 
@@ -533,40 +554,41 @@ impl RustStringExtractor {
         for cap in regexes.domain.find_iter(segment) {
             let domain = cap.as_str();
             if domain.len() >= self.min_length {
-                self.add_if_valid(domain, section_name, strings, seen);
+                let offset = segment_base + cap.start() as u64;
+                self.add_if_valid(domain, offset, section_name, strings, seen);
             }
         }
 
         // Pattern 6: Split on boundary patterns and extract remaining identifiers
-        // Split before UPPER_CASE sequences of 4+ chars
-        let parts: Vec<&str> = segment
+        let seg_start = segment.as_ptr() as usize;
+        for part in segment
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '.' && c != '-')
             .filter(|s| s.len() >= self.min_length)
-            .collect();
+        {
+            let part_base = segment_base + (part.as_ptr() as usize - seg_start) as u64;
 
-        for part in parts {
-            // Split on case transitions: lowercase followed by 4+ uppercase
-            let mut last_idx = 0;
-            let chars: Vec<char> = part.chars().collect();
-            for i in 1..chars.len().saturating_sub(3) {
-                if chars[i - 1].is_ascii_lowercase()
-                    && chars[i].is_ascii_uppercase()
-                    && chars.get(i + 1).is_some_and(char::is_ascii_uppercase)
-                    && chars.get(i + 2).is_some_and(char::is_ascii_uppercase)
+            // Split on case transitions: lowercase followed by 4+ uppercase.
+            // All chars here are ASCII so byte index == char index.
+            let mut last_byte = 0usize;
+            let char_indices: Vec<(usize, char)> = part.char_indices().collect();
+            for i in 1..char_indices.len().saturating_sub(3) {
+                if char_indices[i - 1].1.is_ascii_lowercase()
+                    && char_indices[i].1.is_ascii_uppercase()
+                    && char_indices.get(i + 1).is_some_and(|(_, c)| c.is_ascii_uppercase())
+                    && char_indices.get(i + 2).is_some_and(|(_, c)| c.is_ascii_uppercase())
                 {
-                    let sub: String = chars[last_idx..i].iter().collect();
+                    let byte_end = char_indices[i].0;
+                    let sub = &part[last_byte..byte_end];
                     if sub.len() >= self.min_length {
-                        self.add_if_valid(&sub, section_name, strings, seen);
+                        self.add_if_valid(sub, part_base + last_byte as u64, section_name, strings, seen);
                     }
-                    last_idx = i;
+                    last_byte = byte_end;
                 }
             }
             // Add remaining part
-            if last_idx < chars.len() {
-                let sub: String = chars[last_idx..].iter().collect();
-                if sub.len() >= self.min_length {
-                    self.add_if_valid(&sub, section_name, strings, seen);
-                }
+            let sub = &part[last_byte..];
+            if sub.len() >= self.min_length {
+                self.add_if_valid(sub, part_base + last_byte as u64, section_name, strings, seen);
             }
         }
     }
@@ -575,6 +597,7 @@ impl RustStringExtractor {
     fn add_if_valid(
         &self,
         s: &str,
+        data_offset: u64,
         section_name: &Option<String>,
         strings: &mut Vec<ExtractedString>,
         seen: &mut HashSet<String>,
@@ -603,7 +626,7 @@ impl RustStringExtractor {
         seen.insert(trimmed.to_string());
         strings.push(ExtractedString {
             value: trimmed.to_string(),
-            data_offset: 0, // Will be adjusted by caller
+            data_offset,
             section: section_name.clone(),
             method: StringMethod::Heuristic,
             kind: classify_string(trimmed),
@@ -773,7 +796,7 @@ mod tests {
         let mut strings = Vec::new();
         let mut seen = HashSet::new();
 
-        extractor.add_if_valid("short", &None, &mut strings, &mut seen);
+        extractor.add_if_valid("short", 0, &None, &mut strings, &mut seen);
 
         assert!(strings.is_empty());
     }
@@ -785,7 +808,7 @@ mod tests {
         let mut seen = HashSet::new();
 
         seen.insert("hello".to_string());
-        extractor.add_if_valid("hello", &None, &mut strings, &mut seen);
+        extractor.add_if_valid("hello", 0, &None, &mut strings, &mut seen);
 
         assert!(strings.is_empty());
     }
@@ -797,7 +820,7 @@ mod tests {
         let mut seen = HashSet::new();
 
         // More than 70% digits should be rejected
-        extractor.add_if_valid("12345678ab", &None, &mut strings, &mut seen);
+        extractor.add_if_valid("12345678ab", 0, &None, &mut strings, &mut seen);
 
         assert!(strings.is_empty());
     }
@@ -809,7 +832,7 @@ mod tests {
         let mut seen = HashSet::new();
 
         // Short hex patterns should be rejected
-        extractor.add_if_valid("deadbeef", &None, &mut strings, &mut seen);
+        extractor.add_if_valid("deadbeef", 0, &None, &mut strings, &mut seen);
 
         assert!(strings.is_empty());
     }
@@ -822,6 +845,7 @@ mod tests {
 
         extractor.add_if_valid(
             "hello_world",
+            0,
             &Some(".rodata".to_string()),
             &mut strings,
             &mut seen,
@@ -840,7 +864,7 @@ mod tests {
         let mut strings = Vec::new();
         let mut seen = HashSet::new();
 
-        extractor.extract_patterns_from_segment(segment, &section, &mut strings, &mut seen);
+        extractor.extract_patterns_from_segment(segment, 0, &section, &mut strings, &mut seen);
 
         // Should extract URLs, paths, env vars, and identifiers
         assert!(!strings.is_empty());
@@ -854,7 +878,7 @@ mod tests {
         let mut strings = Vec::new();
         let mut seen = HashSet::new();
 
-        extractor.extract_patterns_from_segment(segment, &None, &mut strings, &mut seen);
+        extractor.extract_patterns_from_segment(segment, 0, &None, &mut strings, &mut seen);
 
         // Should handle case transitions
         assert!(!strings.is_empty());

@@ -6,6 +6,7 @@
 use crate::{ExtractedString, StringKind, StringMethod};
 use data_encoding::{BASE32, BASE32_NOPAD};
 use regex::Regex;
+use std::sync::OnceLock;
 
 /// Minimum length for base64 strings to attempt decoding
 pub const MIN_BASE64_LENGTH: usize = 16;
@@ -34,7 +35,9 @@ pub fn deobfuscate_concatenation(s: &str) -> Option<String> {
 
     // Match quoted strings: 'text' or "text"
     // This regex finds all single or double quoted strings
-    let quoted_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
+    static QUOTED_RE: OnceLock<Regex> = OnceLock::new();
+    let quoted_re = QUOTED_RE
+        .get_or_init(|| Regex::new(r#"['"]([^'"]+)['"]"#).expect("valid static regex"));
 
     let mut segments = Vec::new();
 

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StringStruct {
     /// Offset in the section where this structure was found
-    #[allow(dead_code)]
     pub struct_offset: u64,
     /// Virtual address of the string data
     pub ptr: u64,
@@ -39,7 +38,6 @@ pub struct ExtractedString {
     /// Section name where the string was found
     pub section: Option<String>,
     /// How the string was found
-    #[allow(dead_code)]
     pub method: StringMethod,
     /// Semantic kind of the string
     pub kind: StringKind,
@@ -444,42 +442,6 @@ pub struct BinaryInfo {
 }
 
 impl BinaryInfo {
-    #[allow(dead_code)]
-    pub fn new_64bit_le() -> Self {
-        Self {
-            is_64bit: true,
-            is_little_endian: true,
-            ptr_size: 8,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn new_32bit_le() -> Self {
-        Self {
-            is_64bit: false,
-            is_little_endian: true,
-            ptr_size: 4,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn new_64bit_be() -> Self {
-        Self {
-            is_64bit: true,
-            is_little_endian: false,
-            ptr_size: 8,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn new_32bit_be() -> Self {
-        Self {
-            is_64bit: false,
-            is_little_endian: false,
-            ptr_size: 4,
-        }
-    }
-
     /// Create `BinaryInfo` from ELF header information
     pub fn from_elf(is_64bit: bool, is_little_endian: bool) -> Self {
         Self {
