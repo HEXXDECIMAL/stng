@@ -12,7 +12,12 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::Path;
+use std::sync::LazyLock;
 use stng::{Severity, StringKind, StringMethod};
+
+/// Matches base64-like substrings within larger strings (e.g., embedded in shell commands).
+static EMBEDDED_B64_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([A-Za-z0-9+/]{12,}={0,2})").expect("valid static regex"));
 
 #[derive(Parser, Debug)]
 #[command(name = "stng")]
@@ -122,33 +127,20 @@ const BRIGHT_YELLOW: &str = "\x1b[93m"; // For XOR-decoded/decrypted content (st
 
 /// Parse XOR key from command line (hex bytes or plain string)
 fn parse_xor_key(input: &str) -> Result<Vec<u8>> {
-    // Check if it's hex format (0x... or just hex digits)
-    let hex_input = if let Some(stripped) = input.strip_prefix("0x") {
+    // Check if it's hex format (0x... or just bare hex digits)
+    let hex_str = if let Some(stripped) = input.strip_prefix("0x") {
         stripped
     } else if input.chars().all(|c| c.is_ascii_hexdigit()) && input.len().is_multiple_of(2) {
         input
     } else {
-        // Plain string - convert to bytes
         return Ok(input.as_bytes().to_vec());
     };
 
-    // Parse hex bytes
-    let mut bytes = Vec::new();
-    for chunk in hex_input.as_bytes().chunks(2) {
-        if chunk.len() != 2 {
-            anyhow::bail!("Invalid hex string: must have even number of hex digits");
-        }
-        let hex_str = std::str::from_utf8(chunk)?;
-        let byte = u8::from_str_radix(hex_str, 16)
-            .map_err(|e| anyhow::anyhow!("Invalid hex byte '{hex_str}': {e}"))?;
-        bytes.push(byte);
-    }
-
-    if bytes.is_empty() {
+    if hex_str.is_empty() {
         anyhow::bail!("XOR key cannot be empty");
     }
 
-    Ok(bytes)
+    hex::decode(hex_str).map_err(|e| anyhow::anyhow!("Invalid hex key '{hex_str}': {e}"))
 }
 
 /// Get binary format and architecture string (e.g., "ELF arm32", "PE x64", "Mach-O arm64")
@@ -392,10 +384,7 @@ fn main() -> Result<()> {
         // Extract embedded base64 from within commands and strings
         let mut embedded_decoded = Vec::new();
         for s in &strings {
-            // Look for base64 patterns within strings (e.g., in shell commands)
-            // Pattern: alphanumeric + +/= characters, min 12 chars, ends with optional =
-            let re = Regex::new(r"([A-Za-z0-9+/]{12,}={0,2})").unwrap();
-            for cap in re.captures_iter(&s.value) {
+            for cap in EMBEDDED_B64_RE.captures_iter(&s.value) {
                 if let Some(b64_match) = cap.get(1) {
                     let b64_str = b64_match.as_str();
                     // Check if it's likely base64 and not the whole string
@@ -403,7 +392,7 @@ fn main() -> Result<()> {
                         // Try to decode it
                         if let Ok(decoded) = BASE64.decode(b64_str.trim()) {
                             // Validate it's printable
-                            if let Ok(decoded_str) = String::from_utf8(decoded.clone()) {
+                            if let Ok(decoded_str) = String::from_utf8(decoded) {
                                 let trimmed = decoded_str.trim();
                                 if trimmed.len() >= 4 {
                                     embedded_decoded.push(stng::ExtractedString {

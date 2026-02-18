@@ -115,23 +115,22 @@ fn passes_garbage_filter(s: &ExtractedString) -> bool {
 /// Merge a set of imports into the strings list.
 /// Updates kind/library for strings already present, then appends new ones.
 fn merge_imports(strings: &mut Vec<ExtractedString>, imports: Vec<ExtractedString>) {
-    {
-        let import_map: HashMap<&str, (StringKind, Option<&str>)> = imports
-            .iter()
-            .map(|s| (s.value.as_str(), (s.kind, s.library.as_deref())))
-            .collect();
-        for s in strings.iter_mut() {
-            if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
-                s.kind = kind;
-                s.library = lib.map(ToString::to_string);
-            }
+    let import_map: HashMap<&str, (StringKind, Option<&str>)> = imports
+        .iter()
+        .map(|s| (s.value.as_str(), (s.kind, s.library.as_deref())))
+        .collect();
+    for s in strings.iter_mut() {
+        if let Some(&(kind, lib)) = import_map.get(s.value.as_str()) {
+            s.kind = kind;
+            s.library = lib.map(ToString::to_string);
         }
     }
-    let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-    let new_imports: Vec<_> = imports
-        .into_iter()
-        .filter(|s| !seen.contains(s.value.as_str()))
-        .collect();
+    // Collect new imports first so that `seen` (which borrows `strings`) is
+    // dropped before the mutable `strings.extend()` call below.
+    let new_imports: Vec<_> = {
+        let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
+        imports.into_iter().filter(|s| !seen.contains(s.value.as_str())).collect()
+    };
     strings.extend(new_imports);
 }
 

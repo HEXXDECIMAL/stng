@@ -7,7 +7,15 @@
 //! - Partial corruption
 
 use crate::types::{ExtractedString, StringKind, StringMethod};
+use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+static CONCAT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"['"]\s*\+\s*['"]([A-Za-z0-9])['"]\s*\+\s*['"]"#).expect("valid static regex")
+});
+static ASSIGNMENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"=\s*["']([^"']+)["']"#).expect("valid static regex"));
 
 /// Minimum length for a base64 segment to be considered valid
 const MIN_BASE64_SEGMENT: usize = 32;
@@ -164,13 +172,8 @@ fn detect_substitutions(input: &str) -> Vec<(char, char)> {
     let mut substitutions = Vec::new();
 
     // Look for single-character patterns between concatenation operators
-    let Ok(concat_re) = regex::Regex::new(r#"['"]\s*\+\s*['"]([A-Za-z0-9])['"]\s*\+\s*['"]"#)
-    else {
-        return substitutions;
-    };
-
     let mut candidates: HashMap<char, usize> = HashMap::new();
-    for cap in concat_re.captures_iter(input) {
+    for cap in CONCAT_RE.captures_iter(input) {
         if let Some(ch) = cap.get(1).and_then(|m| m.as_str().chars().next()) {
             *candidates.entry(ch).or_insert(0) += 1;
         }
@@ -200,8 +203,7 @@ fn detect_substitutions(input: &str) -> Vec<(char, char)> {
 ///
 /// Handles: `var x = "base64data..."`
 fn extract_from_assignment(input: &str) -> Option<FuzzyBase64Result> {
-    // Try to extract string literals from assignment
-    let assignment_re = regex::Regex::new(r#"=\s*["']([^"']+)["']"#).ok()?;
+    let assignment_re = &*ASSIGNMENT_RE;
 
     for cap in assignment_re.captures_iter(input) {
         if let Some(value) = cap.get(1) {

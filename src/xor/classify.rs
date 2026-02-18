@@ -10,9 +10,8 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use super::{
     MAX_AUTO_DETECT_SIZE, MAX_XOR_SCAN_SIZE, SKIP_XOR_KEYS,
-    is_good_xor_key_candidate, score_xor_key_candidate,
+    calculate_entropy, is_good_xor_key_candidate, score_xor_key_candidate,
     extract_custom_xor_strings,
-    get_automaton_ascii, get_automaton_with_wide,
 };
 
 pub(crate) fn trim_consonant_clusters(s: &str) -> String {
@@ -175,18 +174,18 @@ pub(crate) fn auto_detect_xor_key(
         return None;
     }
 
-    // Find candidate XOR keys by quality scoring
-    // Score each candidate based on characteristics of good XOR keys
+    // Find candidate XOR keys by quality scoring.
+    // Compute entropy once per candidate (shared by qualification check and scoring).
     let mut candidates_with_score: Vec<(u32, u64, &str)> = candidate_strings
         .iter()
-        .filter(|s| {
-            !s.value.contains('_')
-                && !s.value.starts_with("cstr.")
-                && is_good_xor_key_candidate(&s.value)
-        })
-        .map(|s| {
-            let score = score_xor_key_candidate(&s.value);
-            (score, s.data_offset, s.value.as_str())
+        .filter(|s| !s.value.contains('_') && !s.value.starts_with("cstr."))
+        .filter_map(|s| {
+            let entropy = calculate_entropy(s.value.as_bytes());
+            if is_good_xor_key_candidate(&s.value, entropy) {
+                Some((score_xor_key_candidate(&s.value, entropy), s.data_offset, s.value.as_str()))
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -456,9 +455,9 @@ pub(crate) fn extract_xor_strings(
     }
 
     let (ac, pattern_info) = if scan_wide {
-        get_automaton_with_wide()
+        &*super::AUTOMATON_WITH_WIDE
     } else {
-        get_automaton_ascii()
+        &*super::AUTOMATON_ASCII
     };
     let mut results = Vec::new();
     let mut seen: HashSet<(u64, String)> = HashSet::new();

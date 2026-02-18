@@ -38,7 +38,8 @@ pub fn detect_elf_overlay(data: &[u8]) -> Option<OverlayInfo> {
     // Also check for section header table position (often at the end of the file)
     if elf.header.e_shoff > 0 {
         let sh_table_end =
-            elf.header.e_shoff + (elf.header.e_shnum as u64 * elf.header.e_shentsize as u64);
+            elf.header.e_shoff
+                + u64::from(elf.header.e_shnum) * u64::from(elf.header.e_shentsize);
         if sh_table_end > max_offset {
             max_offset = sh_table_end;
         }

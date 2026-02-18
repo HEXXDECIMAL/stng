@@ -80,8 +80,8 @@ pub fn collect_elf_section_info(
 
     for sh in &elf.section_headers {
         if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
-            let is_executable = (sh.sh_flags & SHF_EXECINSTR as u64) != 0;
-            let is_writable = (sh.sh_flags & SHF_WRITE as u64) != 0;
+            let is_executable = (sh.sh_flags & u64::from(SHF_EXECINSTR)) != 0;
+            let is_writable = (sh.sh_flags & u64::from(SHF_WRITE)) != 0;
 
             sections.insert(
                 name.to_string(),
@@ -116,7 +116,7 @@ pub fn collect_pe_section_info(
             name.clone(),
             SectionInfo {
                 name,
-                size: sec.size_of_raw_data as u64,
+                size: u64::from(sec.size_of_raw_data),
                 is_executable,
                 is_writable,
             },

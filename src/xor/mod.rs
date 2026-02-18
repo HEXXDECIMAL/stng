@@ -9,7 +9,7 @@ use crate::{ExtractedString, StringKind, StringMethod};
 use aho_corasick::AhoCorasick;
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 mod classify;
 // Re-export the three functions lib.rs calls as `xor::*`
 pub(crate) use self::classify::{auto_detect_xor_key, extract_multikey_xor_strings, extract_xor_strings};
@@ -43,7 +43,7 @@ fn calculate_entropy(data: &[u8]) -> f64 {
 
     let mut freq = [0u32; 256];
     for &byte in data {
-        freq[byte as usize] += 1;
+        freq[usize::from(byte)] += 1;
     }
 
     let len = data.len() as f64;
@@ -61,7 +61,9 @@ fn calculate_entropy(data: &[u8]) -> f64 {
 
 /// Check if a string is a good XOR key candidate based on entropy.
 /// DPRK malware often uses high-entropy keys like "Moz&Wie;#t/6T!2y", "12GWAPCT1F0I1S14".
-fn is_good_xor_key_candidate(s: &str) -> bool {
+///
+/// `entropy` must be pre-computed by the caller via `calculate_entropy`.
+fn is_good_xor_key_candidate(s: &str, entropy: f64) -> bool {
     let len = s.len();
 
     // Length between 15-32 characters (typical for XOR keys)
@@ -101,9 +103,6 @@ fn is_good_xor_key_candidate(s: &str) -> bool {
     {
         return false;
     }
-
-    // Calculate entropy - high entropy indicates randomness/key material
-    let entropy = calculate_entropy(s.as_bytes());
 
     // High entropy threshold: > 3.5 bits per byte
     // This catches keys like "Moz&Wie;#t/6T!2y" (entropy ~4.0)
@@ -151,7 +150,10 @@ fn is_good_xor_key_candidate(s: &str) -> bool {
 /// - Low character repetition (no character appears too many times)
 /// - High character diversity (uses many different characters)
 /// - High entropy (random-looking)
-fn score_xor_key_candidate(s: &str) -> u32 {
+///
+/// `entropy` must be pre-computed by the caller to avoid redundant calculation
+/// (callers that already ran `is_good_xor_key_candidate` already computed it).
+fn score_xor_key_candidate(s: &str, entropy: f64) -> u32 {
     let mut score = 0u32;
 
     // Bonus for length (32-char keys are ideal)
@@ -169,7 +171,7 @@ fn score_xor_key_candidate(s: &str) -> u32 {
     // Calculate character frequency - good keys have low repetition
     let mut char_freq = [0u32; 256];
     for &byte in s.as_bytes() {
-        char_freq[byte as usize] += 1;
+        char_freq[usize::from(byte)] += 1;
     }
 
     // Bonus for diversity: penalize if any character appears too often
@@ -196,9 +198,6 @@ fn score_xor_key_candidate(s: &str) -> u32 {
     } else if unique_chars >= 12 {
         score += 20;
     }
-
-    // Calculate entropy
-    let entropy = calculate_entropy(s.as_bytes());
 
     // Bonus for high entropy
     if entropy >= 4.5 {
@@ -242,66 +241,42 @@ struct PatternInfo {
     is_wide: bool,
 }
 
-/// Build and cache the ASCII-only Aho-Corasick automaton.
-fn get_automaton_ascii() -> &'static (AhoCorasick, Vec<PatternInfo>) {
-    static CACHE: OnceLock<(AhoCorasick, Vec<PatternInfo>)> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        let mut patterns: Vec<Vec<u8>> = Vec::new();
-        let mut pattern_info: Vec<PatternInfo> = Vec::new();
-
-        for key in 1u8..=255u8 {
-            if SKIP_XOR_KEYS.contains(&key) {
-                continue;
-            }
-
-            for prefix in XOR_PATTERNS {
-                let xored: Vec<u8> = prefix.iter().map(|b| b ^ key).collect();
-                patterns.push(xored);
-                pattern_info.push(PatternInfo {
-                    key,
-                    is_wide: false,
-                });
-            }
+/// Cached ASCII-only Aho-Corasick automaton (XOR'd patterns for keys 1..=255).
+static AUTOMATON_ASCII: LazyLock<(AhoCorasick, Vec<PatternInfo>)> = LazyLock::new(|| {
+    let mut patterns: Vec<Vec<u8>> = Vec::new();
+    let mut pattern_info: Vec<PatternInfo> = Vec::new();
+    for key in 1u8..=255u8 {
+        if SKIP_XOR_KEYS.contains(&key) {
+            continue;
         }
+        for prefix in XOR_PATTERNS {
+            patterns.push(prefix.iter().map(|b| b ^ key).collect());
+            pattern_info.push(PatternInfo { key, is_wide: false });
+        }
+    }
+    let ac = AhoCorasick::new(&patterns).expect("Failed to build automaton");
+    (ac, pattern_info)
+});
 
-        let ac = AhoCorasick::new(&patterns).expect("Failed to build automaton");
-        (ac, pattern_info)
-    })
-}
-
-/// Build and cache the automaton with both ASCII and wide (UTF-16LE) patterns.
+/// Cached automaton with both ASCII and wide (UTF-16LE) patterns.
 /// Used for PE binaries where wide strings are common.
-fn get_automaton_with_wide() -> &'static (AhoCorasick, Vec<PatternInfo>) {
-    static CACHE: OnceLock<(AhoCorasick, Vec<PatternInfo>)> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        let mut patterns: Vec<Vec<u8>> = Vec::new();
-        let mut pattern_info: Vec<PatternInfo> = Vec::new();
-
-        for key in 1u8..=255u8 {
-            if SKIP_XOR_KEYS.contains(&key) {
-                continue;
-            }
-
-            for prefix in XOR_PATTERNS {
-                // ASCII pattern
-                let xored: Vec<u8> = prefix.iter().map(|b| b ^ key).collect();
-                patterns.push(xored);
-                pattern_info.push(PatternInfo {
-                    key,
-                    is_wide: false,
-                });
-
-                // Wide (UTF-16LE) pattern
-                let wide_xored: Vec<u8> = prefix.iter().flat_map(|&b| [b ^ key, key]).collect();
-                patterns.push(wide_xored);
-                pattern_info.push(PatternInfo { key, is_wide: true });
-            }
+static AUTOMATON_WITH_WIDE: LazyLock<(AhoCorasick, Vec<PatternInfo>)> = LazyLock::new(|| {
+    let mut patterns: Vec<Vec<u8>> = Vec::new();
+    let mut pattern_info: Vec<PatternInfo> = Vec::new();
+    for key in 1u8..=255u8 {
+        if SKIP_XOR_KEYS.contains(&key) {
+            continue;
         }
-
-        let ac = AhoCorasick::new(&patterns).expect("Failed to build automaton");
-        (ac, pattern_info)
-    })
-}
+        for prefix in XOR_PATTERNS {
+            patterns.push(prefix.iter().map(|b| b ^ key).collect());
+            pattern_info.push(PatternInfo { key, is_wide: false });
+            patterns.push(prefix.iter().flat_map(|&b| [b ^ key, key]).collect());
+            pattern_info.push(PatternInfo { key, is_wide: true });
+        }
+    }
+    let ac = AhoCorasick::new(&patterns).expect("Failed to build automaton");
+    (ac, pattern_info)
+});
 
 /// Extract strings decoded with a specified XOR key.
 ///
@@ -1592,10 +1567,9 @@ mod tests {
         ];
 
         for key in &known_keys {
-            let qualifies = is_good_xor_key_candidate(key);
             let entropy = calculate_entropy(key.as_bytes());
             assert!(
-                qualifies,
+                is_good_xor_key_candidate(key, entropy),
                 "Known XOR key '{}' should qualify (entropy: {:.2})",
                 key, entropy
             );
@@ -1615,8 +1589,12 @@ mod tests {
         ];
 
         for key in &bad_keys {
-            let qualifies = is_good_xor_key_candidate(key);
-            assert!(!qualifies, "Bad key candidate '{}' should NOT qualify", key);
+            let entropy = calculate_entropy(key.as_bytes());
+            assert!(
+                !is_good_xor_key_candidate(key, entropy),
+                "Bad key candidate '{}' should NOT qualify",
+                key
+            );
         }
     }
 

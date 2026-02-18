@@ -21,30 +21,24 @@ use goblin::mach::MachO;
 use rayon::prelude::*;
 use regex::Regex;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
-/// Cached regexes for pattern extraction (compiled once, reused forever)
-struct PatternRegexes {
-    url: Regex,
-    path: Regex,
-    env_var: Regex,
-    snake_case: Regex,
-    domain: Regex,
-}
-
-fn get_pattern_regexes() -> &'static PatternRegexes {
-    static REGEXES: OnceLock<PatternRegexes> = OnceLock::new();
-    REGEXES.get_or_init(|| PatternRegexes {
-        url: Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+")
-            .expect("static regex pattern is valid"),
-        path: Regex::new(r"/[a-zA-Z0-9_./\-]+").expect("static regex pattern is valid"),
-        env_var: Regex::new(r"[A-Z][A-Z0-9_]{3,}").expect("static regex pattern is valid"),
-        snake_case: Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
-            .expect("static regex pattern is valid"),
-        domain: Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+")
-            .expect("static regex pattern is valid"),
-    })
-}
+static RE_URL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+")
+        .expect("static regex pattern is valid")
+});
+static RE_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"/[a-zA-Z0-9_./\-]+").expect("static regex pattern is valid")
+});
+static RE_ENV_VAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Z][A-Z0-9_]{3,}").expect("static regex pattern is valid")
+});
+static RE_SNAKE_CASE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+").expect("static regex pattern is valid")
+});
+static RE_DOMAIN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-z][a-z0-9]*\.[a-z][a-z0-9.]+").expect("static regex pattern is valid")
+});
 
 /// Extracts strings from Rust binaries using structure analysis.
 pub struct RustStringExtractor {
@@ -501,17 +495,15 @@ impl RustStringExtractor {
         strings: &mut Vec<ExtractedString>,
         seen: &mut HashSet<String>,
     ) {
-        let regexes = get_pattern_regexes();
-
         // Pattern 1: URLs (highest priority, clear boundaries)
-        for cap in regexes.url.find_iter(segment) {
+        for cap in RE_URL.find_iter(segment) {
             let url = cap.as_str().trim_end_matches(['.', ',', ';']);
             let offset = segment_base + cap.start() as u64;
             self.add_if_valid(url, offset, section_name, strings, seen);
         }
 
         // Pattern 2: Unix file paths
-        for cap in regexes.path.find_iter(segment) {
+        for cap in RE_PATH.find_iter(segment) {
             let path = cap.as_str();
             if path.contains('/') && path.len() >= self.min_length {
                 let offset = segment_base + cap.start() as u64;
@@ -520,7 +512,7 @@ impl RustStringExtractor {
         }
 
         // Pattern 3: Environment variable names (UPPER_CASE_WITH_UNDERSCORES)
-        for cap in regexes.env_var.find_iter(segment) {
+        for cap in RE_ENV_VAR.find_iter(segment) {
             let env_var = cap.as_str();
             if env_var.contains('_') && env_var.len() >= self.min_length {
                 let offset = segment_base + cap.start() as u64;
@@ -529,7 +521,7 @@ impl RustStringExtractor {
         }
 
         // Pattern 4: snake_case identifiers
-        for cap in regexes.snake_case.find_iter(segment) {
+        for cap in RE_SNAKE_CASE.find_iter(segment) {
             let ident = cap.as_str();
             if ident.len() >= self.min_length {
                 let offset = segment_base + cap.start() as u64;
@@ -538,7 +530,7 @@ impl RustStringExtractor {
         }
 
         // Pattern 5: Domain names
-        for cap in regexes.domain.find_iter(segment) {
+        for cap in RE_DOMAIN.find_iter(segment) {
             let domain = cap.as_str();
             if domain.len() >= self.min_length {
                 let offset = segment_base + cap.start() as u64;
