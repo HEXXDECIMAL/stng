@@ -75,6 +75,10 @@ pub use validation::is_garbage;
 // Re-export goblin so library clients can parse binaries themselves
 pub use goblin;
 use goblin::mach::MachO;
+use goblin::mach::cputype::{
+    CPU_TYPE_ARM, CPU_TYPE_ARM64, CPU_TYPE_POWERPC, CPU_TYPE_POWERPC64, CPU_TYPE_X86,
+    CPU_TYPE_X86_64,
+};
 use goblin::Object;
 use std::collections::HashSet;
 
@@ -218,12 +222,12 @@ fn enrich_elf_sections(strings: &mut [ExtractedString], elf: &goblin::elf::Elf<'
 /// Convert Mach-O cputype to architecture string
 fn cputype_to_arch_string(cputype: u32) -> &'static str {
     match cputype {
-        0x01000007 => "x86_64",
-        0x0100000C => "arm64",
-        0x00000007 => "x86",
-        0x0000000C => "arm",
-        0x00000012 => "ppc",
-        0x01000012 => "ppc64",
+        CPU_TYPE_X86_64 => "x86_64",
+        CPU_TYPE_ARM64 => "arm64",
+        CPU_TYPE_X86 => "x86",
+        CPU_TYPE_ARM => "arm",
+        CPU_TYPE_POWERPC => "ppc",
+        CPU_TYPE_POWERPC64 => "ppc64",
         _ => "unknown",
     }
 }
@@ -839,7 +843,12 @@ pub fn extract_strings_with_options(data: &[u8], opts: &ExtractOptions) -> Vec<E
     }
 }
 
-/// Helper to get r2 strings from options (pre-extracted or by running r2)
+/// Extract strings from a pre-parsed binary object.
+///
+/// Dispatches to the appropriate language-aware extractor based on the binary format
+/// (Mach-O, ELF, PE) and detected language (Go, Rust, unknown). Runs XOR scanning,
+/// stack string extraction, import enrichment, and section enrichment after the
+/// primary extraction pass.
 pub fn extract_from_object(
     object: &Object<'_>,
     data: &[u8],
@@ -1599,9 +1608,11 @@ pub fn extract_from_macho(
     strings
 }
 
-/// Extract entitlements XML from Mach-O code signature.
+/// Extract strings from a pre-parsed ELF binary.
 ///
-/// Returns the raw XML plist from `LC_CODE_SIGNATURE` if present.
+/// This allows library clients who have already parsed the binary to avoid re-parsing.
+/// Note: unlike [`extract_from_object`], this does not run XOR scanning, stack string
+/// extraction, or section enrichment. For full extraction use [`extract_from_object`].
 #[allow(dead_code)]
 pub fn extract_from_elf(
     elf: &goblin::elf::Elf<'_>,
