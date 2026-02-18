@@ -243,7 +243,8 @@ fn decode_unicode_escapes(s: &str) -> Vec<u8> {
                     // Other escape sequences - just add as-is
                     _ => {
                         result.push(b'\\');
-                        result.push(next as u8);
+                        let mut buf = [0u8; 4];
+                        result.extend_from_slice(next.encode_utf8(&mut buf).as_bytes());
                     }
                 }
             } else {
@@ -251,7 +252,8 @@ fn decode_unicode_escapes(s: &str) -> Vec<u8> {
             }
         } else {
             // Regular character
-            result.push(c as u8);
+            let mut buf = [0u8; 4];
+            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
         }
     }
 
@@ -281,7 +283,8 @@ fn decode_url_encoding(s: &str) -> Vec<u8> {
             result.push(b' ');
         } else {
             // Regular character
-            result.push(c as u8);
+            let mut buf = [0u8; 4];
+            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
         }
     }
 
@@ -411,7 +414,7 @@ fn main() -> Result<()> {
                                 if trimmed.len() >= 4 {
                                     embedded_decoded.push(stng::ExtractedString {
                                         value: trimmed.to_string(),
-                                        data_offset: s.data_offset + 1, // Offset slightly to sort after parent
+                                        data_offset: s.data_offset,
                                         section: None,
                                         method: stng::StringMethod::Base64Decode,
                                         kind: stng::classify_string(trimmed),
@@ -1124,9 +1127,9 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
 
         // Decode hex-encoded strings
         if s.kind == stng::StringKind::HexEncoded {
-            let decoded: Vec<u8> = (0..s.value.len())
+            let decoded: Vec<u8> = (0..s.value.len().saturating_sub(1))
                 .step_by(2)
-                .filter_map(|i| u8::from_str_radix(&s.value[i..i + 2], 16).ok())
+                .filter_map(|i| s.value.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
                 .collect();
 
             if !decoded.is_empty() {

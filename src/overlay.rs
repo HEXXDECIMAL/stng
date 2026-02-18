@@ -67,7 +67,9 @@ pub fn extract_overlay_strings(data: &[u8], min_length: usize) -> Vec<ExtractedS
 
     // Try ELF overlay detection
     if let Some(overlay_info) = detect_elf_overlay(data) {
-        let start = overlay_info.start_offset as usize;
+        let start = usize::try_from(overlay_info.start_offset)
+            .unwrap_or(data.len())
+            .min(data.len());
         if start < data.len() {
             let overlay_data = &data[start..];
 

@@ -1518,6 +1518,11 @@ fn extract_custom_xor_strings_pattern_based_simple(
         })
         .collect();
 
+    // Restore position order so the caller's overlap-removal logic is deterministic.
+    // (par_iter does not preserve insertion order.)
+    let mut results: Vec<ExtractedString> = results;
+    results.sort_by_key(|s| s.data_offset);
+
     tracing::info!(
         "XOR scan: {} strings in {:.2}s",
         results.len(),
@@ -1982,54 +1987,54 @@ pub fn extract_xor_strings(
     } else {
         get_automaton_ascii()
     };
-    // Collect all (position, key, is_wide) match tuples in a single sequential pass.
-    // Processing each match is independent, so we parallelize the expansion step.
-    let match_tuples: Vec<(usize, u8, bool)> = ac
-        .find_overlapping_iter(data)
-        .map(|mat| {
-            let info = &pattern_info[mat.pattern().as_usize()];
-            (mat.start(), info.key, info.is_wide)
-        })
-        .collect();
+    let mut results = Vec::new();
+    let mut seen: HashSet<(u64, String)> = HashSet::new();
 
-    // Expand and validate each match in parallel, then deduplicate.
-    let mut results: Vec<ExtractedString> = match_tuples
-        .into_par_iter()
-        .filter_map(|(pos, key, is_wide)| {
-            if is_wide {
-                let (decoded, start, _end) =
-                    expand_xor_wide_string(data, pos, key, min_length)?;
-                let kind = classify_xor_string(&decoded)?;
-                Some(ExtractedString {
-                    value: decoded,
-                    data_offset: start as u64,
-                    section: None,
-                    method: StringMethod::XorDecode,
-                    kind,
-                    library: Some(format!("0x{key:02X}:16LE")),
-                    fragments: None,
-                    ..Default::default()
-                })
-            } else {
-                let (decoded, start, _end) = expand_xor_string(data, pos, key, min_length)?;
-                let kind = classify_xor_string(&decoded)?;
-                Some(ExtractedString {
-                    value: decoded,
-                    data_offset: start as u64,
-                    section: None,
-                    method: StringMethod::XorDecode,
-                    kind,
-                    library: Some(format!("0x{key:02X}")),
-                    fragments: None,
-                    ..Default::default()
-                })
+    // Single pass through the data using overlapping matches
+    for mat in ac.find_overlapping_iter(data) {
+        let info = &pattern_info[mat.pattern().as_usize()];
+        let pos = mat.start();
+
+        if info.is_wide {
+            if let Some((decoded, start, _end)) =
+                expand_xor_wide_string(data, pos, info.key, min_length)
+            {
+                if let Some(kind) = classify_xor_string(&decoded) {
+                    let offset = start as u64;
+                    if seen.insert((offset, decoded.clone())) {
+                        results.push(ExtractedString {
+                            value: decoded,
+                            data_offset: offset,
+                            section: None,
+                            method: StringMethod::XorDecode,
+                            kind,
+                            library: Some(format!("0x{:02X}:16LE", info.key)),
+                            fragments: None,
+                            ..Default::default()
+                        });
+                    }
+                }
             }
-        })
-        .collect();
-
-    // Deduplicate by (offset, value) — parallel processing can yield duplicates.
-    let mut seen: HashSet<(u64, String)> = HashSet::with_capacity(results.len());
-    results.retain(|s| seen.insert((s.data_offset, s.value.clone())));
+        } else if let Some((decoded, start, _end)) =
+            expand_xor_string(data, pos, info.key, min_length)
+        {
+            if let Some(kind) = classify_xor_string(&decoded) {
+                let offset = start as u64;
+                if seen.insert((offset, decoded.clone())) {
+                    results.push(ExtractedString {
+                        value: decoded,
+                        data_offset: offset,
+                        section: None,
+                        method: StringMethod::XorDecode,
+                        kind,
+                        library: Some(format!("0x{:02X}", info.key)),
+                        fragments: None,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
 
     // Also scan for IP addresses and hostnames
     scan_dotted_patterns(data, min_length, &mut results, &mut seen);

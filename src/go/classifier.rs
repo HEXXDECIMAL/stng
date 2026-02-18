@@ -1122,7 +1122,8 @@ fn decode_unicode_escapes(s: &str) -> Vec<u8> {
                     // Other escape sequences - just add as-is
                     _ => {
                         result.push(b'\\');
-                        result.push(next as u8);
+                        let mut buf = [0u8; 4];
+                        result.extend_from_slice(next.encode_utf8(&mut buf).as_bytes());
                     }
                 }
             } else {
@@ -1130,7 +1131,8 @@ fn decode_unicode_escapes(s: &str) -> Vec<u8> {
             }
         } else {
             // Regular character
-            result.push(c as u8);
+            let mut buf = [0u8; 4];
+            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
         }
     }
 
@@ -1222,7 +1224,8 @@ fn decode_url_encoding(s: &str) -> Vec<u8> {
             result.push(b' ');
         } else {
             // Regular character
-            result.push(c as u8);
+            let mut buf = [0u8; 4];
+            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
         }
     }
 

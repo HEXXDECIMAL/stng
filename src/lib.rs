@@ -1028,8 +1028,11 @@ pub fn extract_from_object(
             // Detect overlay first to avoid scanning it during normal extraction
             let overlay_info = detect_elf_overlay(data);
             let scan_data = if let Some(ref overlay) = overlay_info {
-                // Only scan up to overlay start
-                &data[..overlay.start_offset as usize]
+                // Only scan up to overlay start (safe cast: min with data.len())
+                let end = usize::try_from(overlay.start_offset)
+                    .unwrap_or(data.len())
+                    .min(data.len());
+                &data[..end]
             } else {
                 data
             };
@@ -1627,8 +1630,11 @@ pub fn extract_from_elf(
     // Detect overlay first to avoid scanning it during normal extraction
     let overlay_info = detect_elf_overlay(data);
     let scan_data = if let Some(ref overlay) = overlay_info {
-        // Only scan up to overlay start
-        &data[..overlay.start_offset as usize]
+        // Only scan up to overlay start (safe cast: min with data.len())
+        let end = usize::try_from(overlay.start_offset)
+            .unwrap_or(data.len())
+            .min(data.len());
+        &data[..end]
     } else {
         data
     };
@@ -1769,10 +1775,12 @@ pub fn extract_from_pe(
         .collect();
     let section_info = collect_pe_section_info(pe);
 
-    // Check for Go
+    // Check for Go — require exact section name match to avoid false positives
+    // (.rdata is present in virtually every PE; ".go" would match ".cargo", etc.)
     let has_go = pe.sections.iter().any(|sec| {
         let name = String::from_utf8_lossy(&sec.name);
-        name.contains("go") || name.contains(".rdata")
+        let name = name.trim_end_matches('\0');
+        name == ".gopclntab" || name == ".go.buildinfo"
     });
 
     if has_go {
