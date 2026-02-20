@@ -5,7 +5,6 @@
 ## Screenshot
 
 Demonstrating the automatic XOR-decoding capabilities on an AMOS malware sample (macOS):
-
 ![screenshot](media/screenshot.png)
 
 ## Quick Start
@@ -20,17 +19,16 @@ stng --json malware.bin       # Machine-readable output
 
 - **Binary network structures**: Hardcoded IPs/ports in socket structures, network byte order
 - **XOR obfuscation**: Single/multi-byte keys with entropy analysis, double-layer (encoding+XOR)
-- **Encoding detection**: Base64, hex, URL-encoding, Unicode escapes (Base32/Base58 classification)
+- **Encoding detection**: Base64, Base32, Base85, hex, URL-encoding, Unicode escapes
 - **Language-aware extraction**: Go/Rust `{ptr, len}`, DWARF stack strings
-- **IOC classification**: IPs, URLs, shell commands, paths, registry keys, credentials
+- **IOC classification**: IPs, URLs, shell commands, paths, credentials
 - **Wide strings**: UTF-16LE in Windows PE binaries
 - **Format support**: ELF, PE, Mach-O, raw binaries, overlays
 
 ## Use Cases
 
 - **C2 enumeration**: Extract hardcoded callbacks, encryption keys, beacon URLs
-- **Credential hunting**: Locate database passwords, API keys, private keys
-- **Evasion analysis**: Identify XOR'd strings, packed payloads, obfuscated indicators
+- **Credential/evasion analysis**: Database passwords, API keys, XOR'd strings, packed payloads
 - **YARA acceleration**: Find strings for signature development
 
 ## Library
@@ -38,5 +36,4 @@ stng --json malware.bin       # Machine-readable output
 ```rust
 let strings = stng::extract_strings(&std::fs::read("sample")?, 4);
 ```
-
 License: Apache-2.0
