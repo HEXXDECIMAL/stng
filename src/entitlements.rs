@@ -52,4 +52,3 @@ pub fn extract_macho_entitlements(
 
     entitlements
 }
-

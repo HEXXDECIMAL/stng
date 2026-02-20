@@ -46,7 +46,7 @@ struct StackWrite {
 #[derive(Debug, Clone)]
 struct RawBlob {
     bytes: Vec<u8>,
-    disp: i64,      // Displacement from base register (stack slot position)
+    disp: i64, // Displacement from base register (stack slot position)
     instr_off: u64,
 }
 
@@ -172,12 +172,7 @@ impl<'a> StackStringExtractor<'a> {
                                     );
                                 } else {
                                     // Non-printable: keep as XOR-pair candidate.
-                                    self.add_raw_blob(
-                                        base_reg,
-                                        disp,
-                                        imm_data.to_vec(),
-                                        i as u64,
-                                    );
+                                    self.add_raw_blob(base_reg, disp, imm_data.to_vec(), i as u64);
                                 }
                             }
                             len = (opcode_start - i) + 1 + op_len + 4;
@@ -384,10 +379,11 @@ impl<'a> StackStringExtractor<'a> {
     }
 
     fn add_raw_blob(&mut self, base: u8, disp: i64, bytes: Vec<u8>, instr_off: u64) {
-        self.raw_blobs
-            .entry(base)
-            .or_default()
-            .push(RawBlob { bytes, disp, instr_off });
+        self.raw_blobs.entry(base).or_default().push(RawBlob {
+            bytes,
+            disp,
+            instr_off,
+        });
     }
 
     fn clear_regs(&mut self) {
@@ -972,7 +968,10 @@ mod tests {
         code.extend(c7_rsp(0x14, 0xa89a_bf00));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"PATH".to_string()), "expected PATH in {decoded:?}");
+        assert!(
+            decoded.contains(&"PATH".to_string()),
+            "expected PATH in {decoded:?}"
+        );
     }
 
     #[test]
@@ -982,7 +981,10 @@ mod tests {
         code.extend(c7_rsp(0x14, 0x9de9_d6dc));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"TERM".to_string()), "expected TERM in {decoded:?}");
+        assert!(
+            decoded.contains(&"TERM".to_string()),
+            "expected TERM in {decoded:?}"
+        );
     }
 
     #[test]
@@ -992,7 +994,10 @@ mod tests {
         code.extend(c7_rsp(0x14, 0x9e3d_a272));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"HOME".to_string()), "expected HOME in {decoded:?}");
+        assert!(
+            decoded.contains(&"HOME".to_string()),
+            "expected HOME in {decoded:?}"
+        );
     }
 
     #[test]
@@ -1005,8 +1010,14 @@ mod tests {
         code.extend(c7_rsp(0x14, 0x9de9_d6dc));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"PATH".to_string()), "missing PATH in {decoded:?}");
-        assert!(decoded.contains(&"TERM".to_string()), "missing TERM in {decoded:?}");
+        assert!(
+            decoded.contains(&"PATH".to_string()),
+            "missing PATH in {decoded:?}"
+        );
+        assert!(
+            decoded.contains(&"TERM".to_string()),
+            "missing TERM in {decoded:?}"
+        );
     }
 
     #[test]
@@ -1020,7 +1031,10 @@ mod tests {
         code.extend(mov_rsp_rax(0x18));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"Content-".to_string()), "expected 'Content-' in {decoded:?}");
+        assert!(
+            decoded.contains(&"Content-".to_string()),
+            "expected 'Content-' in {decoded:?}"
+        );
     }
 
     #[test]
@@ -1028,7 +1042,10 @@ mod tests {
         let mut code = Vec::new();
         code.extend(c7_rsp(0x10, 0xe0ce_fe50));
         code.push(0xC3);
-        assert!(xor_pairs(&code, 4).is_empty(), "single blob should produce no output");
+        assert!(
+            xor_pairs(&code, 4).is_empty(),
+            "single blob should produce no output"
+        );
     }
 
     #[test]
@@ -1037,7 +1054,10 @@ mod tests {
         code.extend(c7_rsp(0x10, 0x0101_0101));
         code.extend(c7_rsp(0x14, 0x0202_0202));
         code.push(0xC3);
-        assert!(xor_pairs(&code, 4).is_empty(), "non-printable XOR result should produce no output");
+        assert!(
+            xor_pairs(&code, 4).is_empty(),
+            "non-printable XOR result should produce no output"
+        );
     }
 
     #[test]
@@ -1046,7 +1066,10 @@ mod tests {
         code.extend(c7_rsp(0x10, 0x4443_4241)); // "ABCD" — printable
         code.extend(c7_rsp(0x14, 0xe0ce_fe50)); // non-printable
         code.push(0xC3);
-        assert!(xor_pairs(&code, 4).is_empty(), "printable blob should not be XOR candidate");
+        assert!(
+            xor_pairs(&code, 4).is_empty(),
+            "printable blob should not be XOR candidate"
+        );
     }
 
     #[test]
@@ -1057,7 +1080,10 @@ mod tests {
         code.extend(c7_rsp(0x10, b1));
         code.extend(c7_rsp(0x14, b2));
         code.push(0xC3);
-        assert!(xor_pairs(&code, 4).is_empty(), "short XOR result should be filtered");
+        assert!(
+            xor_pairs(&code, 4).is_empty(),
+            "short XOR result should be filtered"
+        );
     }
 
     #[test]
@@ -1070,9 +1096,15 @@ mod tests {
         code.extend(c7_rsp(0x1c, 0xa89a_bf00));
         code.push(0xC3);
         let all = extract_stack_strings(&code, 4);
-        assert!(all.iter().any(|s| s.value.contains("SHELL")), "regular 'SHELL' missing");
-        assert!(all.iter().any(|s| s.value == "PATH" && s.method == StringMethod::XorStackPair),
-            "XOR-pair 'PATH' missing");
+        assert!(
+            all.iter().any(|s| s.value.contains("SHELL")),
+            "regular 'SHELL' missing"
+        );
+        assert!(
+            all.iter()
+                .any(|s| s.value == "PATH" && s.method == StringMethod::XorStackPair),
+            "XOR-pair 'PATH' missing"
+        );
     }
 
     #[test]
@@ -1083,7 +1115,10 @@ mod tests {
         code.extend([0x00u8, 0x00, 0x00, 0x00]);
         code.extend(c7_rsp(0x10, 0xa89a_bf00));
         code.push(0xC3);
-        assert!(xor_pairs(&code, 4).is_empty(), "cross-scope blobs should not pair");
+        assert!(
+            xor_pairs(&code, 4).is_empty(),
+            "cross-scope blobs should not pair"
+        );
     }
 
     #[test]
@@ -1094,7 +1129,11 @@ mod tests {
         code.extend(c7_rsp(0x18, 0x0101_0101));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert_eq!(decoded, vec!["PATH"], "expected exactly [PATH], got {decoded:?}");
+        assert_eq!(
+            decoded,
+            vec!["PATH"],
+            "expected exactly [PATH], got {decoded:?}"
+        );
     }
 
     #[test]
@@ -1106,8 +1145,11 @@ mod tests {
         code.extend(c7_rsp(0x1c, 0xa89a_bf00));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert_eq!(decoded.iter().filter(|s| *s == "PATH").count(), 1,
-            "expected exactly one 'PATH', got {decoded:?}");
+        assert_eq!(
+            decoded.iter().filter(|s| *s == "PATH").count(),
+            1,
+            "expected exactly one 'PATH', got {decoded:?}"
+        );
     }
 
     #[test]
@@ -1116,7 +1158,10 @@ mod tests {
         code.extend(c7_rsp(0x10, 0xe0ce_fe50));
         code.extend(c7_rsp(0x14, 0xe0ce_fe50));
         code.push(0xC3);
-        assert!(xor_pairs(&code, 4).is_empty(), "self-XOR should produce nothing");
+        assert!(
+            xor_pairs(&code, 4).is_empty(),
+            "self-XOR should produce nothing"
+        );
     }
 
     #[test]
@@ -1136,8 +1181,14 @@ mod tests {
         code.extend(c7_rsp(72, k2));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"ABCDEFGHIJKL".to_string()), "expected merged string: {decoded:?}");
-        assert!(!decoded.contains(&"ABCD".to_string()), "'ABCD' should be merged: {decoded:?}");
+        assert!(
+            decoded.contains(&"ABCDEFGHIJKL".to_string()),
+            "expected merged string: {decoded:?}"
+        );
+        assert!(
+            !decoded.contains(&"ABCD".to_string()),
+            "'ABCD' should be merged: {decoded:?}"
+        );
     }
 
     #[test]
@@ -1149,16 +1200,24 @@ mod tests {
         let k1 = u64::from_le_bytes([0xB7, 0xB4, 0xB5, 0xB2, 0xB3, 0xB0, 0xB1, 0xAE]);
         let k2 = u64::from_le_bytes([0xAC, 0xAF, 0xAE, 0xA9, 0xA8, 0xAB, 0xAA, 0xA5]);
         let mut code = Vec::new();
-        code.extend(movabs_rax(ct0)); code.extend(mov_rsp_rax(0));
-        code.extend(movabs_rax(ct1)); code.extend(mov_rsp_rax(8));
-        code.extend(movabs_rax(ct2)); code.extend(mov_rsp_rax(16));
-        code.extend(movabs_rax(k0));  code.extend(mov_rsp_rax(48));
-        code.extend(movabs_rax(k1));  code.extend(mov_rsp_rax(56));
-        code.extend(movabs_rax(k2));  code.extend(mov_rsp_rax(64));
+        code.extend(movabs_rax(ct0));
+        code.extend(mov_rsp_rax(0));
+        code.extend(movabs_rax(ct1));
+        code.extend(mov_rsp_rax(8));
+        code.extend(movabs_rax(ct2));
+        code.extend(mov_rsp_rax(16));
+        code.extend(movabs_rax(k0));
+        code.extend(mov_rsp_rax(48));
+        code.extend(movabs_rax(k1));
+        code.extend(mov_rsp_rax(56));
+        code.extend(movabs_rax(k2));
+        code.extend(mov_rsp_rax(64));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"ABCDEFGHIJKLMNOPQRSTUVWX".to_string()),
-            "expected 24-char merged string: {decoded:?}");
+        assert!(
+            decoded.contains(&"ABCDEFGHIJKLMNOPQRSTUVWX".to_string()),
+            "expected 24-char merged string: {decoded:?}"
+        );
     }
 
     #[test]
@@ -1176,16 +1235,26 @@ mod tests {
             .map(|s| s.value.clone())
             .filter(|s| s.contains("/proc/"))
             .collect();
-        assert!(interesting.contains(&"/proc/version".to_string()),
-            "Should contain '/proc/version', found: {interesting:?}");
-        assert!(!interesting.contains(&"/proc/veversion".to_string()),
-            "Should NOT contain mangled '/proc/veversion'");
-        assert!(interesting.contains(&"/proc/self/setgroups".to_string()),
-            "Should contain '/proc/self/setgroups', found: {interesting:?}");
-        assert!(interesting.contains(&"/proc/self/gid_map".to_string()),
-            "Should contain '/proc/self/gid_map'");
-        assert!(interesting.contains(&"/proc/self/uid_map".to_string()),
-            "Should contain '/proc/self/uid_map'");
+        assert!(
+            interesting.contains(&"/proc/version".to_string()),
+            "Should contain '/proc/version', found: {interesting:?}"
+        );
+        assert!(
+            !interesting.contains(&"/proc/veversion".to_string()),
+            "Should NOT contain mangled '/proc/veversion'"
+        );
+        assert!(
+            interesting.contains(&"/proc/self/setgroups".to_string()),
+            "Should contain '/proc/self/setgroups', found: {interesting:?}"
+        );
+        assert!(
+            interesting.contains(&"/proc/self/gid_map".to_string()),
+            "Should contain '/proc/self/gid_map'"
+        );
+        assert!(
+            interesting.contains(&"/proc/self/uid_map".to_string()),
+            "Should contain '/proc/self/uid_map'"
+        );
     }
 
     #[test]
@@ -1201,8 +1270,17 @@ mod tests {
         code.extend(c7_rsp(36, k1));
         code.push(0xC3);
         let decoded = xor_pairs(&code, 4);
-        assert!(decoded.contains(&"ABCDEFGH".to_string()), "expected merged 'ABCDEFGH': {decoded:?}");
-        assert!(!decoded.contains(&"ABCD".to_string()), "'ABCD' should be merged: {decoded:?}");
-        assert!(!decoded.contains(&"EFGH".to_string()), "'EFGH' should be merged: {decoded:?}");
+        assert!(
+            decoded.contains(&"ABCDEFGH".to_string()),
+            "expected merged 'ABCDEFGH': {decoded:?}"
+        );
+        assert!(
+            !decoded.contains(&"ABCD".to_string()),
+            "'ABCD' should be merged: {decoded:?}"
+        );
+        assert!(
+            !decoded.contains(&"EFGH".to_string()),
+            "'EFGH' should be merged: {decoded:?}"
+        );
     }
 }

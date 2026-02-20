@@ -33,9 +33,11 @@
 //! ```
 
 // Core modules
+mod error;
 mod extraction;
 mod types;
 mod validation;
+mod validation_thresholds;
 
 // Binary format modules
 pub mod binary;
@@ -61,6 +63,7 @@ mod fuzzy_base64;
 // Public API
 pub use binary::{is_go_binary, is_rust_binary};
 pub use detect::{detect_language, is_text_file};
+pub use error::{Result, StngError};
 pub use go::classify_string;
 pub use overlay::detect_elf_overlay;
 pub use types::{
@@ -79,11 +82,11 @@ pub use validation::is_garbage;
 
 // Re-export goblin so library clients can parse binaries themselves
 pub use goblin;
-use goblin::mach::MachO;
 use goblin::mach::cputype::{
     CPU_TYPE_ARM, CPU_TYPE_ARM64, CPU_TYPE_POWERPC, CPU_TYPE_POWERPC64, CPU_TYPE_X86,
     CPU_TYPE_X86_64,
 };
+use goblin::mach::MachO;
 use goblin::Object;
 use std::collections::{HashMap, HashSet};
 
@@ -129,7 +132,10 @@ fn merge_imports(strings: &mut Vec<ExtractedString>, imports: Vec<ExtractedStrin
     // dropped before the mutable `strings.extend()` call below.
     let new_imports: Vec<_> = {
         let seen: HashSet<&str> = strings.iter().map(|s| s.value.as_str()).collect();
-        imports.into_iter().filter(|s| !seen.contains(s.value.as_str())).collect()
+        imports
+            .into_iter()
+            .filter(|s| !seen.contains(s.value.as_str()))
+            .collect()
     };
     strings.extend(new_imports);
 }
@@ -145,9 +151,10 @@ fn apply_entitlements(
     for ent in &entitlements {
         if ent.kind == StringKind::EntitlementsXml {
             let ent_start = ent.data_offset;
-            let ent_end = ent_start + ent.value.len() as u64;
+            let ent_end = ent_start.saturating_add(ent.value.len() as u64);
             strings.retain(|s| {
-                s.data_offset + s.value.len() as u64 <= ent_start || s.data_offset >= ent_end
+                s.data_offset.saturating_add(s.value.len() as u64) <= ent_start
+                    || s.data_offset >= ent_end
             });
         }
     }
@@ -182,6 +189,7 @@ fn apply_xor_scan(
             opts.xor_min_length,
             r2_boundaries.as_deref(),
             opts.filter_garbage,
+            false, // User-provided key: disable early termination for complete extraction
         ));
     } else if opts.xor_scan {
         let auto_key = if data.len() <= xor::MAX_AUTO_DETECT_SIZE {
@@ -200,6 +208,7 @@ fn apply_xor_scan(
                 opts.xor_min_length,
                 r2_boundaries.as_deref(),
                 opts.filter_garbage,
+                false, // Even for auto-detected keys, extract completely for final results
             ));
         } else {
             strings.extend(xor::extract_xor_strings(data, opts.xor_min_length, is_pe));
@@ -238,7 +247,10 @@ fn is_bundle_id(s: &str) -> bool {
         if part.is_empty() {
             return false;
         }
-        if !part.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if !part
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             return false;
         }
         count += 1;
@@ -704,13 +716,8 @@ fn extract_from_utf16_file(
     let decoded_bytes = decoded.as_bytes();
 
     // Extract strings from the decoded UTF-8 content
-    let mut raw_strings = extract_raw_strings(
-        decoded_bytes,
-        opts.min_length,
-        None,
-        &[],
-        &HashMap::new(),
-    );
+    let mut raw_strings =
+        extract_raw_strings(decoded_bytes, opts.min_length, None, &[], &HashMap::new());
 
     // Apply decoders (base64, hex, URL-encoding, etc.) to the extracted strings
     // This allows us to find base64-encoded PowerShell, hex-encoded URLs, etc.
@@ -1150,7 +1157,10 @@ fn extract_from_object(
         if let Some(ref path) = opts.path {
             let connect_addrs = r2::extract_connect_addrs(path, data);
             if !connect_addrs.is_empty() {
-                tracing::debug!("Found {} IP addresses from connect() calls", connect_addrs.len());
+                tracing::debug!(
+                    "Found {} IP addresses from connect() calls",
+                    connect_addrs.len()
+                );
                 strings.extend(connect_addrs);
             }
         }

@@ -183,7 +183,10 @@ fn test_is_rust_binary_false_for_minimal_elf() {
 #[test]
 fn test_is_rust_binary_false_for_text() {
     let data = b"This is not a Rust binary, just text.";
-    assert!(!is_rust_binary(data), "Plain text should not be a Rust binary");
+    assert!(
+        !is_rust_binary(data),
+        "Plain text should not be a Rust binary"
+    );
 }
 
 #[test]

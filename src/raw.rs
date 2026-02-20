@@ -14,10 +14,7 @@ pub fn extract_raw_strings(
     section_info: &HashMap<String, crate::binary::SectionInfo>,
 ) -> Vec<ExtractedString> {
     // Build a set of known segment/section names for quick lookup
-    let segment_names_set: HashSet<&str> = segment_names
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let segment_names_set: HashSet<&str> = segment_names.iter().map(String::as_str).collect();
 
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -238,10 +235,7 @@ pub fn extract_wide_strings(
     segment_names: &[String],
     section_info: &HashMap<String, crate::binary::SectionInfo>,
 ) -> Vec<ExtractedString> {
-    let segment_names_set: HashSet<&str> = segment_names
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let segment_names_set: HashSet<&str> = segment_names.iter().map(String::as_str).collect();
     let mut strings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 

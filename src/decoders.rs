@@ -420,12 +420,15 @@ fn is_likely_url_encoded(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
-            && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
-                percent_count += 1;
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            percent_count += 1;
+            i += 3;
+            continue;
+        }
         i += 1;
     }
 
@@ -970,19 +973,28 @@ mod tests {
     #[test]
     fn test_deobfuscate_concatenation_javascript() {
         let input = r#""SGVsbG8g" + "V29ybGQhCg==""#;
-        assert_eq!(deobfuscate_concatenation(input), Some("SGVsbG8gV29ybGQhCg==".to_string()));
+        assert_eq!(
+            deobfuscate_concatenation(input),
+            Some("SGVsbG8gV29ybGQhCg==".to_string())
+        );
     }
 
     #[test]
     fn test_deobfuscate_concatenation_python() {
         let input = r#"'SGVsbG8g' + 'V29ybGQhCg==""#;
-        assert_eq!(deobfuscate_concatenation(input), Some("SGVsbG8gV29ybGQhCg==".to_string()));
+        assert_eq!(
+            deobfuscate_concatenation(input),
+            Some("SGVsbG8gV29ybGQhCg==".to_string())
+        );
     }
 
     #[test]
     fn test_deobfuscate_concatenation_php() {
         let input = r#"'SGVsbG8g' . 'V29ybGQhCg==""#;
-        assert_eq!(deobfuscate_concatenation(input), Some("SGVsbG8gV29ybGQhCg==".to_string()));
+        assert_eq!(
+            deobfuscate_concatenation(input),
+            Some("SGVsbG8gV29ybGQhCg==".to_string())
+        );
     }
 
     #[test]
@@ -1030,7 +1042,8 @@ mod tests {
 
     #[test]
     fn test_base64_whitespace_trimming() {
-        let results = decode_base64_strings(&[make_string("  SGVsbG8gV29ybGQh  ", StringKind::Base64)]);
+        let results =
+            decode_base64_strings(&[make_string("  SGVsbG8gV29ybGQh  ", StringKind::Base64)]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].value, "Hello World!");
     }
@@ -1051,12 +1064,19 @@ mod tests {
 
     #[test]
     fn test_hex_odd_length() {
-        assert!(decode_hex_strings(&[make_string("48656c6c6f20576f726c642", StringKind::HexEncoded)]).is_empty());
+        assert!(decode_hex_strings(&[make_string(
+            "48656c6c6f20576f726c642",
+            StringKind::HexEncoded
+        )])
+        .is_empty());
     }
 
     #[test]
     fn test_hex_uppercase() {
-        let results = decode_hex_strings(&[make_string("48656C6C6F20576F726C6421", StringKind::HexEncoded)]);
+        let results = decode_hex_strings(&[make_string(
+            "48656C6C6F20576F726C6421",
+            StringKind::HexEncoded,
+        )]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].value, "Hello World!");
     }
@@ -1078,7 +1098,9 @@ mod tests {
     #[test]
     fn test_url_special_chars() {
         let results = decode_url_strings(&[make_string(
-            "path%2Fto%2Ffile%3Fquery%3Dvalue%26foo%3Dbar", StringKind::UrlEncoded)]);
+            "path%2Fto%2Ffile%3Fquery%3Dvalue%26foo%3Dbar",
+            StringKind::UrlEncoded,
+        )]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].value, "path/to/file?query=value&foo=bar");
     }
@@ -1140,7 +1162,10 @@ mod tests {
 
     #[test]
     fn test_decoded_ip_classification() {
-        let results = decode_hex_strings(&[make_string("3139322e3136382e312e31", StringKind::HexEncoded)]);
+        let results = decode_hex_strings(&[make_string(
+            "3139322e3136382e312e31",
+            StringKind::HexEncoded,
+        )]);
         if !results.is_empty() {
             assert_eq!(results[0].value, "192.168.1.1");
             assert_eq!(results[0].kind, StringKind::IP);

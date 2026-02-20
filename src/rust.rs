@@ -27,12 +27,10 @@ static RE_URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(https?|ftp|postgresql|mysql|redis|mongodb)://[a-zA-Z0-9._:/@\-?=&%]+")
         .expect("static regex pattern is valid")
 });
-static RE_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"/[a-zA-Z0-9_./\-]+").expect("static regex pattern is valid")
-});
-static RE_ENV_VAR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[A-Z][A-Z0-9_]{3,}").expect("static regex pattern is valid")
-});
+static RE_PATH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/[a-zA-Z0-9_./\-]+").expect("static regex pattern is valid"));
+static RE_ENV_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Z][A-Z0-9_]{3,}").expect("static regex pattern is valid"));
 static RE_SNAKE_CASE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+").expect("static regex pattern is valid")
 });
@@ -553,13 +551,23 @@ impl RustStringExtractor {
             for i in 1..char_indices.len().saturating_sub(3) {
                 if char_indices[i - 1].1.is_ascii_lowercase()
                     && char_indices[i].1.is_ascii_uppercase()
-                    && char_indices.get(i + 1).is_some_and(|(_, c)| c.is_ascii_uppercase())
-                    && char_indices.get(i + 2).is_some_and(|(_, c)| c.is_ascii_uppercase())
+                    && char_indices
+                        .get(i + 1)
+                        .is_some_and(|(_, c)| c.is_ascii_uppercase())
+                    && char_indices
+                        .get(i + 2)
+                        .is_some_and(|(_, c)| c.is_ascii_uppercase())
                 {
                     let byte_end = char_indices[i].0;
                     let sub = &part[last_byte..byte_end];
                     if sub.len() >= self.min_length {
-                        self.add_if_valid(sub, part_base + last_byte as u64, section_name, strings, seen);
+                        self.add_if_valid(
+                            sub,
+                            part_base + last_byte as u64,
+                            section_name,
+                            strings,
+                            seen,
+                        );
                     }
                     last_byte = byte_end;
                 }
@@ -567,7 +575,13 @@ impl RustStringExtractor {
             // Add remaining part
             let sub = &part[last_byte..];
             if sub.len() >= self.min_length {
-                self.add_if_valid(sub, part_base + last_byte as u64, section_name, strings, seen);
+                self.add_if_valid(
+                    sub,
+                    part_base + last_byte as u64,
+                    section_name,
+                    strings,
+                    seen,
+                );
             }
         }
     }
@@ -896,7 +910,10 @@ mod tests {
     #[test]
     fn test_extractor_size() {
         let extractor = RustStringExtractor::new(4);
-        assert_eq!(std::mem::size_of_val(&extractor), std::mem::size_of::<usize>());
+        assert_eq!(
+            std::mem::size_of_val(&extractor),
+            std::mem::size_of::<usize>()
+        );
     }
 
     #[test]
@@ -961,9 +978,12 @@ mod tests {
                         assert!(s.value.len() >= 4, "String too short: '{}'", s.value);
                     }
                     let has_any_method = strings.iter().any(|s| {
-                        matches!(s.method, crate::StringMethod::Structure
-                            | crate::StringMethod::InstructionPattern
-                            | crate::StringMethod::RawScan)
+                        matches!(
+                            s.method,
+                            crate::StringMethod::Structure
+                                | crate::StringMethod::InstructionPattern
+                                | crate::StringMethod::RawScan
+                        )
                     });
                     assert!(has_any_method, "Should use at least one extraction method");
                     break;
@@ -1004,8 +1024,12 @@ mod tests {
                         duplicates.push(&s.value);
                     }
                 }
-                assert!(duplicates.len() < strings.len() / 10,
-                    "Too many duplicates: {} out of {}", duplicates.len(), strings.len());
+                assert!(
+                    duplicates.len() < strings.len() / 10,
+                    "Too many duplicates: {} out of {}",
+                    duplicates.len(),
+                    strings.len()
+                );
             }
         }
     }
@@ -1074,14 +1098,20 @@ mod tests {
                 let strings = extractor.extract_elf(&elf, &data);
                 if !strings.is_empty() {
                     let with_sections = strings.iter().filter(|s| s.section.is_some()).count();
-                    assert!(with_sections > 0, "At least some strings should have section metadata");
+                    assert!(
+                        with_sections > 0,
+                        "At least some strings should have section metadata"
+                    );
                     for s in &strings {
                         if let Some(section) = &s.section {
                             assert!(!section.is_empty());
                             assert!(
-                                section.starts_with('.') || section.starts_with("__")
-                                    || section == "rodata" || section == "text",
-                                "Unexpected section name: {}", section
+                                section.starts_with('.')
+                                    || section.starts_with("__")
+                                    || section == "rodata"
+                                    || section == "text",
+                                "Unexpected section name: {}",
+                                section
                             );
                         }
                     }
@@ -1098,8 +1128,12 @@ mod tests {
             if let Ok(elf) = goblin::elf::Elf::parse(&data) {
                 let strings = extractor.extract_elf(&elf, &data);
                 for s in &strings {
-                    assert!(s.data_offset < file_size,
-                        "Offset {} exceeds file size {}", s.data_offset, file_size);
+                    assert!(
+                        s.data_offset < file_size,
+                        "Offset {} exceeds file size {}",
+                        s.data_offset,
+                        file_size
+                    );
                 }
             }
         }

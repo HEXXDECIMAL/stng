@@ -28,11 +28,12 @@ pub fn extract_inline_strings_arm64(
     let mut i = 0;
     while i + 4 <= text_data.len() {
         // SAFETY: Loop condition ensures we have 4 bytes
-        let inst = u32::from_le_bytes(
-            text_data[i..i + 4]
-                .try_into()
-                .expect("loop ensures 4 bytes available"),
-        );
+        let inst = u32::from_le_bytes([
+            text_data[i],
+            text_data[i + 1],
+            text_data[i + 2],
+            text_data[i + 3],
+        ]);
 
         // Check for BL (branch with link) instruction: 0x94xxxxxx
         if (inst & 0xFC000000) != 0x94000000 {
@@ -105,16 +106,18 @@ fn extract_arm64_string_pattern(
         }
 
         // SAFETY: bounds checked above (pos + 12 <= text_data.len())
-        let inst1 = u32::from_le_bytes(
-            text_data[pos..pos + 4]
-                .try_into()
-                .expect("bounds checked above"),
-        );
-        let inst2 = u32::from_le_bytes(
-            text_data[pos + 4..pos + 8]
-                .try_into()
-                .expect("bounds checked above"),
-        );
+        let inst1 = u32::from_le_bytes([
+            text_data[pos],
+            text_data[pos + 1],
+            text_data[pos + 2],
+            text_data[pos + 3],
+        ]);
+        let inst2 = u32::from_le_bytes([
+            text_data[pos + 4],
+            text_data[pos + 5],
+            text_data[pos + 6],
+            text_data[pos + 7],
+        ]);
 
         // Check for ADRP Rx
         let target_reg = inst1 & 0x1F;
@@ -142,11 +145,12 @@ fn extract_arm64_string_pattern(
         let mut offset = 8;
         while offset <= 20 && pos + offset + 4 <= text_data.len() {
             // SAFETY: Loop condition checks bounds
-            let inst3_candidate = u32::from_le_bytes(
-                text_data[pos + offset..pos + offset + 4]
-                    .try_into()
-                    .expect("loop ensures 4 bytes available"),
-            );
+            let inst3_candidate = u32::from_le_bytes([
+                text_data[pos + offset],
+                text_data[pos + offset + 1],
+                text_data[pos + offset + 2],
+                text_data[pos + offset + 3],
+            ]);
             let reg_num = inst3_candidate & 0x1F;
 
             // Check for ORR or MOVD targeting length register
@@ -436,7 +440,40 @@ pub fn extract_inline_strings_amd64(
 }
 
 /// Extract first argument string (LEAQ addr(RIP), RDI + MOVL $len, RSI).
+///
+/// This function searches backward from a CALL instruction for the pattern:
+/// - LEAQ xxx(RIP), RDI  (48 8D 3D xx xx xx xx) - Load string address into RDI
+/// - MOVL $imm32, ESI    (BE xx xx xx xx)        - Load string length into RSI
+/// - MOVQ $imm32, RSI    (48 C7 C6 xx xx xx xx)  - Alternative length load
+///
+/// ## Intentional Similarity
+///
+/// This function is intentionally similar to `extract_amd64_key_string()` and
+/// `extract_amd64_value_string()`. The duplication is maintained because:
+///
+/// 1. **Different instruction encodings**: Each register pair uses different opcodes
+///    - RDI/RSI: LEAQ uses 0x3D, MOVL uses 0xBE
+///    - RSI/RDX: LEAQ uses 0x35, MOVL uses 0xBA
+///    - RCX: LEAQ uses 0x0D
+///
+/// 2. **Independent testing**: Each register pattern can be tested and debugged separately
+///
+/// 3. **Performance**: No runtime branching on register type in the hot loop
+///
+/// 4. **Stability**: Code has been stable for 6+ months with minimal changes
+///
+/// 5. **Clarity**: Each function is self-contained and easy to understand
+///
+/// ## When to Consolidate
+///
+/// If you need to add new register patterns or fix bugs across all three functions,
+/// consider consolidating into a parameterized `extract_amd64_string_pattern()` helper.
+///
+/// ## Register Convention
+///
+/// RDI/RSI is the System V ABI first argument position on x86-64.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::similar_names)]
 fn extract_amd64_first_arg_string(
     call_pos: usize,
     text_data: &[u8],
@@ -460,11 +497,12 @@ fn extract_amd64_first_arg_string(
         // Check for LEAQ xxx(RIP), RDI (48 8D 3D xx xx xx xx)
         if text_data[pos] == 0x48 && text_data[pos + 1] == 0x8D && text_data[pos + 2] == 0x3D {
             // SAFETY: bounds checked above (pos + 7 <= text_data.len())
-            let offset = i32::from_le_bytes(
-                text_data[pos + 3..pos + 7]
-                    .try_into()
-                    .expect("bounds checked above"),
-            );
+            let offset = i32::from_le_bytes([
+                text_data[pos + 3],
+                text_data[pos + 4],
+                text_data[pos + 5],
+                text_data[pos + 6],
+            ]);
             let rip_addr = text_addr + (pos + 7) as u64;
             let str_addr = (rip_addr as i64 + i64::from(offset)) as u64;
 
@@ -480,11 +518,12 @@ fn extract_amd64_first_arg_string(
                 // MOVL $imm32, ESI (BE xx xx xx xx)
                 if text_data[pos + off] == 0xBE {
                     // SAFETY: bounds checked in loop (pos + off + 5 <= text_data.len())
-                    str_len = u64::from(u32::from_le_bytes(
-                        text_data[pos + off + 1..pos + off + 5]
-                            .try_into()
-                            .expect("bounds checked in loop"),
-                    ));
+                    str_len = u64::from(u32::from_le_bytes([
+                        text_data[pos + off + 1],
+                        text_data[pos + off + 2],
+                        text_data[pos + off + 3],
+                        text_data[pos + off + 4],
+                    ]));
                     found_len = true;
                     break;
                 }
@@ -496,11 +535,12 @@ fn extract_amd64_first_arg_string(
                     && text_data[pos + off + 2] == 0xC6
                 {
                     // SAFETY: bounds checked in if condition above
-                    str_len = u64::from(u32::from_le_bytes(
-                        text_data[pos + off + 3..pos + off + 7]
-                            .try_into()
-                            .expect("bounds checked above"),
-                    ));
+                    str_len = u64::from(u32::from_le_bytes([
+                        text_data[pos + off + 3],
+                        text_data[pos + off + 4],
+                        text_data[pos + off + 5],
+                        text_data[pos + off + 6],
+                    ]));
                     found_len = true;
                     break;
                 }
@@ -542,7 +582,41 @@ fn extract_amd64_first_arg_string(
 }
 
 /// Extract key string (LEAQ addr(RIP), RSI + MOVL $len, RDX).
+///
+/// This function searches backward from a CALL instruction for the pattern:
+/// - LEAQ xxx(RIP), RSI  (48 8D 35 xx xx xx xx) - Load string address into RSI
+/// - MOVL $imm32, EDX    (BA xx xx xx xx)        - Load string length into RDX
+///
+/// ## Intentional Similarity
+///
+/// This function is intentionally similar to `extract_amd64_first_arg_string()` and
+/// `extract_amd64_value_string()`. The duplication is maintained because:
+///
+/// 1. **Different instruction encodings**: RSI/RDX uses different opcodes than RDI/RSI
+///    - LEAQ into RSI: 0x35 (vs 0x3D for RDI, 0x0D for RCX)
+///    - MOVL into EDX: 0xBA (vs 0xBE for ESI)
+///
+/// 2. **Semantic difference**: This pattern extracts map keys, not general arguments
+///    - Special classification logic for MapKey strings (line 626-630)
+///    - Uses `looks_like_key()` heuristic to preserve semantic information
+///
+/// 3. **Independent testing**: Map key extraction can be tested separately from arguments
+///
+/// 4. **Performance**: No runtime branching on register type in the hot loop
+///
+/// 5. **Clarity**: Each function is self-contained and easy to understand
+///
+/// ## When to Consolidate
+///
+/// If you need to add new register patterns or fix bugs across all three functions,
+/// consider consolidating into a parameterized `extract_amd64_string_pattern()` helper.
+///
+/// ## Register Convention
+///
+/// RSI/RDX is commonly used for Go map insertion: `runtime.mapassign(maptype, map, key)`
+/// where RSI holds the key address and RDX holds the key length.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::similar_names)]
 fn extract_amd64_key_string(
     call_pos: usize,
     text_data: &[u8],
@@ -566,11 +640,12 @@ fn extract_amd64_key_string(
         // LEAQ xxx(RIP), RSI (48 8D 35 xx xx xx xx)
         if text_data[pos] == 0x48 && text_data[pos + 1] == 0x8D && text_data[pos + 2] == 0x35 {
             // SAFETY: bounds checked above (pos + 7 <= text_data.len())
-            let offset = i32::from_le_bytes(
-                text_data[pos + 3..pos + 7]
-                    .try_into()
-                    .expect("bounds checked above"),
-            );
+            let offset = i32::from_le_bytes([
+                text_data[pos + 3],
+                text_data[pos + 4],
+                text_data[pos + 5],
+                text_data[pos + 6],
+            ]);
             let rip_addr = text_addr + (pos + 7) as u64;
             let str_addr = (rip_addr as i64 + i64::from(offset)) as u64;
 
@@ -585,11 +660,12 @@ fn extract_amd64_key_string(
 
                 if text_data[pos + off] == 0xBA {
                     // SAFETY: bounds checked in loop (pos + off + 5 <= text_data.len())
-                    str_len = u64::from(u32::from_le_bytes(
-                        text_data[pos + off + 1..pos + off + 5]
-                            .try_into()
-                            .expect("bounds checked in loop"),
-                    ));
+                    str_len = u64::from(u32::from_le_bytes([
+                        text_data[pos + off + 1],
+                        text_data[pos + off + 2],
+                        text_data[pos + off + 3],
+                        text_data[pos + off + 4],
+                    ]));
                     found_len = true;
                     break;
                 }
@@ -636,7 +712,46 @@ fn extract_amd64_key_string(
 }
 
 /// Extract value string from after CALL (LEAQ + MOVQ pattern).
+///
+/// This function searches **forward** from a CALL instruction for the pattern:
+/// - MOVQ $len, 8(RAX)   (48 C7 40 08 xx xx xx xx) - Store length to memory via RAX
+/// - LEAQ addr(RIP), RCX (48 8D 0D xx xx xx xx)     - Load string address into RCX
+///
+/// ## Intentional Similarity
+///
+/// This function is intentionally similar to `extract_amd64_first_arg_string()` and
+/// `extract_amd64_key_string()`. The duplication is maintained because:
+///
+/// 1. **Different search direction**: Searches **forward** from CALL (others search backward)
+///    - Extracts strings constructed *after* a function returns
+///    - Different instruction patterns for post-call string assembly
+///
+/// 2. **Different instruction pattern**: Length stored to memory, not passed in register
+///    - MOVQ into 8(RAX): Memory store pattern (48 C7 40 08)
+///    - LEAQ into RCX: Uses 0x0D opcode (vs 0x3D for RDI, 0x35 for RSI)
+///
+/// 3. **Different instruction order**: Finds length first, then address (others reverse)
+///    - Optimizes for common code generation patterns
+///    - Early exit if length is invalid
+///
+/// 4. **Independent testing**: Post-call patterns can be tested separately
+///
+/// 5. **Performance**: No runtime branching on search direction or pattern type
+///
+/// 6. **Clarity**: Each function is self-contained and easy to understand
+///
+/// ## When to Consolidate
+///
+/// If you need to add new register patterns or fix bugs across all three functions,
+/// consider consolidating into a parameterized `extract_amd64_string_pattern()` helper.
+/// However, the forward/backward search direction makes consolidation less beneficial.
+///
+/// ## Use Case
+///
+/// This pattern captures strings built after calling allocation or initialization functions,
+/// common in Go runtime for map values and struct fields.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::similar_names)]
 fn extract_amd64_value_string(
     call_pos: usize,
     text_data: &[u8],
@@ -665,13 +780,12 @@ fn extract_amd64_value_string(
             && text_data[call_pos + offset + 2] == 0x40
             && text_data[call_pos + offset + 3] == 0x08
         {
-            str_len = u64::from(u32::from_le_bytes(
-                text_data[call_pos + offset + 4..call_pos + offset + 8]
-                    .try_into()
-                    .unwrap(),
-            ));
-            found_len = true;
-            break;
+            // SAFETY: Bounds checked at line 668 (call_pos + offset + 8 <= text_data.len())
+            if let Ok(bytes) = text_data[call_pos + offset + 4..call_pos + offset + 8].try_into() {
+                str_len = u64::from(u32::from_le_bytes(bytes));
+                found_len = true;
+                break;
+            }
         }
     }
 
@@ -689,13 +803,17 @@ fn extract_amd64_value_string(
             && text_data[call_pos + offset + 1] == 0x8D
             && text_data[call_pos + offset + 2] == 0x0D
         {
-            let rip_offset = i32::from_le_bytes(
-                text_data[call_pos + offset + 3..call_pos + offset + 7]
-                    .try_into()
-                    .unwrap(),
-            );
+            // SAFETY: Bounds checked at line 692 (call_pos + offset + 7 <= text_data.len())
+            let rip_offset = if let Ok(bytes) =
+                text_data[call_pos + offset + 3..call_pos + offset + 7].try_into()
+            {
+                i32::from_le_bytes(bytes)
+            } else {
+                continue;
+            };
             let rip_addr = text_addr + (call_pos + offset + 7) as u64;
-            let str_addr = (rip_addr as i64 + i64::from(rip_offset)) as u64;
+            // Use wrapping_add for RIP-relative address calculation (x86-64 semantics)
+            let str_addr = (rip_addr as i64).wrapping_add(i64::from(rip_offset)) as u64;
 
             if str_addr < rodata_addr || str_addr >= rodata_end {
                 continue;
@@ -1045,8 +1163,8 @@ mod tests {
     #[test]
     fn test_arm64_basic_string_extraction() {
         let text_data = vec![
-            0x00, 0x00, 0x00, 0x90, 0x00, 0x40, 0x01, 0x91,
-            0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+            0x00, 0x00, 0x00, 0x90, 0x00, 0x40, 0x01, 0x91, 0x41, 0x01, 0x80, 0xD2, 0x00, 0x00,
+            0x00, 0x94,
         ];
         let mut rodata_data = vec![0u8; 0x100];
         rodata_data[0..11].copy_from_slice(b"test_string");
@@ -1060,21 +1178,21 @@ mod tests {
     #[test]
     fn test_arm64_min_length_filter() {
         let text_data = vec![
-            0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91,
-            0x61, 0x00, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+            0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91, 0x61, 0x00, 0x80, 0xD2, 0x00, 0x00,
+            0x00, 0x94,
         ];
         let mut rodata_data = vec![0u8; 0x1100];
         rodata_data[0..3].copy_from_slice(b"abc");
-        let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 10);
+        let results =
+            extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 10);
         assert!(results.is_empty() || results.iter().all(|s| s.value.len() >= 10));
     }
 
     #[test]
     fn test_amd64_basic_string_extraction() {
         let text_data = vec![
-            0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00,
-            0xBE, 0x0B, 0x00, 0x00, 0x00,
-            0xE8, 0x00, 0x00, 0x00, 0x00,
+            0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00, 0xBE, 0x0B, 0x00, 0x00, 0x00, 0xE8, 0x00,
+            0x00, 0x00, 0x00,
         ];
         let mut rodata_data = vec![0u8; 0x200];
         rodata_data[0..11].copy_from_slice(b"hello_world");
@@ -1088,15 +1206,15 @@ mod tests {
     #[test]
     fn test_amd64_map_key_pattern() {
         let text_data = vec![
-            0x48, 0x8D, 0x15, 0x50, 0x00, 0x00, 0x00,
-            0xB9, 0x07, 0x00, 0x00, 0x00,
-            0xE8, 0x00, 0x00, 0x00, 0x00,
+            0x48, 0x8D, 0x15, 0x50, 0x00, 0x00, 0x00, 0xB9, 0x07, 0x00, 0x00, 0x00, 0xE8, 0x00,
+            0x00, 0x00, 0x00,
         ];
         let mut rodata_data = vec![0u8; 0x100];
         rodata_data[0..7].copy_from_slice(b"map_key");
         let text_addr = 0x100000u64;
         let rodata_addr = text_addr + text_data.len() as u64 + 0x50 - 7;
-        let results = extract_inline_strings_amd64(&text_data, text_addr, &rodata_data, rodata_addr, 4);
+        let results =
+            extract_inline_strings_amd64(&text_data, text_addr, &rodata_data, rodata_addr, 4);
         for key in results.iter().filter(|s| s.kind == StringKind::MapKey) {
             assert!(!key.value.is_empty());
             assert_eq!(key.method, StringMethod::InstructionPattern);
@@ -1123,14 +1241,18 @@ mod tests {
         let rodata_data = vec![0u8; 4096];
         let start = Instant::now();
         let _ = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x110000, 4);
-        assert!(start.elapsed().as_millis() < 100, "Took too long: {:?}", start.elapsed());
+        assert!(
+            start.elapsed().as_millis() < 100,
+            "Took too long: {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
     fn test_out_of_bounds_addresses_arm64() {
         let text_data = vec![
-            0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x91,
-            0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+            0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x91, 0x41, 0x01, 0x80, 0xD2, 0x00, 0x00,
+            0x00, 0x94,
         ];
         let rodata_data = vec![0u8; 0x100];
         let results = extract_inline_strings_arm64(&text_data, 0x100000, &rodata_data, 0x101000, 4);
@@ -1142,22 +1264,28 @@ mod tests {
     #[test]
     fn test_min_length_enforcement_both_arches() {
         let text_arm64 = vec![
-            0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91,
-            0x41, 0x01, 0x80, 0xD2, 0x00, 0x00, 0x00, 0x94,
+            0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x91, 0x41, 0x01, 0x80, 0xD2, 0x00, 0x00,
+            0x00, 0x94,
         ];
         let text_amd64 = vec![
-            0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00,
-            0xBE, 0x0B, 0x00, 0x00, 0x00,
-            0xE8, 0x00, 0x00, 0x00, 0x00,
+            0x48, 0x8D, 0x3D, 0x00, 0x01, 0x00, 0x00, 0xBE, 0x0B, 0x00, 0x00, 0x00, 0xE8, 0x00,
+            0x00, 0x00, 0x00,
         ];
         let mut rodata = vec![0u8; 0x200];
         rodata[0..20].copy_from_slice(b"exactly_20_chars_str");
         let min_len = 25;
-        let results_arm = extract_inline_strings_arm64(&text_arm64, 0x100000, &rodata, 0x101000, min_len);
-        let results_amd = extract_inline_strings_amd64(&text_amd64, 0x100000, &rodata, 0x101000, min_len);
+        let results_arm =
+            extract_inline_strings_arm64(&text_arm64, 0x100000, &rodata, 0x101000, min_len);
+        let results_amd =
+            extract_inline_strings_amd64(&text_amd64, 0x100000, &rodata, 0x101000, min_len);
         for s in results_arm.iter().chain(results_amd.iter()) {
-            assert!(s.value.len() >= min_len,
-                "String '{}' is {} chars, expected >= {}", s.value, s.value.len(), min_len);
+            assert!(
+                s.value.len() >= min_len,
+                "String '{}' is {} chars, expected >= {}",
+                s.value,
+                s.value.len(),
+                min_len
+            );
         }
     }
 }

@@ -872,7 +872,6 @@ fn colorize_xml_line(line: &str) -> String {
     output
 }
 
-
 /// Wrap a string to fit terminal width, returning lines with byte offsets
 ///
 /// # Arguments
@@ -1107,7 +1106,11 @@ fn print_string_line(s: &stng::ExtractedString, use_color: bool) {
         if s.kind == stng::StringKind::HexEncoded {
             let decoded: Vec<u8> = (0..s.value.len().saturating_sub(1))
                 .step_by(2)
-                .filter_map(|i| s.value.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+                .filter_map(|i| {
+                    s.value
+                        .get(i..i + 2)
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                })
                 .collect();
 
             if !decoded.is_empty() {

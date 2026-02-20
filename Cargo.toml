@@ -47,6 +47,7 @@ data-encoding = "2.6"
 
 # Error handling
 anyhow = "1.0"
+thiserror = "2.0"
 
 # Hashing
 sha2 = "0.10"

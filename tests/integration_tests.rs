@@ -1984,7 +1984,9 @@ mod shell_detection_tests {
 
 // Tests for extraction and overlay detection
 mod extract_from_tests {
-    use stng::{detect_elf_overlay, extract_overlay_strings, extract_strings_with_options, ExtractOptions};
+    use stng::{
+        detect_elf_overlay, extract_overlay_strings, extract_strings_with_options, ExtractOptions,
+    };
 
     fn minimal_elf_with_strings(strings: &[&str]) -> Vec<u8> {
         let mut data = vec![0u8; 1024];
@@ -2408,7 +2410,10 @@ mod testdata_binary_tests {
             .filter(|s| s.method == StringMethod::XorStackPair)
             .collect();
 
-        assert!(!xor.is_empty(), "expected XorStackPair results from BrickStorm binary");
+        assert!(
+            !xor.is_empty(),
+            "expected XorStackPair results from BrickStorm binary"
+        );
 
         let values: Vec<&str> = xor.iter().map(|s| s.value.as_str()).collect();
 

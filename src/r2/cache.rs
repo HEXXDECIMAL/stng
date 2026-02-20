@@ -159,13 +159,14 @@ impl R2Cache {
 
     fn write_meta(&self, file_path: &str, hash: &str) -> Result<(), std::io::Error> {
         let metadata = fs::metadata(file_path)?;
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+            .as_secs();
         let meta = CacheMeta {
             file_size: metadata.len(),
             stng_version: env!("CARGO_PKG_VERSION").to_string(),
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after UNIX_EPOCH")
-                .as_secs(),
+            created_at,
         };
 
         let meta_path = self.cache_dir.join(hash).join("meta.json");

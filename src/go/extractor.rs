@@ -321,5 +321,4 @@ impl GoStringExtractor {
         }
         None
     }
-
 }

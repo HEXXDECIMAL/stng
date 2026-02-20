@@ -3,29 +3,705 @@
 //! Functions for validating and filtering string candidates to remove garbage
 //! and low-quality strings.
 
+use crate::validation_thresholds::*;
+
+fn is_crypto_wallet_address(s: &str, len: usize) -> bool {
+    if !(MIN_WALLET_LENGTH..=MAX_WALLET_LENGTH).contains(&len) {
+        return false;
+    }
+    let looks_like_crypto = (s.starts_with('1') || s.starts_with('3'))
+        || s.starts_with("bc1")
+        || (s.starts_with("0x") && len == 42)
+        || ((s.starts_with('4') || s.starts_with('8')) && len >= 90)
+        || (s.starts_with('L') || s.starts_with('M'))
+        || s.starts_with('D');
+    if !looks_like_crypto {
+        return false;
+    }
+    let alnum_count = s.chars().filter(|c| c.is_alphanumeric()).count();
+    alnum_count * 100 / len >= MIN_WALLET_ALPHANUMERIC_RATIO
+}
+
+fn is_miner_ioc(s: &str) -> bool {
+    if s.contains("stratum+tcp://") || s.contains("stratum+ssl://") {
+        return true;
+    }
+    if (s.contains("pool.") || s.contains("nanopool") || s.contains("minergate"))
+        && (s.contains(".com") || s.contains(".org") || s.contains(':'))
+    {
+        return true;
+    }
+    s.contains("xmrig")
+        || s.contains("xmr-stak")
+        || s.contains("cpuminer")
+        || s.contains("ccminer")
+        || s.contains("ethminer")
+        || s.contains("phoenixminer")
+        || s.contains("t-rex")
+        || s.contains("--donate-level")
+        || s.contains("--algo=")
+        || s.contains("--cuda-devices")
+        || (s.contains("-o ") && s.contains("-u "))
+}
+
+fn is_ctf_or_guid(s: &str, len: usize) -> bool {
+    if !s.starts_with('{') || !s.ends_with('}') {
+        return false;
+    }
+    if len > 5
+        && (s.contains("CTF{")
+            || s.contains("flag{")
+            || s.contains("FLAG{")
+            || s.contains("picoCTF{")
+            || s.contains("HTB{"))
+    {
+        return true;
+    }
+    if (36..=38).contains(&len) {
+        let dash_count = s.chars().filter(|&c| c == '-').count();
+        let hex_count = s.chars().filter(char::is_ascii_hexdigit).count();
+        if dash_count == 4 && (30..=32).contains(&hex_count) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_email_address(s: &str, len: usize) -> bool {
+    if !s.contains('@') || !s.contains('.') || len < 6 {
+        return false;
+    }
+    let at_count = s.chars().filter(|&c| c == '@').count();
+    let dot_count = s.chars().filter(|&c| c == '.').count();
+    if at_count != 1 || dot_count < 1 {
+        return false;
+    }
+    let valid_chars = s
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+'))
+        .count();
+    valid_chars * 100 / len >= MIN_EMAIL_VALID_CHAR_RATIO
+}
+
+fn is_jwt_token(s: &str, len: usize) -> bool {
+    if s.matches('.').count() != 2 || len < 50 {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 3 || !parts.iter().all(|p| !p.is_empty()) {
+        return false;
+    }
+    let base64_chars = s
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '='))
+        .count();
+    base64_chars * 100 / len >= 95
+}
+
+fn is_attack_payload(s: &str) -> bool {
+    if (s.contains("' OR '") || s.contains("1'='1"))
+        || (s.contains("UNION") && s.contains("SELECT"))
+        || s.contains("admin'--")
+    {
+        return true;
+    }
+    (s.contains("<script>") && s.contains("</script>"))
+        || (s.contains("onerror=") && s.contains("alert("))
+        || s.starts_with("javascript:")
+}
+
+fn is_api_key_pattern(s: &str, len: usize) -> bool {
+    let matches_prefix = (s.starts_with("AKIA") && len >= 20)
+        || (s.starts_with("ghp_") && len >= 36)
+        || (s.starts_with("sk_live_") || s.starts_with("pk_live_"))
+        || (s.starts_with("xox") && len >= 30);
+    if !matches_prefix {
+        return false;
+    }
+    let alnum_count = s
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .count();
+    alnum_count * 100 / len >= MIN_BASE64_RATIO_FOR_KEYS
+}
+
+fn is_code_pattern(s: &str) -> bool {
+    // C/C++ patterns
+    if s.contains("__attribute__")
+        || s.contains("#define")
+        || s.contains("#include")
+        || (s.contains("char *") && s.contains("0x"))
+        || (s.contains("((") && s.contains("))") && s.contains("0x"))
+    {
+        return true;
+    }
+    // PHP patterns
+    if s.contains("eval(")
+        || s.contains("base64_decode(")
+        || s.contains("$_GET")
+        || s.contains("$_POST")
+        || s.contains("$_SERVER")
+        || s.contains("$_COOKIE")
+        || s.contains("$GLOBALS")
+        || s.contains("preg_replace(")
+        || (s.starts_with("${") && s.contains('}'))
+    {
+        return true;
+    }
+    // Perl patterns
+    if s.contains("pack(") || s.contains("$ARGV") || (s.contains("open(") && s.contains('|')) {
+        return true;
+    }
+    // Shell patterns
+    if s.contains("${IFS}")
+        || (s.contains("$(") && s.contains(')'))
+        || (s.contains("eval") && (s.contains("base64") || s.contains("echo")))
+    {
+        return true;
+    }
+    // Command injection patterns
+    if (s.contains("; ") && (s.contains("cat") || s.contains("wget") || s.contains("curl")))
+        || (s.contains("| ") && (s.contains("whoami") || s.contains("id") || s.contains("uname")))
+        || (s.starts_with('`') && s.ends_with('`'))
+    {
+        return true;
+    }
+    // Windows malware commands
+    if s.contains("schtasks")
+        || s.contains("net user")
+        || s.contains("reg add")
+        || s.contains("powershell")
+        || s.contains("certutil")
+        || s.contains("mshta")
+        || s.contains("IEX(")
+        || s.contains("DownloadString")
+    {
+        return true;
+    }
+    // Ransom note patterns
+    if s.contains("ENCRYPTED") || s.contains("DECRYPT") || s.contains("Bitcoin") {
+        let uppercase_count = s.chars().filter(|c| c.is_uppercase()).count();
+        if !s.is_empty() && uppercase_count * 100 / s.len() > 50 {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_obfuscated_js(s: &str) -> bool {
+    if !(s.contains("_0x") || s.contains("0x") && s.len() >= 10) {
+        return false;
+    }
+    let has_keywords = s.contains("function")
+        || s.contains("const")
+        || s.contains("var")
+        || s.contains("let")
+        || s.contains("return")
+        || s.contains("if");
+    let has_code_syntax = s.contains('(') || s.contains('[') || s.contains('{');
+    let hex_id_count = s.matches("_0x").count() + s.matches("0x").count();
+    if has_keywords || has_code_syntax || hex_id_count >= 2 {
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric()).count();
+        if alnum_count >= 6 {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_comma_separated_list(s: &str, len: usize) -> bool {
+    if !s.contains(',') || len < 10 {
+        return false;
+    }
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    let valid_parts = parts
+        .iter()
+        .filter(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+        })
+        .count();
+    valid_parts * 100 / parts.len() >= 75
+}
+
+fn is_shell_command_string(s: &str) -> bool {
+    let has_shell_indicator = s.contains("osascript")
+        || s.contains("bash")
+        || s.contains("/bin/sh")
+        || s.contains("/bin/bash")
+        || s.contains("2>&1")
+        || s.contains("<<")
+        || s.contains("2>/dev/null")
+        || s.contains("2>")
+        || (s.contains(" sh ") || s.starts_with("sh ") || s.ends_with(" sh"));
+    if !has_shell_indicator {
+        return false;
+    }
+    let special_count = s
+        .chars()
+        .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+        .count();
+    let alnum_count = s.chars().filter(|c| c.is_alphanumeric()).count();
+    if s.is_empty() {
+        return false;
+    }
+    alnum_count * 100 / s.len() >= 40 && special_count <= alnum_count
+}
+
+fn is_mac_address_or_ipv6(s: &str, len: usize) -> bool {
+    // MAC addresses
+    if (12..=17).contains(&len) {
+        let colon_count = s.chars().filter(|&c| c == ':').count();
+        let dash_count = s.chars().filter(|&c| c == '-').count();
+        let dot_count = s.chars().filter(|&c| c == '.').count();
+        let hex_count = s.chars().filter(char::is_ascii_hexdigit).count();
+        if (colon_count == 5 || dash_count == 5) && hex_count == 12 {
+            return true;
+        }
+        if dot_count == 2 && hex_count == 12 {
+            return true;
+        }
+    }
+    // IPv6
+    if len >= 3 && s.contains(':') {
+        let colon_count = s.chars().filter(|&c| c == ':').count();
+        let hex_count = s.chars().filter(char::is_ascii_hexdigit).count();
+        if colon_count >= 2 && hex_count >= 1 {
+            let hex_and_colon = s
+                .chars()
+                .filter(|c| c.is_ascii_hexdigit() || *c == ':' || *c == '.')
+                .count();
+            if hex_and_colon * 100 / len > 80 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_locale_code(s: &str, len: usize) -> bool {
+    if len != 5 && len != 6 {
+        return false;
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 5 {
+        return false;
+    }
+    (chars[0].is_ascii_lowercase()
+        && chars[1].is_ascii_lowercase()
+        && chars[2] == '_'
+        && chars[3].is_ascii_uppercase()
+        && chars[4].is_ascii_uppercase())
+        || (chars.len() == 6
+            && chars[0].is_ascii_lowercase()
+            && chars[1].is_ascii_lowercase()
+            && chars[2].is_ascii_lowercase()
+            && chars[3] == '_'
+            && chars[4].is_ascii_uppercase()
+            && chars[5].is_ascii_uppercase())
+}
+
+struct CharStats {
+    upper: usize,
+    lower: usize,
+    digit: usize,
+    alpha: usize,
+    whitespace: usize,
+    noise_punct: usize,
+    open_parens: usize,
+    close_parens: usize,
+    quotes: usize,
+    special: usize,
+    hex_only: usize,
+    ascii_count: usize,
+    alternations: usize,
+    first_char: char,
+    last_char: char,
+    all_same: bool,
+    has_non_hex_letter: bool,
+    alphanumeric: usize,
+    char_count: usize,
+}
+
+impl CharStats {
+    fn from_str(s: &str) -> Self {
+        let mut upper = 0usize;
+        let mut lower = 0usize;
+        let mut digit = 0usize;
+        let mut alpha = 0usize;
+        let mut whitespace = 0usize;
+        let mut noise_punct = 0usize;
+        let mut open_parens = 0usize;
+        let mut close_parens = 0usize;
+        let mut quotes = 0usize;
+        let mut special = 0usize;
+        let mut hex_only = 0usize;
+        let mut ascii_count = 0usize;
+        let mut alternations = 0usize;
+        let mut prev_is_digit: Option<bool> = None;
+        let mut first_char_opt: Option<char> = None;
+        let mut all_same = true;
+        let mut last_char = '\0';
+        let mut has_non_hex_letter = false;
+        let mut char_count = 0usize;
+
+        for c in s.chars() {
+            char_count += 1;
+            if first_char_opt.is_none() {
+                first_char_opt = Some(c);
+            } else if all_same && Some(c) != first_char_opt {
+                all_same = false;
+            }
+            last_char = c;
+
+            if c.is_ascii() {
+                ascii_count += 1;
+            }
+
+            if c.is_ascii_uppercase() {
+                upper += 1;
+                alpha += 1;
+                if !c.is_ascii_hexdigit() {
+                    has_non_hex_letter = true;
+                }
+                hex_only += 1;
+                if prev_is_digit == Some(true) {
+                    alternations += 1;
+                }
+                prev_is_digit = Some(false);
+            } else if c.is_ascii_lowercase() {
+                lower += 1;
+                alpha += 1;
+                if !c.is_ascii_hexdigit() {
+                    has_non_hex_letter = true;
+                }
+                hex_only += 1;
+                if prev_is_digit == Some(true) {
+                    alternations += 1;
+                }
+                prev_is_digit = Some(false);
+            } else if c.is_ascii_digit() {
+                digit += 1;
+                hex_only += 1;
+                if prev_is_digit == Some(false) {
+                    alternations += 1;
+                }
+                prev_is_digit = Some(true);
+            } else if c.is_alphabetic() {
+                alpha += 1;
+                if prev_is_digit == Some(true) {
+                    alternations += 1;
+                }
+                prev_is_digit = Some(false);
+            } else if c.is_whitespace() {
+                whitespace += 1;
+            } else {
+                match c {
+                    '#' | '@' | '?' | '>' | '<' | '|' | '\\' | '^' | '`' | '~' | '$' | '+'
+                    | '&' | '*' | '=' | ';' | ':' | '!' | ',' => noise_punct += 1,
+                    '(' | '[' | '{' => open_parens += 1,
+                    ')' | ']' | '}' => close_parens += 1,
+                    '"' | '\'' => quotes += 1,
+                    _ => {}
+                }
+                if !c.is_alphanumeric() && !c.is_whitespace() {
+                    special += 1;
+                }
+            }
+        }
+
+        let first_char = first_char_opt.unwrap_or(' ');
+        let alphanumeric = alpha + digit;
+
+        Self {
+            upper,
+            lower,
+            digit,
+            alpha,
+            whitespace,
+            noise_punct,
+            open_parens,
+            close_parens,
+            quotes,
+            special,
+            hex_only,
+            ascii_count,
+            alternations,
+            first_char,
+            last_char,
+            all_same,
+            has_non_hex_letter,
+            alphanumeric,
+            char_count,
+        }
+    }
+}
+
+/// Returns true if a very short string (2-6 chars) looks like random binary garbage.
+fn is_short_identifier_garbage(s: &str, len: usize, stats: &CharStats) -> bool {
+    if !(SHORT_IDENTIFIER_MIN_LEN..=SHORT_IDENTIFIER_MAX_LEN).contains(&len) {
+        return false;
+    }
+    let is_all_upper = stats.upper == len;
+    let is_all_lower = stats.lower == len;
+    let is_all_digit = stats.digit == len;
+    let is_digit_upper_id = stats.first_char.is_ascii_digit()
+        && stats.upper > 0
+        && stats.lower == 0
+        && stats.special == 0
+        && s.chars()
+            .skip_while(char::is_ascii_digit)
+            .all(|c| c.is_ascii_uppercase());
+    let is_pascal_case = stats.first_char.is_ascii_uppercase()
+        && stats.upper == 1
+        && stats.lower > 0
+        && stats.digit == 0;
+    let last_char = stats.last_char;
+    let is_camel_case = len >= 7
+        && stats.first_char.is_ascii_lowercase()
+        && stats.upper == 1
+        && stats.digit == 0
+        && !last_char.is_ascii_uppercase();
+    let is_lower_with_suffix = stats.first_char.is_ascii_lowercase()
+        && stats.lower > 0
+        && stats.upper == 0
+        && stats.digit > 0
+        && last_char.is_ascii_digit();
+
+    if is_all_upper
+        || is_all_lower
+        || is_all_digit
+        || is_digit_upper_id
+        || is_pascal_case
+        || is_camel_case
+        || is_lower_with_suffix
+    {
+        return false;
+    }
+    if stats.digit > 0 && (stats.upper > 0 || stats.lower > 0) {
+        return true;
+    }
+    if stats.upper > 0 && stats.lower > 0 {
+        return true;
+    }
+    if stats.whitespace > 0 {
+        return true;
+    }
+    false
+}
+
+/// Returns true if a short string (<=6 chars) looks like misaligned binary data.
+fn is_short_binary_garbage(s: &str, len: usize, stats: &CharStats) -> bool {
+    if len > 6 {
+        return false;
+    }
+    if stats.upper > 0 && stats.special > 0 && stats.alpha == stats.upper {
+        return true;
+    }
+    if stats.special > 0 && len <= 5 {
+        let dot_count = s.chars().filter(|&c| c == '.').count();
+        if dot_count == stats.special {
+            let is_filename_pattern =
+                (dot_count == 1 && !s.starts_with('.') && !s.ends_with('.')) || s.starts_with('.');
+            if !is_filename_pattern || stats.alphanumeric == 0 {
+                return true;
+            }
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns true if the string has excessive non-ASCII content indicating corrupted/garbage data.
+fn has_excess_non_ascii(s: &str, len: usize, stats: &CharStats) -> bool {
+    let non_ascii_count = len - stats.ascii_count;
+    if non_ascii_count == 0 {
+        return false;
+    }
+    if len < 30 {
+        let alpha_percentage = if stats.char_count > 0 {
+            stats.alpha * 100 / stats.char_count
+        } else {
+            0
+        };
+        let has_noise_punct = s.chars().any(|c| {
+            matches!(
+                c,
+                '?' | '\u{00A5}'
+                    | '\u{00B5}'
+                    | '\u{00A8}'
+                    | '\u{00B4}'
+                    | '\u{00BB}'
+                    | '\u{00AB}'
+                    | '\u{00B0}'
+                    | '\u{00B7}'
+                    | '\u{00A6}'
+                    | '\u{00AF}'
+            )
+        });
+        if (alpha_percentage < MIN_NON_ASCII_ALPHABETIC_RATIO || has_noise_punct)
+            && non_ascii_count * 100 / len > MAX_NON_ASCII_RATIO
+        {
+            return true;
+        }
+        if len < SHORT_NON_ASCII_CHECK_LEN && non_ascii_count >= MIN_NON_ASCII_COUNT_SHORT {
+            return true;
+        }
+    } else if non_ascii_count * 100 / len > 30 {
+        return true;
+    }
+    false
+}
+
+/// Returns true if the string's character class run pattern indicates random/garbage data.
+fn has_chaotic_char_pattern(s: &str, len: usize, stats: &CharStats) -> bool {
+    if len < 6 {
+        return false;
+    }
+
+    #[derive(PartialEq, Eq, Clone, Copy)]
+    enum CharClass {
+        Upper,
+        Lower,
+        Digit,
+        Special,
+        Whitespace,
+    }
+
+    let char_classes: Vec<CharClass> = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                CharClass::Upper
+            } else if c.is_ascii_lowercase() {
+                CharClass::Lower
+            } else if c.is_ascii_digit() {
+                CharClass::Digit
+            } else if c.is_whitespace() {
+                CharClass::Whitespace
+            } else {
+                CharClass::Special
+            }
+        })
+        .collect();
+
+    let mut transitions = 0;
+    let mut run_lengths: Vec<usize> = Vec::new();
+    let mut current_run_length = 1;
+
+    for i in 1..char_classes.len() {
+        if char_classes[i] == char_classes[i - 1] {
+            current_run_length += 1;
+        } else {
+            transitions += 1;
+            run_lengths.push(current_run_length);
+            current_run_length = 1;
+        }
+    }
+    run_lengths.push(current_run_length);
+
+    let total_run_chars: usize = run_lengths.iter().sum();
+    let avg_run_length = if run_lengths.is_empty() {
+        0.0
+    } else {
+        total_run_chars as f32 / run_lengths.len() as f32
+    };
+
+    let max_class_count = stats
+        .upper
+        .max(stats.lower)
+        .max(stats.digit)
+        .max(stats.special);
+    let is_mostly_one_class = max_class_count * 100 / len > MAX_CLASS_DOMINANCE_RATIO;
+
+    let alphanumeric = stats.alphanumeric;
+    let lower = stats.lower;
+    let special = stats.special;
+    let digit = stats.digit;
+
+    let looks_like_path = (s.contains('/') || s.contains('\\'))
+        && alphanumeric >= 3
+        && special * 100 / len <= MAX_SPECIAL_RATIO_FOR_PATHS
+        && (alphanumeric == 0 || lower * 100 / alphanumeric >= MIN_LOWERCASE_RATIO_FOR_PATHS)
+        && (s.starts_with('/')
+            || s.starts_with('\\')
+            || s.contains("/.")
+            || s.contains("\\.")
+            || s.split(&['/', '\\'][..])
+                .filter(|seg| !seg.is_empty())
+                .count()
+                >= 2);
+    let looks_like_url = s.contains("://") || s.contains("http");
+    let looks_like_domain = s.contains('.')
+        && s.split('.').filter(|seg| !seg.is_empty()).count() >= MIN_SEGMENT_COUNT
+        && special * 100 / len <= MAX_SPECIAL_RATIO_FOR_DOMAINS;
+    let looks_like_version = (s.starts_with("go") || s.starts_with('v') || s.starts_with('V'))
+        && s.contains('.')
+        && digit > 0;
+    let looks_like_base64 = len >= MIN_BASE64_LENGTH
+        && stats.upper > 0
+        && lower > 0
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=');
+    let looks_like_format_string = s.contains("%s")
+        || s.contains("%d")
+        || s.contains("%f")
+        || s.contains("%x")
+        || s.contains("%v")
+        || s.contains("%p")
+        || s.contains("%c")
+        || s.contains("%u");
+    let is_structured_pattern = looks_like_path
+        || looks_like_url
+        || looks_like_domain
+        || looks_like_version
+        || looks_like_base64
+        || looks_like_format_string;
+
+    if !is_mostly_one_class && !is_structured_pattern {
+        if transitions * 100 / len > MAX_TRANSITION_RATIO {
+            return true;
+        }
+        if avg_run_length < MAX_AVG_RUN_LENGTH_CHAOS && len >= 8 {
+            return true;
+        }
+        if len <= 7 && avg_run_length < 1.5 && transitions >= 4 {
+            return true;
+        }
+    } else if is_structured_pattern
+        && avg_run_length < 2.0
+        && len >= 10
+        && !looks_like_path
+        && !looks_like_domain
+        && !looks_like_version
+        && !looks_like_base64
+        && !looks_like_format_string
+        && !looks_like_url
+    {
+        return true;
+    }
+    false
+}
+
 /// Determines if a string appears to be garbage/noise rather than meaningful content.
 ///
-/// This heuristic detects common patterns of misaligned reads and low-value strings:
-/// - Short strings with non-alphanumeric characters
-/// - Strings ending with backtick + letter + spaces (misaligned Go data)
-/// - Strings with very low alphanumeric ratio
-/// - Strings that are mostly whitespace padding
-/// - Strings with embedded null or control characters
-pub fn is_garbage(s: &str) -> bool {
-    // Normalize: trim whitespace first
-    let trimmed = s.trim();
-    let len = trimmed.len();
-
-    // Fast path: longer strings with normal patterns are rarely garbage
-    // This avoids expensive analysis for the common case
-    if trimmed.len() >= 12 {
-        let bytes = trimmed.as_bytes();
+/// Fast path: Check if long strings with normal patterns are obviously valid.
+///
+/// This avoids expensive analysis for the common case.
+fn is_fast_path_valid(s: &str, len: usize) -> bool {
+    if len >= MIN_FAST_PATH_VALID_LENGTH {
+        let bytes = s.as_bytes();
         let first = bytes[0];
         // Quick check for all-same-character strings (garbage)
         if bytes.iter().all(|&b| b == first) {
-            return true;
+            return false; // Not valid - it's garbage
         }
-        // If it starts with a letter and has mostly alphanumeric + common punctuation, skip full analysis
+        // If it starts with a letter and has mostly alphanumeric + common punctuation, it's valid
         if first.is_ascii_alphabetic() {
             let simple_chars = bytes
                 .iter()
@@ -38,8 +714,8 @@ pub fn is_garbage(s: &str) -> bool {
                         || b == b'/'
                 })
                 .count();
-            if simple_chars * 100 / bytes.len() >= 80 {
-                return false;
+            if simple_chars * 100 / bytes.len() >= MIN_FAST_PATH_ALPHABETIC_RATIO {
+                return true;
             }
         }
     }
@@ -49,632 +725,188 @@ pub fn is_garbage(s: &str) -> bool {
     // SQL injection, registry paths, and all other classified string kinds.
     // Restricted to ASCII strings: non-ASCII content requires full heuristic analysis
     // because the classifier doesn't account for non-ASCII garbage from misaligned reads.
-    if trimmed.is_ascii() && crate::go::classify_string(trimmed) != crate::types::StringKind::Const {
-        return false;
+    if s.is_ascii() && crate::go::classify_string(s) != crate::types::StringKind::Const {
+        return true;
     }
 
-    // Special case: Cryptocurrency addresses (ransomware/miner IOCs)
-    if (26..=108).contains(&len) {
-        // Bitcoin (legacy): starts with 1 or 3, 26-35 chars, base58
-        // Bitcoin (bech32): starts with bc1, 42+ chars
-        // Ethereum: starts with 0x, 42 chars hex
-        // Monero: starts with 4 or 8, 95-108 chars
-        // Litecoin: starts with L or M, 26-35 chars
-        // Dogecoin: starts with D, 34 chars
-        let looks_like_crypto = (trimmed.starts_with('1') || trimmed.starts_with('3'))
-            || trimmed.starts_with("bc1")
-            || (trimmed.starts_with("0x") && len == 42)
-            || ((trimmed.starts_with('4') || trimmed.starts_with('8')) && len >= 90)
-            || (trimmed.starts_with('L') || trimmed.starts_with('M'))
-            || trimmed.starts_with('D');
+    false
+}
 
-        if looks_like_crypto {
-            // Check if mostly alphanumeric (crypto addresses are base58/hex)
-            let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
-            if alnum_count * 100 / len >= 95 {
-                return false; // Cryptocurrency addresses are NOT garbage
-            }
-        }
+/// Fast path: Check if string is obviously garbage without deep analysis.
+fn is_fast_path_garbage(s: &str, original: &str, len: usize) -> bool {
+    // Empty or single character
+    if len == 0 || len == 1 {
+        return true;
     }
 
-    // Special case: Mining pool URLs and stratum protocol
-    if trimmed.contains("stratum+tcp://") || trimmed.contains("stratum+ssl://") {
-        return false; // Stratum URLs are NOT garbage
+    // Reject strings with embedded control characters (except trailing newlines).
+    let check_control = original.trim_end_matches('\n');
+    if check_control.chars().any(char::is_control) {
+        return true;
     }
 
-    // Mining pool domains (common patterns)
-    if (trimmed.contains("pool.") || trimmed.contains("nanopool") || trimmed.contains("minergate"))
-        && (trimmed.contains(".com") || trimmed.contains(".org") || trimmed.contains(':'))
+    // Literal escape sequences in short strings without code context are garbage.
+    if len < MAX_SHORT_ESCAPE_LENGTH
+        && (s.contains("\\x") || s.contains("\\u") || s.contains("\\U"))
     {
-        return false; // Mining pool URLs are NOT garbage
-    }
-
-    // Cryptocurrency miner software names
-    if trimmed.contains("xmrig")
-        || trimmed.contains("xmr-stak")
-        || trimmed.contains("cpuminer")
-        || trimmed.contains("ccminer")
-        || trimmed.contains("ethminer")
-        || trimmed.contains("phoenixminer")
-        || trimmed.contains("t-rex")
-        || trimmed.contains("--donate-level")
-        || trimmed.contains("--algo=")
-        || trimmed.contains("--cuda-devices")
-        || (trimmed.contains("-o ") && trimmed.contains("-u "))
-    {
-        return false; // Miner software strings are NOT garbage
-    }
-
-    // Special case: Onion/Tor URLs (ransomware C2)
-    if trimmed.contains(".onion") && len >= 10 {
-        return false; // Tor addresses are NOT garbage
-    }
-
-    // Special case: CTF flag formats and GUIDs
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        // CTF flags: CTF{...}, flag{...}, FLAG{...}, etc.
-        if len > 5
-            && (trimmed.contains("CTF{")
-                || trimmed.contains("flag{")
-                || trimmed.contains("FLAG{")
-                || trimmed.contains("picoCTF{")
-                || trimmed.contains("HTB{"))
-        {
-            return false; // CTF flags are NOT garbage
-        }
-        // GUIDs: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} (usually 38 chars with braces)
-        // Be flexible: 36-38 chars, 4 dashes, mostly hex
-        if (36..=38).contains(&len) {
-            let dash_count = trimmed.chars().filter(|&c| c == '-').count();
-            let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
-            // GUID has 4 dashes and mostly hex digits (allow 30-32)
-            if dash_count == 4 && (30..=32).contains(&hex_count) {
-                return false; // GUIDs are NOT garbage
-            }
-        }
-    }
-
-    // Special case: Email addresses
-    if trimmed.contains('@') && trimmed.contains('.') && len >= 6 {
-        let at_count = trimmed.chars().filter(|&c| c == '@').count();
-        let dot_count = trimmed.chars().filter(|&c| c == '.').count();
-        // Valid email: single @, at least one dot, mostly alphanumeric + common chars
-        if at_count == 1 && dot_count >= 1 {
-            let valid_chars = trimmed
-                .chars()
-                .filter(|c| c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+'))
-                .count();
-            if valid_chars * 100 / len >= 85 {
-                return false; // Email addresses are NOT garbage
-            }
-        }
-    }
-
-    // Special case: Windows registry paths
-    if trimmed.contains("HKLM\\") || trimmed.contains("HKCU\\") || trimmed.contains("HKEY_") {
-        return false; // Registry paths are NOT garbage
-    }
-
-    // Special case: LDAP/AD paths
-    if trimmed.contains("LDAP://") || (trimmed.contains("CN=") && trimmed.contains("DC=")) {
-        return false; // LDAP paths are NOT garbage
-    }
-
-    // Special case: JWT tokens (3 base64 parts separated by dots)
-    if trimmed.matches('.').count() == 2 && len >= 50 {
-        let parts: Vec<&str> = trimmed.split('.').collect();
-        if parts.len() == 3 && parts.iter().all(|p| !p.is_empty()) {
-            // Check if all parts are base64-like (alphanumeric + - _)
-            let base64_chars = trimmed
-                .chars()
-                .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '='))
-                .count();
-            if base64_chars * 100 / len >= 95 {
-                return false; // JWT tokens are NOT garbage
-            }
-        }
-    }
-
-    // Special case: PEM/RSA keys
-    if trimmed.contains("-----BEGIN") || trimmed.contains("-----END") {
-        return false; // PEM keys are NOT garbage
-    }
-
-    // Special case: SQL injection patterns
-    if (trimmed.contains("' OR '") || trimmed.contains("1'='1"))
-        || (trimmed.contains("UNION") && trimmed.contains("SELECT"))
-        || trimmed.contains("admin'--")
-    {
-        return false; // SQL injection patterns are NOT garbage
-    }
-
-    // Special case: XSS payloads
-    if (trimmed.contains("<script>") && trimmed.contains("</script>"))
-        || (trimmed.contains("onerror=") && trimmed.contains("alert("))
-        || trimmed.starts_with("javascript:")
-    {
-        return false; // XSS payloads are NOT garbage
-    }
-
-    // Special case: API key formats
-    if (trimmed.starts_with("AKIA") && len >= 20)  // AWS
-        || (trimmed.starts_with("ghp_") && len >= 36)  // GitHub
-        || (trimmed.starts_with("sk_live_") || trimmed.starts_with("pk_live_"))  // Stripe
-        || (trimmed.starts_with("xox") && len >= 30)
-    // Slack
-    {
-        let alnum_count = trimmed
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '_')
-            .count();
-        if alnum_count * 100 / len >= 90 {
-            return false; // API keys are NOT garbage
-        }
-    }
-
-    // Special case: Code patterns commonly found in malware
-    // Detect various language-specific obfuscation patterns
-
-    // C/C++ patterns
-    if trimmed.contains("__attribute__")
-        || trimmed.contains("#define")
-        || trimmed.contains("#include")
-        || (trimmed.contains("char *") && trimmed.contains("0x"))
-        || (trimmed.contains("((") && trimmed.contains("))") && trimmed.contains("0x"))
-    {
-        return false; // C/C++ code is NOT garbage
-    }
-
-    // PHP patterns
-    if trimmed.contains("eval(")
-        || trimmed.contains("base64_decode(")
-        || trimmed.contains("$_GET")
-        || trimmed.contains("$_POST")
-        || trimmed.contains("$_SERVER")
-        || trimmed.contains("$_COOKIE")
-        || trimmed.contains("$GLOBALS")
-        || trimmed.contains("preg_replace(")
-        || (trimmed.starts_with("${") && trimmed.contains('}'))
-    {
-        return false; // PHP code is NOT garbage
-    }
-
-    // Perl patterns
-    if trimmed.contains("pack(")
-        || trimmed.contains("$ARGV")
-        || trimmed.contains("eval(")
-        || (trimmed.contains("open(") && trimmed.contains('|'))
-    {
-        return false; // Perl code is NOT garbage
-    }
-
-    // Shell patterns
-    if trimmed.contains("${IFS}")
-        || (trimmed.contains("$(") && trimmed.contains(')'))
-        || (trimmed.contains("eval") && (trimmed.contains("base64") || trimmed.contains("echo")))
-    {
-        return false; // Shell code is NOT garbage
-    }
-
-    // Command injection patterns (CTF/pentesting)
-    if (trimmed.contains("; ")
-        && (trimmed.contains("cat") || trimmed.contains("wget") || trimmed.contains("curl")))
-        || (trimmed.contains("| ")
-            && (trimmed.contains("whoami") || trimmed.contains("id") || trimmed.contains("uname")))
-        || (trimmed.starts_with('`') && trimmed.ends_with('`'))
-    {
-        return false; // Command injection patterns are NOT garbage
-    }
-
-    // Windows command patterns (malware persistence)
-    if trimmed.contains("schtasks")
-        || trimmed.contains("net user")
-        || trimmed.contains("reg add")
-        || trimmed.contains("powershell")
-        || trimmed.contains("certutil")
-        || trimmed.contains("mshta")
-        || trimmed.contains("IEX(")
-        || trimmed.contains("DownloadString")
-    {
-        return false; // Windows malware commands are NOT garbage
-    }
-
-    // Ransom note patterns
-    if trimmed.contains("ENCRYPTED") || trimmed.contains("DECRYPT") || trimmed.contains("Bitcoin") {
-        let uppercase_count = trimmed.chars().filter(|c| c.is_uppercase()).count();
-        // If mostly uppercase with these keywords, likely a ransom message
-        if uppercase_count * 100 / len > 50 {
-            return false; // Ransom messages are NOT garbage
-        }
-    }
-
-    // Special case: Obfuscated JavaScript/code patterns with hex identifiers
-    // Common in malware: _0x1c1000, _0x230d, function _0x..., const _0x..., etc.
-    // Detect by presence of _0x pattern (hex identifier prefix used in obfuscation)
-    if trimmed.contains("_0x") || (trimmed.contains("0x") && trimmed.len() >= 10) {
-        // Check if it looks like code:
-        // 1. JavaScript keywords, OR
-        // 2. Function/array syntax (parentheses or brackets), OR
-        // 3. Multiple hex identifiers (common in obfuscated code)
-        let has_keywords = trimmed.contains("function")
-            || trimmed.contains("const")
-            || trimmed.contains("var")
-            || trimmed.contains("let")
-            || trimmed.contains("return")
-            || trimmed.contains("if");
-        let has_code_syntax =
-            trimmed.contains('(') || trimmed.contains('[') || trimmed.contains('{');
-        let hex_id_count = trimmed.matches("_0x").count() + trimmed.matches("0x").count();
-
-        if has_keywords || has_code_syntax || hex_id_count >= 2 {
-            // Verify reasonable alphanumeric content (not just gibberish)
-            let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
-            if alnum_count >= 6 {
-                return false; // Obfuscated JavaScript/code is NOT garbage
-            }
-        }
-    }
-
-    // Special case: HTTP headers (common in network traffic analysis)
-    if (trimmed.starts_with("Host:")
-        || trimmed.starts_with("User-Agent:")
-        || trimmed.starts_with("Content-Type:")
-        || trimmed.starts_with("Accept:")
-        || trimmed.starts_with("Authorization:")
-        || trimmed.starts_with("Cookie:"))
-        && trimmed.len() >= 10
-    {
-        return false; // HTTP headers are NOT garbage
-    }
-
-    // Special case: Comma-separated lists (locales, encodings, languages)
-    if trimmed.contains(',') && trimmed.len() >= 10 {
-        let parts: Vec<&str> = trimmed.split(',').collect();
-        if parts.len() >= 2 {
-            // Check if parts look like identifiers (alphanumeric with dashes/underscores)
-            let valid_parts = parts
-                .iter()
-                .filter(|p| {
-                    !p.is_empty()
-                        && p.chars()
-                            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
-                })
-                .count();
-            // If most parts are valid identifiers, it's a list
-            if valid_parts * 100 / parts.len() >= 75 {
-                return false; // Comma-separated lists are NOT garbage
-            }
-        }
-    }
-
-    // Special case: Shell command patterns (check before control char rejection)
-    // These often have garbage bytes before/after but are still valuable
-    // Examples: "osascript", "bash", "sh ", "/bin/", "2>&1", "<<EOD"
-    if trimmed.contains("osascript")
-        || trimmed.contains("bash")
-        || trimmed.contains("/bin/sh")
-        || trimmed.contains("/bin/bash")
-        || trimmed.contains("2>&1")
-        || trimmed.contains("<<")  // heredocs: <<EOD, <<EOF, <<END, etc.
-        || trimmed.contains("2>/dev/null")
-        || trimmed.contains("2>")
-        || (trimmed.contains(" sh ") || trimmed.starts_with("sh ") || trimmed.ends_with(" sh"))
-    {
-        // BUT: if the string is mostly gibberish (too many special chars), reject it
-        let special_count = trimmed
-            .chars()
-            .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
-            .count();
-        let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
-
-        // Real shell commands should have reasonable alphanumeric content
-        // Reject if <40% alphanumeric or if special chars dominate
-        if alnum_count * 100 / trimmed.len() < 40 || special_count > alnum_count {
-            // Continue to normal garbage checks
-        } else {
-            return false; // Shell commands are NOT garbage
-        }
-    }
-
-    // Check for control characters in non-trailing-newline portion
-    let check_control = s.trim_end_matches('\n');
-    for c in check_control.chars() {
-        if c.is_control() {
-            return true;
-        }
-    }
-
-    // Check for literal escape sequences that indicate corrupted/malformed data
-    // Legitimate code might have these, but raw strings with \x, \u sequences are usually garbage
-    if trimmed.len() < 30
-        && (trimmed.contains("\\x") || trimmed.contains("\\u") || trimmed.contains("\\U"))
-    {
-        // If it's not in a code-like context (no quotes, parentheses, etc.), it's garbage
-        let has_code_context = trimmed.contains('"')
-            || trimmed.contains('\'')
-            || trimmed.contains('(')
-            || trimmed.contains('[')
-            || trimmed.contains("print")
-            || trimmed.contains("echo")
-            || trimmed.contains("const")
-            || trimmed.contains("var");
+        let has_code_context = s.contains('"')
+            || s.contains('\'')
+            || s.contains('(')
+            || s.contains('[')
+            || s.contains("print")
+            || s.contains("echo")
+            || s.contains("const")
+            || s.contains("var");
         if !has_code_context {
             return true;
         }
     }
 
-    // Empty or whitespace-only
-    if len == 0 {
+    false
+}
+
+/// Check if string matches known Indicator of Compromise patterns.
+///
+/// These are high-value strings that should never be filtered.
+fn is_recognized_ioc(s: &str, len: usize) -> bool {
+    // Crypto and malware IOCs
+    if is_crypto_wallet_address(s, len) {
+        return true;
+    }
+    if is_miner_ioc(s) {
+        return true;
+    }
+    if s.contains(".onion") && len >= 10 {
         return true;
     }
 
-    // Single characters are almost always garbage from raw scans
-    if len == 1 {
+    // Authentication and tokens
+    if is_ctf_or_guid(s, len) {
+        return true;
+    }
+    if is_email_address(s, len) {
+        return true;
+    }
+    if is_jwt_token(s, len) {
+        return true;
+    }
+    if is_api_key_pattern(s, len) {
         return true;
     }
 
-    // Special case: MAC addresses (00:1A:2B:3C:4D:5E, 00-1A-2B-3C-4D-5E, 001A.2B3C.4D5E)
-    if (12..=17).contains(&len) {
-        // Colon format: 00:1A:2B:3C:4D:5E (17 chars)
-        // Dash format: 00-1A-2B-3C-4D-5E (17 chars)
-        // Cisco format: 001A.2B3C.4D5E (14 chars)
-        let colon_count = trimmed.chars().filter(|&c| c == ':').count();
-        let dash_count = trimmed.chars().filter(|&c| c == '-').count();
-        let dot_count = trimmed.chars().filter(|&c| c == '.').count();
-        let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
+    // System paths and registries
+    if s.contains("HKLM\\") || s.contains("HKCU\\") || s.contains("HKEY_") {
+        return true;
+    }
+    if s.contains("LDAP://") || (s.contains("CN=") && s.contains("DC=")) {
+        return true;
+    }
 
-        // Colon or dash format: 5 separators, 12 hex digits
-        if (colon_count == 5 || dash_count == 5) && hex_count == 12 {
-            return false;
-        }
-        // Cisco format: 2 dots, 12 hex digits
-        if dot_count == 2 && hex_count == 12 {
-            return false;
+    // Cryptographic materials
+    if s.contains("-----BEGIN") || s.contains("-----END") {
+        return true;
+    }
+
+    // Attack patterns and code
+    if is_attack_payload(s) {
+        return true;
+    }
+    if is_code_pattern(s) {
+        return true;
+    }
+    if is_obfuscated_js(s) {
+        return true;
+    }
+
+    // Network and protocols
+    if is_mac_address_or_ipv6(s, len) {
+        return true;
+    }
+
+    // HTTP headers
+    if (s.starts_with("Host:")
+        || s.starts_with("User-Agent:")
+        || s.starts_with("Content-Type:")
+        || s.starts_with("Accept:")
+        || s.starts_with("Authorization:")
+        || s.starts_with("Cookie:"))
+        && len >= 10
+    {
+        return true;
+    }
+
+    // Structured data
+    if is_comma_separated_list(s, len) {
+        return true;
+    }
+    if is_shell_command_string(s) {
+        return true;
+    }
+
+    // Long hex strings are crypto hashes or keys
+    if (MIN_HASH_LENGTH..=MAX_HASH_LENGTH).contains(&len) {
+        let hex_count = s.chars().filter(char::is_ascii_hexdigit).count();
+        if hex_count * 100 / len > MIN_HEX_RATIO_FOR_HASH {
+            return true;
         }
     }
 
-    // Special case: IPv6 addresses (contains :: or multiple colons with hex)
-    if len >= 3 && trimmed.contains(':') {
-        let colon_count = trimmed.chars().filter(|&c| c == ':').count();
-        let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
-        // IPv6 has at least 2 colons and mostly hex digits
-        // ::1 (shortest), fe80::1, 2001:db8::1, etc.
-        if colon_count >= 2 && hex_count >= 1 {
-            // Check if it's mostly hex and colons (>80%)
-            let hex_and_colon = trimmed
-                .chars()
-                .filter(|c| c.is_ascii_hexdigit() || *c == ':' || *c == '.')
-                .count();
-            if hex_and_colon * 100 / len > 80 {
-                return false;
-            }
-        }
+    // Locale codes
+    if is_locale_code(s, len) {
+        return true;
     }
 
-    // Special case: Crypto hashes and keys (long hex strings)
-    if (32..=128).contains(&len) {
-        let hex_count = trimmed.chars().filter(char::is_ascii_hexdigit).count();
-        // If >95% hex digits, it's likely a hash/key
-        if hex_count * 100 / len > 95 {
-            return false;
-        }
-    }
-
-    // Special case: locale strings (en_US, zh_CN, etc.)
-    // Format: 2-3 lowercase letters + underscore + 2-3 uppercase letters
-    if len == 5 || len == 6 {
-        let chars: Vec<char> = trimmed.chars().collect();
-        if chars.len() >= 5 {
-            let has_locale_pattern = (chars[0].is_ascii_lowercase()
-                && chars[1].is_ascii_lowercase()
-                && chars[2] == '_'
-                && chars[3].is_ascii_uppercase()
-                && chars[4].is_ascii_uppercase())
-                || (chars.len() == 6
-                    && chars[0].is_ascii_lowercase()
-                    && chars[1].is_ascii_lowercase()
-                    && chars[2].is_ascii_lowercase()
-                    && chars[3] == '_'
-                    && chars[4].is_ascii_uppercase()
-                    && chars[5].is_ascii_uppercase());
-            if has_locale_pattern {
-                return false; // Locale strings are NOT garbage
-            }
-        }
-    }
-
-    // Special case: XML/plist tags (<array>, <dict>, <key>, etc.)
-    if trimmed.starts_with('<') && trimmed.ends_with('>') && len >= 3 {
-        let inner = &trimmed[1..trimmed.len() - 1];
-        // Valid XML tag if inner content is alphanumeric (possibly with / for closing tags)
+    // XML/plist tags
+    if s.starts_with('<') && s.ends_with('>') && len >= 3 {
+        let inner = &s[1..len - 1];
         let is_valid_tag = inner.chars().all(|c| c.is_alphanumeric() || c == '/');
         if is_valid_tag && !inner.is_empty() {
-            return false; // XML tags are NOT garbage
+            return true;
         }
     }
 
-    // Special case: Shell command patterns with redirections and heredocs
-    // Examples: "osascript 2>&1 <<EOD", "command 2>/dev/null", "cmd > output.txt"
-    if trimmed.contains("2>&1")  // stderr redirect to stdout
-        || trimmed.contains("2>")  // stderr redirect to file
-        || trimmed.contains("<<")  // heredoc
-        || (trimmed.contains(" > ") && trimmed.split_whitespace().count() >= 2)
-    // redirect with spaces (require spaces around > to avoid false positives like "rL*>@")
+    // Shell commands with redirections/heredocs
+    if s.contains("2>&1")
+        || s.contains("2>")
+        || s.contains("<<")
+        || (s.contains(" > ") && s.split_whitespace().count() >= MIN_SEGMENT_COUNT)
     {
-        // Check if it looks like a command (has alphanumeric content and mostly ASCII)
-        let alnum_count = trimmed.chars().filter(|c| c.is_alphanumeric()).count();
-        let ascii_chars = trimmed.chars().filter(char::is_ascii).count();
-        // Must have at least 3 alphanumeric AND be mostly ASCII (>80%)
-        if alnum_count >= 3 && ascii_chars * 100 / trimmed.chars().count() > 80 {
-            return false; // Shell commands with redirections are NOT garbage
-        }
-    }
-
-    // Single-pass character counting
-    let mut upper = 0usize;
-    let mut lower = 0usize;
-    let mut digit = 0usize;
-    let mut alpha = 0usize;
-    let mut whitespace = 0usize;
-    let mut noise_punct = 0usize;
-    let mut open_parens = 0usize;
-    let mut close_parens = 0usize;
-    let mut quotes = 0usize;
-    let mut special = 0usize;
-    let mut hex_only = 0usize;
-    let mut ascii_count = 0usize;
-    let mut alternations = 0usize;
-    let mut prev_is_digit: Option<bool> = None;
-    let mut first_char: Option<char> = None;
-    let mut all_same = true;
-    let mut last_char = '\0';
-    let mut has_non_hex_letter = false;
-
-    for c in trimmed.chars() {
-        // Track first/last and uniformity
-        if first_char.is_none() {
-            first_char = Some(c);
-        } else if all_same && Some(c) != first_char {
-            all_same = false;
-        }
-        last_char = c;
-
-        // ASCII check
-        if c.is_ascii() {
-            ascii_count += 1;
-        }
-
-        // Character type counting
-        if c.is_ascii_uppercase() {
-            upper += 1;
-            alpha += 1;
-            if !c.is_ascii_hexdigit() {
-                has_non_hex_letter = true;
-            }
-            hex_only += 1;
-            // Alternation tracking
-            if prev_is_digit == Some(true) {
-                alternations += 1;
-            }
-            prev_is_digit = Some(false);
-        } else if c.is_ascii_lowercase() {
-            lower += 1;
-            alpha += 1;
-            if !c.is_ascii_hexdigit() {
-                has_non_hex_letter = true;
-            }
-            hex_only += 1;
-            if prev_is_digit == Some(true) {
-                alternations += 1;
-            }
-            prev_is_digit = Some(false);
-        } else if c.is_ascii_digit() {
-            digit += 1;
-            hex_only += 1;
-            if prev_is_digit == Some(false) {
-                alternations += 1;
-            }
-            prev_is_digit = Some(true);
-        } else if c.is_alphabetic() {
-            // Non-ASCII alphabetic
-            alpha += 1;
-            if prev_is_digit == Some(true) {
-                alternations += 1;
-            }
-            prev_is_digit = Some(false);
-        } else if c.is_whitespace() {
-            whitespace += 1;
-        } else {
-            // Punctuation/special characters
-            match c {
-                '#' | '@' | '?' | '>' | '<' | '|' | '\\' | '^' | '`' | '~' | '$' | '+' | '&'
-                | '*' | '=' | ';' | ':' | '!' | ',' => noise_punct += 1,
-                '(' | '[' | '{' => open_parens += 1,
-                ')' | ']' | '}' => close_parens += 1,
-                '"' | '\'' => quotes += 1,
-                _ => {}
-            }
-            if !c.is_alphanumeric() && !c.is_whitespace() {
-                special += 1;
-            }
-        }
-    }
-
-    let alphanumeric = alpha + digit;
-    let first_char = trimmed.chars().next().unwrap_or(' ');
-
-    // Very short strings (2-6 chars) that look like random binary data
-    if (2..=6).contains(&len) {
-        let is_all_upper = upper == len;
-        let is_all_lower = lower == len;
-        let is_all_digit = digit == len;
-        // Allow identifier-like patterns: leading digit(s) + uppercase only (e.g., "8BIM", "3DES", "2D")
-        // Digits must be at the START only, not interspersed (reject "9N2A", "0YI0")
-        let is_digit_upper_id = first_char.is_ascii_digit()
-            && upper > 0
-            && lower == 0
-            && special == 0
-            && trimmed
-                .chars()
-                .skip_while(char::is_ascii_digit)
-                .all(|c| c.is_ascii_uppercase());
-        // Allow PascalCase words: leading uppercase + rest lowercase, no digits (e.g., "Bool", "Exif", "Time")
-        let is_pascal_case =
-            first_char.is_ascii_uppercase() && upper == 1 && lower > 0 && digit == 0;
-        // Allow camelCase words: leading lowercase + one uppercase NOT at end, no digits (e.g., "someWord")
-        // Reject patterns like "phbS" (uppercase at end) or "gnzUrs" (too short to verify)
-        // camelCase needs at least 7 chars to be recognizable (e.g., "myValue")
-        let last_char = trimmed.chars().last().unwrap_or(' ');
-        let is_camel_case = len >= 7
-            && first_char.is_ascii_lowercase()
-            && upper == 1
-            && digit == 0
-            && !last_char.is_ascii_uppercase();
-        // Allow lowercase + trailing digits (e.g., "amd64", "utf8", "sha256")
-        // Must start with lowercase, not digit (reject "8oz1")
-        let is_lower_with_suffix = first_char.is_ascii_lowercase()
-            && lower > 0
-            && upper == 0
-            && digit > 0
-            && last_char.is_ascii_digit();
-
-        if !(is_all_upper
-            || is_all_lower
-            || is_all_digit
-            || is_digit_upper_id
-            || is_pascal_case
-            || is_camel_case
-            || is_lower_with_suffix)
+        let alnum_count = s.chars().filter(|c| c.is_alphanumeric()).count();
+        let ascii_chars = s.chars().filter(char::is_ascii).count();
+        let char_count = s.chars().count();
+        if alnum_count >= 3
+            && char_count > 0
+            && ascii_chars * 100 / char_count > MIN_FAST_PATH_ALPHABETIC_RATIO
         {
-            // Mixed case with digits in short strings is usually garbage
-            if digit > 0 && (upper > 0 || lower > 0) {
-                return true;
-            }
-            // Irregular mixed case patterns are usually garbage from compressed data
-            // (e.g., "zVQO", "IKfB", "phbS", "OsVLJ", "HQIld")
-            if upper > 0 && lower > 0 {
-                return true;
-            }
-            // Short strings with internal whitespace are garbage (e.g., "VW N", "5c 9")
-            if whitespace > 0 {
-                return true;
-            }
+            return true;
         }
     }
 
-    // Short strings with noise punctuation are garbage (expanded range for compressed data)
-    if len <= 10 && noise_punct > 0 {
+    false
+}
+
+/// Perform statistical analysis to determine if string is garbage.
+///
+/// This is the fallback when fast paths and IOC recognition don't apply.
+fn is_statistical_garbage(s: &str, len: usize, stats: &CharStats) -> bool {
+    // Short pattern checks
+    if is_short_identifier_garbage(s, len, stats) {
         return true;
     }
 
-    // Strings with trailing spaces after short content often indicate misaligned reads
-    if s.ends_with(' ') && len < 10 && alphanumeric < 4 {
+    // Short strings with noise punctuation are garbage
+    if len <= 10 && stats.noise_punct > 0 {
         return true;
     }
 
-    // Pattern: ends with backtick + single letter + optional spaces (Go misaligned reads)
-    let bytes = trimmed.as_bytes();
-    if len >= 2 {
+    // Trailing spaces after short content indicate misaligned reads
+    if s.ends_with(' ') && len < 10 && stats.alphanumeric < 4 {
+        return true;
+    }
+
+    // Pattern: ends with backtick + single letter (Go misaligned reads)
+    let bytes = s.as_bytes();
+    if len >= MIN_SEGMENT_COUNT {
         if let Some(idx) = bytes.iter().rposition(|&b| b.is_ascii_alphabetic()) {
             if idx > 0 && bytes[idx - 1] == b'`' {
                 return true;
@@ -682,330 +914,143 @@ pub fn is_garbage(s: &str) -> bool {
         }
     }
 
-    // Very short strings with special chars are usually garbage
-    if len <= 4 && alphanumeric < len / 2 {
+    if len <= 4 && stats.alphanumeric < len / 2 {
         return true;
     }
 
-    // Short strings with unbalanced or unusual punctuation patterns
-    if len <= 8 && (open_parens != close_parens || quotes == 1) {
+    if len <= 8 && (stats.open_parens != stats.close_parens || stats.quotes == 1) {
         return true;
     }
 
-    // Short strings that look like misaligned binary
-    if len <= 6 {
-        if upper > 0 && special > 0 && alpha == upper {
-            return true;
-        }
-        // Short strings with special chars are usually garbage, BUT:
-        // - Filenames with single '.' (e.g., "a.out", "d.exe", "lib.so") are OK
-        // - Section/path prefixes starting with '.' (e.g., ".text", ".data", ".init") are OK
-        if special > 0 && len <= 5 {
-            // Count dots
-            let dot_count = trimmed.chars().filter(|&c| c == '.').count();
-            // If it's ONLY dots as special chars, it might be a filename or section name
-            if dot_count == special {
-                // Single dot in the middle (filename: "d.exe", "a.out")
-                // OR starts with dot (section name: ".text", ".data", ".bss")
-                let is_filename_pattern =
-                    (dot_count == 1 && !trimmed.starts_with('.') && !trimmed.ends_with('.'))
-                        || trimmed.starts_with('.');
-                if is_filename_pattern && alphanumeric > 0 {
-                    // Not garbage - looks like a filename or section name
-                } else {
-                    return true;
-                }
-            } else {
-                // Has other special chars besides dots - likely garbage
-                return true;
-            }
-        }
+    if is_short_binary_garbage(s, len, stats) {
+        return true;
     }
 
-    // Medium-length strings (5-10 chars) with mixed case and digits are usually noise
-    // from compressed data (e.g., "fprzTR8", "J=22KJT", "V1rN:R")
-    // Exclude legitimate patterns like version strings, dates, paths
-    if (5..=10).contains(&len) && digit > 0 && upper > 0 && lower > 0 {
-        // Allow patterns that look like versions (go1.22, v1.0) or dates
-        let looks_like_version = trimmed.starts_with("go")
-            || trimmed.starts_with('v')
-            || trimmed.starts_with('V')
-            || trimmed.contains('.');
+    // Medium-length strings with mixed case and digits are noise from compressed data
+    if (MIXED_CASE_DIGIT_MIN_LEN..=MIXED_CASE_DIGIT_MAX_LEN).contains(&len)
+        && stats.digit > 0
+        && stats.upper > 0
+        && stats.lower > 0
+    {
+        let looks_like_version =
+            s.starts_with("go") || s.starts_with('v') || s.starts_with('V') || s.contains('.');
         if !looks_like_version {
             return true;
         }
     }
 
-    // Short strings (5-8 chars) with all uppercase + digits but irregular pattern
-    // are usually garbage (e.g., "55LYE", "0GZF")
-    if (5..=8).contains(&len) && digit > 0 && alpha == upper && lower == 0 && special == 0 {
-        // Allow patterns like "HTTP2", "UTF8" where digit is at the end
-        let last_char = trimmed.chars().last().unwrap_or(' ');
-        let first_char = trimmed.chars().next().unwrap_or(' ');
-        if first_char.is_ascii_digit() || (!last_char.is_ascii_digit() && digit > 0) {
+    // Short all-uppercase + digit strings with irregular digit position
+    if (UPPERCASE_DIGIT_MIN_LEN..=UPPERCASE_DIGIT_MAX_LEN).contains(&len)
+        && stats.digit > 0
+        && stats.alpha == stats.upper
+        && stats.lower == 0
+        && stats.special == 0
+    {
+        let last_char = stats.last_char;
+        let first_char = stats.first_char;
+        if first_char.is_ascii_digit() || (!last_char.is_ascii_digit() && stats.digit > 0) {
             return true;
         }
     }
 
-    // Strings that are mostly non-alphanumeric
-    if len >= 4 && alphanumeric == 0 {
+    if len >= 4 && stats.alphanumeric == 0 {
         return true;
     }
 
-    // Alternating digit-letter patterns
-    if len >= 6 && digit > 0 && alpha > 0 && alternations >= 4 && alternations * 2 >= len {
-        return true;
-    }
-
-    // Very low ratio of alphanumeric characters
-    // Use character count for proper Unicode support (defined later, so compute it here too)
-    let char_count_temp = trimmed.chars().count();
-    if char_count_temp > 6 && alphanumeric * 100 / char_count_temp < 30 {
-        return true;
-    }
-
-    // Strings that look like random hex/binary data
-    if len >= 8
-        && !has_non_hex_letter
-        && hex_only == len
-        && digit > 0
-        && alpha > 0
-        && !trimmed.contains('.')
-        && !trimmed.starts_with("0x")
+    if len >= MIN_CHAOTIC_PATTERN_LENGTH
+        && stats.digit > 0
+        && stats.alpha > 0
+        && stats.alternations >= MIN_TRANSITIONS_FOR_CHAOS
+        && stats.alternations * 2 >= len
     {
         return true;
     }
 
-    // Single repeated character
-    if len >= 4 && all_same {
+    if stats.char_count > MIN_CHAOTIC_PATTERN_LENGTH
+        && stats.alphanumeric * 100 / stats.char_count < MIN_ALPHANUMERIC_RATIO
+    {
         return true;
     }
 
-    // Strings with excessive whitespace relative to content
-    if whitespace > 0 && whitespace * 3 > len {
+    // Random hex/binary data (all hex chars, no non-hex letters, not prefixed 0x)
+    if len >= 8
+        && !stats.has_non_hex_letter
+        && stats.hex_only == len
+        && stats.digit > 0
+        && stats.alpha > 0
+        && !s.contains('.')
+        && !s.starts_with("0x")
+    {
         return true;
     }
 
-    // Strings with excessive non-ASCII characters are often misaligned reads or corrupted data
-    // BUT: legitimate Unicode text (Russian, Chinese, Arabic, etc.) is mostly non-ASCII
-    let non_ascii_count = len - ascii_count;
-    let char_count = trimmed.chars().count();
-
-    // For short strings (< 30 BYTES), be strict about non-ASCII content
-    if non_ascii_count > 0 && len < 30 {
-        // Exception: if the string is mostly alphabetic characters AND has no/low "noise" punctuation,
-        // it's likely legitimate international text (Russian, Chinese, etc.), not garbage
-        let alpha_percentage = if char_count > 0 {
-            alpha * 100 / char_count
-        } else {
-            0
-        };
-
-        // Check for noise punctuation that indicates garbage
-        let has_noise_punct = trimmed.chars().any(|c| {
-            matches!(
-                c,
-                '?' | '¥' | 'µ' | '¨' | '´' | '»' | '«' | '°' | '·' | '¦' | '¯'
-            )
-        });
-
-        if alpha_percentage >= 90 && !has_noise_punct {
-            // Very high alphabetic percentage (e.g., Russian "Рабочий стол" is 92%)
-            // AND no garbage punctuation = legitimate international text
-        } else if non_ascii_count * 100 / len > 20 {
-            // If non-ASCII bytes are more than 20% AND doesn't meet quality bar, it's likely garbage
-            return true;
-        }
-        // Even 1-2 non-ASCII chars in very short strings (< 10) is suspicious
-        if len < 10 && non_ascii_count >= 2 {
-            return true;
-        }
+    if len >= 4 && stats.all_same {
+        return true;
     }
 
-    // For longer strings, check if non-ASCII chars dominate
-    if non_ascii_count > 0 && len >= 30 {
-        // If more than 30% non-ASCII, it's garbage (corrupted or misaligned)
-        if non_ascii_count * 100 / len > 30 {
-            return true;
-        }
+    if stats.whitespace > 0 && stats.whitespace * 100 / len > MAX_WHITESPACE_RATIO {
+        return true;
+    }
+
+    if has_excess_non_ascii(s, len, stats) {
+        return true;
     }
 
     // Short strings ending with unusual unicode are suspicious
-    if !last_char.is_ascii() && len < 15 && alphanumeric < len / 2 {
+    if !stats.last_char.is_ascii() && len < 15 && stats.alphanumeric < len / 2 {
         return true;
     }
 
-    // Special case: Obfuscated Python patterns with mangled identifiers
-    // Common in malware: llIIlIlllllIIlllII, IlIlIlIIIIllI, etc.
-    // These use mixed case with lots of I and l to confuse readers
-    if (trimmed.contains("def ")
-        || trimmed.contains("return ")
-        || trimmed.contains("import ")
-        || trimmed.contains(".replace("))
+    // Obfuscated Python: mangled identifiers (llIIlIl...) with Python keywords
+    if (s.contains("def ")
+        || s.contains("return ")
+        || s.contains("import ")
+        || s.contains(".replace("))
         && len >= 20
     {
-        // Check if it has Python-like structure: lots of mixed case identifiers
-        let has_many_identifiers = upper > 5 && lower > 5;
-        let has_reasonable_alnum = alphanumeric >= 12;
-
+        let has_many_identifiers = stats.upper > 5 && stats.lower > 5;
+        let has_reasonable_alnum = stats.alphanumeric >= 12;
         if has_many_identifiers && has_reasonable_alnum {
-            return false; // Obfuscated Python is NOT garbage
+            return false;
         }
     }
 
-    // Character class contiguous region analysis
-    // Legitimate strings have longer runs of the same character class (lowercase, uppercase, digits)
-    // Garbage strings alternate chaotically between classes
-    if len >= 6 {
-        // Define character classes for each character
-        #[derive(PartialEq, Eq, Clone, Copy)]
-        enum CharClass {
-            Upper,
-            Lower,
-            Digit,
-            Special,
-            Whitespace,
-        }
-
-        let char_classes: Vec<CharClass> = trimmed
-            .chars()
-            .map(|c| {
-                if c.is_ascii_uppercase() {
-                    CharClass::Upper
-                } else if c.is_ascii_lowercase() {
-                    CharClass::Lower
-                } else if c.is_ascii_digit() {
-                    CharClass::Digit
-                } else if c.is_whitespace() {
-                    CharClass::Whitespace
-                } else {
-                    CharClass::Special
-                }
-            })
-            .collect();
-
-        // Count transitions and track run lengths
-        let mut transitions = 0;
-        let mut run_lengths: Vec<usize> = Vec::new();
-        let mut current_run_length = 1;
-
-        for i in 1..char_classes.len() {
-            if char_classes[i] == char_classes[i - 1] {
-                current_run_length += 1;
-            } else {
-                transitions += 1;
-                run_lengths.push(current_run_length);
-                current_run_length = 1;
-            }
-        }
-        run_lengths.push(current_run_length); // Don't forget the last run
-
-        // Calculate average run length
-        let total_run_chars: usize = run_lengths.iter().sum();
-        let avg_run_length = if run_lengths.is_empty() {
-            0.0
-        } else {
-            total_run_chars as f32 / run_lengths.len() as f32
-        };
-
-        // Check if string is dominated by one character class (>70%)
-        // Include special characters in the check - strings with mostly special chars
-        // are often legitimate (like shell commands, format strings, etc.)
-        let max_class_count = upper.max(lower).max(digit).max(special);
-        let is_mostly_one_class = max_class_count * 100 / len > 70;
-
-        // Check for structured patterns that naturally have many transitions
-        // These should be exempt from alternation checks
-        // Paths need more than just a slash - require alphanumeric content and reasonable structure
-        // Also reject if too many special characters (real paths are usually <20% special)
-        // AND require mostly lowercase (real paths are typically lowercase)
-        let looks_like_path = (trimmed.contains('/') || trimmed.contains('\\'))
-            && alphanumeric >= 3
-            && special * 100 / len <= 30
-            && (alphanumeric == 0 || lower * 100 / alphanumeric >= 40)  // At least 40% of alphanumeric chars are lowercase
-            && (trimmed.starts_with('/')
-                || trimmed.starts_with('\\')
-                || trimmed.contains("/.")
-                || trimmed.contains("\\.")
-                || trimmed.split(&['/', '\\'][..]).filter(|s| !s.is_empty()).count() >= 2);
-        let looks_like_url = trimmed.contains("://") || trimmed.contains("http");
-        // Domains should have reasonable structure: mostly alphanumeric, dots, hyphens, underscores
-        // Reject if too many special characters (real domains have <20% special)
-        let looks_like_domain = trimmed.contains('.')
-            && trimmed.split('.').filter(|s| !s.is_empty()).count() >= 2
-            && special * 100 / len <= 20;
-        let looks_like_version =
-            (trimmed.starts_with("go") || trimmed.starts_with('v') || trimmed.starts_with('V'))
-                && trimmed.contains('.')
-                && digit > 0;
-        // Base64 strings have uniform character distribution but many transitions
-        // They only contain [A-Za-z0-9+/=] and often end with =
-        let looks_like_base64 = len >= 16
-            && upper > 0
-            && lower > 0
-            && trimmed
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=');
-        // Format strings contain % followed by format specifiers (s, d, f, x, v, etc.)
-        let looks_like_format_string = trimmed.contains("%s")
-            || trimmed.contains("%d")
-            || trimmed.contains("%f")
-            || trimmed.contains("%x")
-            || trimmed.contains("%v")
-            || trimmed.contains("%p")
-            || trimmed.contains("%c")
-            || trimmed.contains("%u");
-        let is_structured_pattern = looks_like_path
-            || looks_like_url
-            || looks_like_domain
-            || looks_like_version
-            || looks_like_base64
-            || looks_like_format_string;
-
-        // Reject strings with excessive alternation and short runs
-        // Exception: strings dominated by one class (like all-uppercase acronyms)
-        // Exception: structured patterns (paths, URLs, domains, versions)
-        if !is_mostly_one_class && !is_structured_pattern {
-            // Too many transitions relative to length (>60% of positions are transitions)
-            if transitions * 100 / len > 60 {
-                return true;
-            }
-
-            // Very short average run length indicates random alternation
-            // Avg run length < 2.0 means mostly 1-char runs (chaotic alternation)
-            if avg_run_length < 2.0 && len >= 8 {
-                return true;
-            }
-
-            // For shorter strings (6-7 chars), be even stricter
-            if len <= 7 && avg_run_length < 1.5 && transitions >= 4 {
-                return true;
-            }
-        } else if is_structured_pattern && avg_run_length < 2.0 && len >= 10 {
-            // Even "structured" patterns shouldn't be TOO chaotic
-            // Reject if very short runs (< 2.0) in strings ≥10 chars
-            // This catches garbage that looks like paths/domains but has random alternation
-            // EXCEPTION: Don't apply this check to recognized structured patterns since they naturally create short runs
-            // (e.g., "/usr/lib/go" has runs: /, usr, /, lib, /, go = avg 1.83)
-            // (e.g., "Photoshop 3.0" has runs: P, hotoshop, space, 3, ., 0 = avg 2.17)
-            // (e.g., "VGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl" = avg 1.78, typical for base64)
-            // (e.g., "Error: %s at line %d" = avg 1.54, typical for format strings)
-            // Only reject if VERY chaotic (< 2.0) AND not a recognized structured pattern
-            if !looks_like_path
-                && !looks_like_domain
-                && !looks_like_version
-                && !looks_like_base64
-                && !looks_like_format_string
-                && !looks_like_url
-            {
-                return true;
-            }
-        }
+    if has_chaotic_char_pattern(s, len, stats) {
+        return true;
     }
 
     false
 }
 
+/// This heuristic detects common patterns of misaligned reads and low-value strings:
+/// - Short strings with non-alphanumeric characters
+/// - Strings ending with backtick + letter + spaces (misaligned Go data)
+/// - Strings with very low alphanumeric ratio
+/// - Strings that are mostly whitespace padding
+/// - Strings with embedded null or control characters
+pub fn is_garbage(s: &str) -> bool {
+    let trimmed = s.trim();
+    let len = trimmed.len();
+
+    // Fast path: obvious valid strings
+    if is_fast_path_valid(trimmed, len) {
+        return false;
+    }
+
+    // Fast path: obvious garbage
+    if is_fast_path_garbage(trimmed, s, len) {
+        return true;
+    }
+
+    // Known IOC patterns (malware indicators, crypto, auth tokens, etc.)
+    if is_recognized_ioc(trimmed, len) {
+        return false;
+    }
+
+    // Statistical analysis (character distribution, patterns, transitions)
+    let stats = CharStats::from_str(trimmed);
+    is_statistical_garbage(trimmed, len, &stats)
+}
 
 #[cfg(test)]
 mod tests {

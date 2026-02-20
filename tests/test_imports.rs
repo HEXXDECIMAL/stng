@@ -6,7 +6,9 @@
 //! the full `extract_strings` pipeline.
 
 use std::path::Path;
-use stng::{extract_strings, extract_strings_with_options, goblin, ExtractOptions, StringKind, StringMethod};
+use stng::{
+    extract_strings, extract_strings_with_options, goblin, ExtractOptions, StringKind, StringMethod,
+};
 
 fn macho_binary_path() -> Option<&'static str> {
     // Prefer /bin/ls which on macOS is always Mach-O
@@ -131,7 +133,10 @@ fn test_macho_import_strings_have_library_field() {
 
     for s in &imports {
         if let Some(lib) = &s.library {
-            assert!(!lib.is_empty(), "Library name should not be an empty string");
+            assert!(
+                !lib.is_empty(),
+                "Library name should not be an empty string"
+            );
         }
     }
 }

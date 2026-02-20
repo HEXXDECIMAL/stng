@@ -485,16 +485,32 @@ pub struct OverlayInfo {
 #[cfg(test)]
 impl BinaryInfo {
     pub fn new_64bit_le() -> Self {
-        Self { is_64bit: true, is_little_endian: true, ptr_size: 8 }
+        Self {
+            is_64bit: true,
+            is_little_endian: true,
+            ptr_size: 8,
+        }
     }
     pub fn new_32bit_le() -> Self {
-        Self { is_64bit: false, is_little_endian: true, ptr_size: 4 }
+        Self {
+            is_64bit: false,
+            is_little_endian: true,
+            ptr_size: 4,
+        }
     }
     pub fn new_64bit_be() -> Self {
-        Self { is_64bit: true, is_little_endian: false, ptr_size: 8 }
+        Self {
+            is_64bit: true,
+            is_little_endian: false,
+            ptr_size: 8,
+        }
     }
     pub fn new_32bit_be() -> Self {
-        Self { is_64bit: false, is_little_endian: false, ptr_size: 4 }
+        Self {
+            is_64bit: false,
+            is_little_endian: false,
+            ptr_size: 4,
+        }
     }
 }
 

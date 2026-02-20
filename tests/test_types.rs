@@ -4,7 +4,8 @@
 
 use serde_json;
 use stng::{
-    ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod, StringStruct,
+    ExtractedString, FunctionMetadata, OverlayInfo, Severity, StringKind, StringMethod,
+    StringStruct,
 };
 
 // ===== ExtractedString Tests =====

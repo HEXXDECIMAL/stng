@@ -7,14 +7,15 @@
 mod classify;
 mod key;
 mod scan;
+mod validate;
 
 // Re-export the public API that lib.rs calls as `xor::*`
-pub(crate) use self::classify::{auto_detect_xor_key, extract_multikey_xor_strings, extract_xor_strings};
-pub(crate) use self::scan::{extract_custom_xor_strings, extract_custom_xor_strings_with_hints};
+pub(crate) use self::classify::{
+    auto_detect_xor_key, extract_multikey_xor_strings, extract_xor_strings,
+};
+pub(crate) use self::scan::extract_custom_xor_strings_with_hints;
 
-// Private imports used only within this module (accessible in tests via `use super::*`)
-use self::classify::is_locale_string;
-use self::key::{calculate_entropy, is_good_xor_key_candidate};
+// Note: Private functions are re-imported in the tests module below
 
 /// Minimum length for XOR-decoded strings (default).
 pub(crate) const DEFAULT_XOR_MIN_LENGTH: usize = 10;
@@ -32,8 +33,12 @@ pub const MAX_XOR_SCAN_SIZE: usize = 5 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {
+    use super::key::{calculate_entropy, is_good_xor_key_candidate};
+    use super::scan::extract_custom_xor_strings;
+    use super::validate::{
+        has_known_path_prefix, is_locale_string, is_meaningful_string, is_valid_ip, is_valid_port,
+    };
     use super::*;
-    use super::classify::{has_known_path_prefix, is_meaningful_string, is_valid_ip, is_valid_port};
     use crate::{ExtractedString, StringKind, StringMethod};
 
     #[test]
@@ -262,7 +267,7 @@ mod tests {
         let key = vec![0x42];
         let xored: Vec<u8> = plaintext.iter().map(|b| b ^ key[0]).collect();
 
-        let results = extract_custom_xor_strings(&xored, &key, 10);
+        let results = extract_custom_xor_strings(&xored, &key, 10, false);
         assert!(
             results
                 .iter()
@@ -287,7 +292,7 @@ mod tests {
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
 
-        let results = extract_custom_xor_strings(&xored, key, 10);
+        let results = extract_custom_xor_strings(&xored, key, 10, false);
         assert!(
             results
                 .iter()
@@ -313,7 +318,7 @@ mod tests {
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
 
-        let results = extract_custom_xor_strings(&xored, key, 10);
+        let results = extract_custom_xor_strings(&xored, key, 10, false);
         assert!(
             results
                 .iter()
@@ -332,7 +337,7 @@ mod tests {
         // Empty key should return no results
         let data = b"test data";
         let key = vec![];
-        let results = extract_custom_xor_strings(data, &key, 4);
+        let results = extract_custom_xor_strings(data, &key, 4, false);
         assert!(results.is_empty(), "Empty key should return no results");
     }
 
@@ -341,7 +346,7 @@ mod tests {
         // Empty data should return no results
         let data = b"";
         let key = b"KEY";
-        let results = extract_custom_xor_strings(data, key, 4);
+        let results = extract_custom_xor_strings(data, key, 4, false);
         assert!(results.is_empty(), "Empty data should return no results");
     }
 
@@ -357,7 +362,7 @@ mod tests {
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
 
-        let results = extract_custom_xor_strings(&xored, key, 8);
+        let results = extract_custom_xor_strings(&xored, key, 8, false);
         assert!(
             results.iter().any(|r| r.value.contains("192.168.1.100")
                 && r.library
@@ -380,7 +385,7 @@ mod tests {
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
 
-        let results = extract_custom_xor_strings(&xored, key, 4);
+        let results = extract_custom_xor_strings(&xored, key, 4, false);
         assert!(
             results.iter().any(|r| r.value == "/bin/bash"
                 && r.library
@@ -404,7 +409,7 @@ mod tests {
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
 
-        let results = extract_custom_xor_strings(&xored, key, 10);
+        let results = extract_custom_xor_strings(&xored, key, 10, false);
         assert!(
             results.iter().any(|r| r.kind == StringKind::SuspiciousPath
                 && r.value.contains("/Library/Ethereum/keystore")),
@@ -424,7 +429,7 @@ mod tests {
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
 
-        let results = extract_custom_xor_strings(&xored, key, 10);
+        let results = extract_custom_xor_strings(&xored, key, 10, false);
         assert!(
             results
                 .iter()
@@ -445,7 +450,7 @@ mod tests {
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
 
-        let results = extract_custom_xor_strings(&xored, key, 10);
+        let results = extract_custom_xor_strings(&xored, key, 10, false);
         assert!(
             !results.iter().any(|r| r.kind == StringKind::ShellCmd),
             "Garbage with backtick should NOT be shell command. Results: {:?}",
@@ -464,7 +469,7 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
-        let results1 = extract_custom_xor_strings(&xored1, key, 4);
+        let results1 = extract_custom_xor_strings(&xored1, key, 4, false);
         assert!(
             !results1.iter().any(|r| r.kind == StringKind::Path),
             "Garbage with special chars should NOT be path"
@@ -477,7 +482,7 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
-        let results2 = extract_custom_xor_strings(&xored2, key, 4);
+        let results2 = extract_custom_xor_strings(&xored2, key, 4, false);
         assert!(
             !results2.iter().any(|r| r.kind == StringKind::Path),
             "Garbage with mixed case and digits should NOT be path"
@@ -490,7 +495,7 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
-        let results3 = extract_custom_xor_strings(&xored3, key, 4);
+        let results3 = extract_custom_xor_strings(&xored3, key, 4, false);
         assert!(
             !results3.iter().any(|r| r.kind == StringKind::Path),
             "Garbage with special chars should NOT be path"
@@ -555,7 +560,8 @@ mod tests {
             assert!(
                 is_good_xor_key_candidate(key, entropy),
                 "Known XOR key '{}' should qualify (entropy: {:.2})",
-                key, entropy
+                key,
+                entropy
             );
         }
     }
@@ -749,7 +755,7 @@ mod tests {
         assert_eq!(detected_str, key_string);
 
         // Verify that the detected key decodes the strings correctly
-        let decoded_results = extract_custom_xor_strings(&xored_data, &detected_key, 10);
+        let decoded_results = extract_custom_xor_strings(&xored_data, &detected_key, 10, false);
         let decoded_values: Vec<String> = decoded_results.iter().map(|r| r.value.clone()).collect();
 
         // Should find osascript (highest priority)
@@ -838,7 +844,7 @@ mod tests {
             data[50 + i] = b ^ key_bytes[i % key_bytes.len()];
         }
 
-        let results = extract_custom_xor_strings(&data, key_bytes, 10);
+        let results = extract_custom_xor_strings(&data, key_bytes, 10, false);
 
         // Check for overlapping strings (same data region decoded multiple times)
         for i in 0..results.len() {
@@ -885,7 +891,7 @@ mod tests {
         data.extend_from_slice(&xored);
         data.extend_from_slice(&[0xFF; 100]);
 
-        let results = extract_custom_xor_strings(&data, key, 10);
+        let results = extract_custom_xor_strings(&data, key, 10, false);
 
         // Should find the complete sleep command
         let found = results.iter().any(|r| r.value == expected);
@@ -914,7 +920,7 @@ mod tests {
 
         if let Ok(data) = std::fs::read("testdata/malware/brew_agent") {
             let key = b"fYztZORL5VNS7nCUH1ktn5UoJ8VSgaf";
-            let results = extract_custom_xor_strings(&data, key, 10);
+            let results = extract_custom_xor_strings(&data, key, 10, false);
 
             // Check what we found in the region 0x4b100-0x4b200
             let in_region: Vec<_> = results
@@ -997,7 +1003,7 @@ mod tests {
             data.extend_from_slice(&xored);
             data.extend_from_slice(&[0x00; 20]);
 
-            let results = extract_custom_xor_strings(&data, key, 10);
+            let results = extract_custom_xor_strings(&data, key, 10, false);
 
             // These garbage strings should NOT be extracted
             let found = results.iter().any(|r| r.value == *garbage);
@@ -1021,7 +1027,7 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
-        let results1 = extract_custom_xor_strings(&xored1, key, 4);
+        let results1 = extract_custom_xor_strings(&xored1, key, 4, false);
         assert!(
             results1
                 .iter()
@@ -1040,7 +1046,7 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
-        let results2 = extract_custom_xor_strings(&xored2, key, 4);
+        let results2 = extract_custom_xor_strings(&xored2, key, 4, false);
         assert!(
             results2
                 .iter()
@@ -1055,7 +1061,7 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| b ^ key[i % key.len()])
             .collect();
-        let results3 = extract_custom_xor_strings(&xored3, key, 4);
+        let results3 = extract_custom_xor_strings(&xored3, key, 4, false);
         assert!(
             results3.iter().any(|r| r.kind == StringKind::Path),
             "/dev/urandom should be detected as path"
@@ -1117,7 +1123,7 @@ mod tests {
                 .map(|(i, &b)| b ^ key[i % key.len()])
                 .collect();
 
-            let results = extract_custom_xor_strings(&xored, key, 10);
+            let results = extract_custom_xor_strings(&xored, key, 10, false);
             let found = !results.is_empty();
 
             assert!(
